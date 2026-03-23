@@ -1,0 +1,100 @@
+// =============================================================================
+// Root Build Script — Groovy DSL
+// =============================================================================
+// Shared configuration applied to ALL subprojects via allprojects{} / subprojects{}.
+// Individual modules only declare their own unique dependencies in their build.gradle.
+//
+// Version Strategy:
+//   ALL versions live in gradle/libs.versions.toml
+//   This file contains ZERO hardcoded version strings.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Plugins applied to ROOT project only
+// (subprojects apply their own plugins individually)
+// -----------------------------------------------------------------------------
+plugins {
+    // Spring Boot plugin at root level — provides dependency management BOM
+    alias(libs.plugins.spring.boot)       apply false
+    alias(libs.plugins.spring.dep.mgmt)   apply false
+}
+
+// -----------------------------------------------------------------------------
+// Configuration shared across ALL projects (root + all subprojects)
+// -----------------------------------------------------------------------------
+allprojects {
+    group   = 'com.pki.ra'
+    version = '1.0.0-SNAPSHOT'
+}
+
+// -----------------------------------------------------------------------------
+// Configuration shared across all SUBPROJECTS only (not root)
+// -----------------------------------------------------------------------------
+subprojects {
+
+    // Apply Spring Boot dependency management BOM to every subproject
+    apply plugin: 'java'
+    apply plugin: 'io.spring.dependency-management'
+
+    // -------------------------------------------------------------------------
+    // Java Toolchain — reads version from libs.versions.toml [versions] java
+    // -------------------------------------------------------------------------
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(libs.versions.java.get().toInteger())
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Import the Spring Boot BOM — enables version-free spring-boot-starter-* usage
+    // -------------------------------------------------------------------------
+    dependencyManagement {
+        imports {
+            mavenBom "org.springframework.boot:spring-boot-dependencies:${libs.versions.spring.boot.get()}"
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Compiler Options — applied to every subproject
+    // -------------------------------------------------------------------------
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding        = 'UTF-8'
+        options.incremental     = true
+        options.compilerArgs   += [
+            '-Xlint:all',
+            '-Xlint:-processing',   // suppress annotation processor noise
+            '-parameters'           // preserve method parameter names (Spring MVC)
+        ]
+    }
+
+    // -------------------------------------------------------------------------
+    // Test Configuration — JUnit 5 platform for all subprojects
+    // -------------------------------------------------------------------------
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+        testLogging {
+            events 'passed', 'skipped', 'failed'
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Common dependencies shared by ALL subprojects
+    // -------------------------------------------------------------------------
+    dependencies {
+        // Null safety annotations — zero runtime cost
+        implementation libs.jspecify
+
+        // Lombok — compile-time only, not included in runtime JAR
+        compileOnly     libs.lombok
+        annotationProcessor libs.lombok
+
+        // MapStruct processor — generates mapping implementations at compile time
+        annotationProcessor libs.mapstruct.processor
+        annotationProcessor libs.lombok.mapstruct.binding
+
+        // Test dependencies
+        testImplementation libs.bundles.testing
+        testCompileOnly     libs.lombok
+        testAnnotationProcessor libs.lombok
+    }
+}

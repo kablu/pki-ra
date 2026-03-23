@@ -1,0 +1,164 @@
+# =============================================================================
+# Gradle Version Catalog — libs.versions.toml
+# =============================================================================
+# ALL dependency versions are declared here.
+# NEVER hardcode versions in any build.gradle file.
+#
+# Usage in build.gradle:
+#   libs.versions.*        → version strings
+#   libs.<alias>           → library coordinates
+#   libs.bundles.<name>    → grouped dependencies
+#   libs.plugins.<name>    → plugin id + version
+#
+# Project : pki-ra (PKI Registration Authority)
+# Stack   : Java 25 | Spring Boot 4.0 | Gradle 9.4.0
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# [versions] — Single source of truth for all version strings
+# -----------------------------------------------------------------------------
+[versions]
+java                    = "25"
+spring-boot             = "4.0.0"
+spring-dep-mgmt         = "1.1.7"
+jspecify                = "1.0.0"
+
+# Spring Security & LDAP (Active Directory)
+spring-security         = "6.4.3"
+spring-ldap             = "3.2.10"
+
+# Persistence
+postgresql              = "42.7.5"
+flyway                  = "11.3.4"
+hibernate               = "6.6.4.Final"
+
+# Code generation
+lombok                  = "1.18.36"
+mapstruct               = "1.6.3"
+lombok-mapstruct-binding = "0.2.0"
+
+# API Documentation
+springdoc               = "2.8.5"
+
+# Logging
+logback                 = "1.5.16"
+slf4j                   = "2.0.17"
+
+# Testing
+junit                   = "5.11.4"
+mockito                 = "5.15.2"
+assertj                 = "3.27.2"
+testcontainers          = "1.20.5"
+
+# Utilities
+jackson                 = "2.18.3"
+commons-lang3           = "3.17.0"
+guava                   = "33.4.0-jre"
+
+# Scheduling
+quartz                  = "2.5.0"
+
+# -----------------------------------------------------------------------------
+# [libraries] — Dependency coordinates mapped to version refs
+# -----------------------------------------------------------------------------
+[libraries]
+
+# --- Spring Boot Starters (versions via BOM — no version.ref needed) ----------
+spring-boot-web             = { module = "org.springframework.boot:spring-boot-starter-web" }
+spring-boot-validation      = { module = "org.springframework.boot:spring-boot-starter-validation" }
+spring-boot-security        = { module = "org.springframework.boot:spring-boot-starter-security" }
+spring-boot-data-jpa        = { module = "org.springframework.boot:spring-boot-starter-data-jpa" }
+spring-boot-actuator        = { module = "org.springframework.boot:spring-boot-starter-actuator" }
+spring-boot-thymeleaf       = { module = "org.springframework.boot:spring-boot-starter-thymeleaf" }
+spring-boot-quartz          = { module = "org.springframework.boot:spring-boot-starter-quartz" }
+spring-boot-devtools        = { module = "org.springframework.boot:spring-boot-devtools" }
+spring-boot-test            = { module = "org.springframework.boot:spring-boot-starter-test" }
+spring-boot-autoconfigure   = { module = "org.springframework.boot:spring-boot-autoconfigure" }
+
+# --- Spring Security (Active Directory / LDAP) --------------------------------
+spring-security-ldap        = { module = "org.springframework.security:spring-security-ldap",        version.ref = "spring-security" }
+spring-ldap-core            = { module = "org.springframework.ldap:spring-ldap-core",                version.ref = "spring-ldap" }
+
+# --- Persistence --------------------------------------------------------------
+postgresql                  = { module = "org.postgresql:postgresql",                                version.ref = "postgresql" }
+flyway-core                 = { module = "org.flywaydb:flyway-core",                                 version.ref = "flyway" }
+flyway-postgresql           = { module = "org.flywaydb:flyway-database-postgresql",                  version.ref = "flyway" }
+
+# --- Code Generation ----------------------------------------------------------
+lombok                      = { module = "org.projectlombok:lombok",                                 version.ref = "lombok" }
+mapstruct                   = { module = "org.mapstruct:mapstruct",                                  version.ref = "mapstruct" }
+mapstruct-processor         = { module = "org.mapstruct:mapstruct-processor",                        version.ref = "mapstruct" }
+lombok-mapstruct-binding    = { module = "org.projectlombok:lombok-mapstruct-binding",               version.ref = "lombok-mapstruct-binding" }
+
+# --- API Docs -----------------------------------------------------------------
+springdoc-openapi-ui        = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui",        version.ref = "springdoc" }
+
+# --- Null Safety --------------------------------------------------------------
+jspecify                    = { module = "org.jspecify:jspecify",                                    version.ref = "jspecify" }
+
+# --- Logging ------------------------------------------------------------------
+logback-classic             = { module = "ch.qos.logback:logback-classic",                           version.ref = "logback" }
+slf4j-api                   = { module = "org.slf4j:slf4j-api",                                      version.ref = "slf4j" }
+
+# --- Jackson ------------------------------------------------------------------
+jackson-databind            = { module = "com.fasterxml.jackson.core:jackson-databind",              version.ref = "jackson" }
+jackson-datatype-jsr310     = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310",   version.ref = "jackson" }
+
+# --- Utilities ----------------------------------------------------------------
+commons-lang3               = { module = "org.apache.commons:commons-lang3",                         version.ref = "commons-lang3" }
+guava                       = { module = "com.google.guava:guava",                                   version.ref = "guava" }
+
+# --- Scheduling ---------------------------------------------------------------
+quartz                      = { module = "org.quartz-scheduler:quartz",                              version.ref = "quartz" }
+
+# --- Testing ------------------------------------------------------------------
+junit-jupiter               = { module = "org.junit.jupiter:junit-jupiter",                          version.ref = "junit" }
+junit-jupiter-api           = { module = "org.junit.jupiter:junit-jupiter-api",                      version.ref = "junit" }
+junit-jupiter-engine        = { module = "org.junit.jupiter:junit-jupiter-engine",                   version.ref = "junit" }
+mockito-core                = { module = "org.mockito:mockito-core",                                 version.ref = "mockito" }
+mockito-junit-jupiter       = { module = "org.mockito:mockito-junit-jupiter",                        version.ref = "mockito" }
+assertj-core                = { module = "org.assertj:assertj-core",                                 version.ref = "assertj" }
+testcontainers-bom          = { module = "org.testcontainers:testcontainers-bom",                    version.ref = "testcontainers" }
+testcontainers-junit        = { module = "org.testcontainers:junit-jupiter" }
+testcontainers-postgresql   = { module = "org.testcontainers:postgresql" }
+
+# -----------------------------------------------------------------------------
+# [bundles] — Grouped dependencies for common use-cases
+# -----------------------------------------------------------------------------
+[bundles]
+# Web layer — every REST/web module needs these
+web                 = ["spring-boot-web", "spring-boot-validation", "spring-boot-actuator"]
+
+# Persistence layer — JPA + PostgreSQL + Flyway migrations
+persistence         = ["spring-boot-data-jpa", "postgresql", "flyway-core", "flyway-postgresql"]
+
+# Active Directory authentication
+ldap                = ["spring-boot-security", "spring-security-ldap", "spring-ldap-core"]
+
+# Jackson serialization
+jackson             = ["jackson-databind", "jackson-datatype-jsr310"]
+
+# Code generation (annotation processors)
+codegen             = ["lombok", "mapstruct"]
+
+# Logging
+logging             = ["logback-classic", "slf4j-api"]
+
+# Testing
+testing             = ["junit-jupiter", "mockito-core", "mockito-junit-jupiter", "assertj-core"]
+
+# Integration testing with containers
+testing-containers  = ["testcontainers-junit", "testcontainers-postgresql"]
+
+# UI / GUI layer
+gui                 = ["spring-boot-web", "spring-boot-thymeleaf", "spring-boot-security", "spring-boot-actuator"]
+
+# Scheduling
+scheduling          = ["spring-boot-quartz", "quartz"]
+
+# -----------------------------------------------------------------------------
+# [plugins] — Plugin coordinates + version refs
+# -----------------------------------------------------------------------------
+[plugins]
+spring-boot         = { id = "org.springframework.boot",         version.ref = "spring-boot"     }
+spring-dep-mgmt     = { id = "io.spring.dependency-management",  version.ref = "spring-dep-mgmt" }

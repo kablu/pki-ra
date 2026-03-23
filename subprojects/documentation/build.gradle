@@ -1,0 +1,32 @@
+// =============================================================================
+// :documentation — OpenAPI / Swagger UI + API documentation generation
+// =============================================================================
+// Provides:
+//   - SpringDoc OpenAPI 3 UI ( /swagger-ui.html )
+//   - API documentation configuration beans
+//   - OpenAPI GroupedOpenApi definitions per module
+//   - Custom API metadata (contact, license, version)
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot)
+}
+
+description = 'PKI-RA Documentation — OpenAPI / Swagger UI configuration'
+
+dependencies {
+
+    // Shared models and base config
+    implementation project(':common')
+
+    // Web runtime needed to serve Swagger UI
+    implementation libs.spring.boot.web
+
+    // SpringDoc OpenAPI — provides /swagger-ui.html and /v3/api-docs
+    implementation libs.springdoc.openapi.ui
+}
+
+// Documentation module does NOT produce an executable bootJar
+// It is included as a library in other modules
+bootJar.enabled = false
+jar.enabled     = true

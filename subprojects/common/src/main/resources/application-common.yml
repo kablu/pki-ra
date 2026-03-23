@@ -1,0 +1,28 @@
+# =============================================================================
+# Common module shared configuration
+# Imported by all runnable subprojects via spring.config.import
+# =============================================================================
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate          # Never auto-create schema — Flyway manages it
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  data:
+    jpa:
+      repositories:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  level:
+    com.pki.ra: INFO
+    org.springframework.security: WARN
+    org.hibernate.SQL: WARN

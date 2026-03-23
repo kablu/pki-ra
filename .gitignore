@@ -1,0 +1,43 @@
+# =============================================================================
+# pki-ra — .gitignore
+# =============================================================================
+
+# Gradle
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+out/
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# Environment / secrets — NEVER commit these
+.env
+*.env
+**/application-prod.yml
+**/application-secrets.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Compiled output
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Test coverage
+.jacoco/
+coverage/

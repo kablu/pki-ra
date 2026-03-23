@@ -1,0 +1,56 @@
+// =============================================================================
+// :scheduler — Quartz-based background job scheduler
+// =============================================================================
+// Provides:
+//   - Certificate expiry notification jobs
+//   - CRL (Certificate Revocation List) update jobs
+//   - Audit log archiving jobs
+//   - Quartz job store (backed by PostgreSQL via :common persistence)
+//   - Job trigger management APIs
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot)
+}
+
+description = 'PKI-RA Scheduler — Quartz background jobs for certificate lifecycle management'
+
+dependencies {
+
+    // Shared domain models, persistence, audit
+    implementation project(':common')
+
+    // -------------------------------------------------------------------------
+    // Scheduling — Spring Boot Quartz + Quartz core
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.scheduling
+
+    // -------------------------------------------------------------------------
+    // Web — REST endpoints for job management (trigger / pause / status)
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.web
+
+    // -------------------------------------------------------------------------
+    // Active Directory — service account authentication for job execution
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.ldap
+
+    // -------------------------------------------------------------------------
+    // Development
+    // -------------------------------------------------------------------------
+    developmentOnly libs.spring.boot.devtools
+
+    // -------------------------------------------------------------------------
+    // Testing
+    // -------------------------------------------------------------------------
+    testImplementation libs.spring.boot.test
+}
+
+bootJar {
+    archiveFileName = "pki-ra-scheduler-${project.version}.jar"
+}
+
+bootRun {
+    jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
+            '-Dspring.profiles.active=dev'
+}

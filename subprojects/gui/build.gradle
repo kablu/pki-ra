@@ -1,0 +1,65 @@
+// =============================================================================
+// :gui — Web UI layer (Thymeleaf + Spring Security + AD Authentication)
+// =============================================================================
+// This is the RUNNABLE Spring Boot application for the frontend.
+//
+// Provides:
+//   - Thymeleaf-based UI pages
+//   - Active Directory (LDAP) authentication via Spring Security
+//   - Session management
+//   - CSRF protection
+//   - Role-based access control (RBAC)
+//   - Login / logout flow
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot)   // bootRun + bootJar
+}
+
+description = 'PKI-RA GUI — Thymeleaf web UI with Active Directory authentication'
+
+dependencies {
+
+    // Shared domain models + audit + utilities
+    implementation project(':common')
+
+    // API Documentation
+    implementation project(':documentation')
+
+    // UI service layer (business logic for GUI)
+    implementation project(':uiservice')
+
+    // -------------------------------------------------------------------------
+    // GUI bundle — Web + Thymeleaf + Spring Security + Actuator
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.gui
+
+    // -------------------------------------------------------------------------
+    // Active Directory authentication (LDAP)
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.ldap
+
+    // -------------------------------------------------------------------------
+    // Thymeleaf Security extras — sec:authorize tags in templates
+    // -------------------------------------------------------------------------
+    implementation 'org.thymeleaf.extras:thymeleaf-extras-springsecurity6'
+
+    // -------------------------------------------------------------------------
+    // Development
+    // -------------------------------------------------------------------------
+    developmentOnly libs.spring.boot.devtools
+
+    // -------------------------------------------------------------------------
+    // Testing
+    // -------------------------------------------------------------------------
+    testImplementation libs.spring.boot.test
+}
+
+bootJar {
+    archiveFileName = "pki-ra-gui-${project.version}.jar"
+}
+
+bootRun {
+    jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
+            '-Dspring.profiles.active=dev'
+}

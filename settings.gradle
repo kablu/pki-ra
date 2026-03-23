@@ -1,0 +1,55 @@
+// =============================================================================
+// Root Settings — pki-ra Multi-Module Project
+// =============================================================================
+// Declares all subprojects and configures plugin + dependency repositories.
+// Gradle 9.4.0 | Java 25 | Spring Boot 4.0
+//
+// Version Catalog: gradle/libs.versions.toml
+//   Access via `libs.*` in any build.gradle
+// =============================================================================
+
+rootProject.name = 'pki-ra'
+
+// -----------------------------------------------------------------------------
+// Plugin Management
+// Resolves plugin JARs BEFORE build scripts run.
+// -----------------------------------------------------------------------------
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Dependency Resolution — centralizes repo declarations for all subprojects
+// -----------------------------------------------------------------------------
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        mavenCentral()
+    }
+    // Auto-discovers gradle/libs.versions.toml as the default version catalog
+    // Accessible in every build.gradle via the `libs.*` accessor
+    versionCatalogs {
+        libs {
+            from(files("gradle/libs.versions.toml"))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Subprojects — all modules under subprojects/
+// -----------------------------------------------------------------------------
+include(':common')
+include(':documentation')
+include(':gui')
+include(':uiservice')
+include(':scheduler')
+
+// Map module names to their physical directories under subprojects/
+project(':common').projectDir       = file('subprojects/common')
+project(':documentation').projectDir = file('subprojects/documentation')
+project(':gui').projectDir          = file('subprojects/gui')
+project(':uiservice').projectDir    = file('subprojects/uiservice')
+project(':scheduler').projectDir    = file('subprojects/scheduler')

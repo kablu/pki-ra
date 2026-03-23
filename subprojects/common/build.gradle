@@ -1,0 +1,61 @@
+// =============================================================================
+// :common — Shared domain models, utilities, exceptions, and base config
+// =============================================================================
+// This module is a dependency of ALL other subprojects.
+// It must NOT depend on any other pki-ra subproject (to avoid circular deps).
+//
+// Contains:
+//   - Base entity classes (BaseAuditEntity)
+//   - Common exceptions (PkiRaException, ResourceNotFoundException)
+//   - Shared DTOs and API response wrappers
+//   - Utility classes (DateUtils, StringUtils)
+//   - Common security principal model
+//   - Audit log domain model + repository
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot) apply false
+    id 'java-library'               // exposes 'api' configuration for downstream modules
+}
+
+description = 'PKI-RA Common — shared models, utils, exceptions, audit logging'
+
+dependencies {
+
+    // -------------------------------------------------------------------------
+    // Persistence — Audit log entity + JPA base classes
+    // -------------------------------------------------------------------------
+    api libs.bundles.persistence        // 'api' = exposed to all modules that depend on :common
+
+    // -------------------------------------------------------------------------
+    // Web — base REST response wrappers, validation annotations
+    // -------------------------------------------------------------------------
+    api libs.spring.boot.validation
+    api libs.spring.boot.autoconfigure
+
+    // -------------------------------------------------------------------------
+    // Logging
+    // -------------------------------------------------------------------------
+    api libs.bundles.logging
+
+    // -------------------------------------------------------------------------
+    // Jackson — JSON serialization for shared DTOs
+    // -------------------------------------------------------------------------
+    api libs.bundles.jackson
+
+    // -------------------------------------------------------------------------
+    // MapStruct — shared mapper interfaces
+    // -------------------------------------------------------------------------
+    api libs.mapstruct
+
+    // -------------------------------------------------------------------------
+    // Utilities
+    // -------------------------------------------------------------------------
+    api libs.commons.lang3
+    api libs.guava
+
+    // -------------------------------------------------------------------------
+    // Testing
+    // -------------------------------------------------------------------------
+    testImplementation libs.spring.boot.test
+}

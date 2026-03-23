@@ -1,0 +1,59 @@
+// =============================================================================
+// :uiservice — Business logic layer for GUI operations
+// =============================================================================
+// Service layer between :gui controllers and :common domain/persistence.
+//
+// Provides:
+//   - Certificate request processing services
+//   - User management services (backed by AD + local DB)
+//   - Audit log writing services
+//   - DTO ↔ Entity mappers (MapStruct)
+//   - REST API endpoints consumed by GUI
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot)
+}
+
+description = 'PKI-RA UIService — business logic and REST API for the GUI layer'
+
+dependencies {
+
+    // Shared domain models, exceptions, audit entities
+    implementation project(':common')
+
+    // -------------------------------------------------------------------------
+    // Web — REST controllers + validation
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.web
+
+    // -------------------------------------------------------------------------
+    // Active Directory — user lookup and role resolution
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.ldap
+
+    // -------------------------------------------------------------------------
+    // API Documentation
+    // -------------------------------------------------------------------------
+    implementation project(':documentation')
+    implementation libs.springdoc.openapi.ui
+
+    // -------------------------------------------------------------------------
+    // Development
+    // -------------------------------------------------------------------------
+    developmentOnly libs.spring.boot.devtools
+
+    // -------------------------------------------------------------------------
+    // Testing
+    // -------------------------------------------------------------------------
+    testImplementation libs.spring.boot.test
+}
+
+bootJar {
+    archiveFileName = "pki-ra-uiservice-${project.version}.jar"
+}
+
+bootRun {
+    jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
+            '-Dspring.profiles.active=dev'
+}
