@@ -8,8 +8,6 @@
 //   Access via `libs.*` in any build.gradle
 // =============================================================================
 
-rootProject.name = 'pki-ra'
-
 // -----------------------------------------------------------------------------
 // Plugin Management
 // Resolves plugin JARs BEFORE build scripts run.
@@ -21,6 +19,8 @@ pluginManagement {
     }
 }
 
+rootProject.name = 'pki-ra'
+
 // -----------------------------------------------------------------------------
 // Dependency Resolution — centralizes repo declarations for all subprojects
 // -----------------------------------------------------------------------------
@@ -29,13 +29,7 @@ dependencyResolutionManagement {
     repositories {
         mavenCentral()
     }
-    // Auto-discovers gradle/libs.versions.toml as the default version catalog
-    // Accessible in every build.gradle via the `libs.*` accessor
-    versionCatalogs {
-        libs {
-            from(files("gradle/libs.versions.toml"))
-        }
-    }
+
 }
 
 // -----------------------------------------------------------------------------
@@ -46,6 +40,7 @@ include(':documentation')
 include(':gui')
 include(':uiservice')
 include(':scheduler')
+include(':raservice')
 
 // Map module names to their physical directories under subprojects/
 project(':common').projectDir       = file('subprojects/common')
@@ -53,3 +48,4 @@ project(':documentation').projectDir = file('subprojects/documentation')
 project(':gui').projectDir          = file('subprojects/gui')
 project(':uiservice').projectDir    = file('subprojects/uiservice')
 project(':scheduler').projectDir    = file('subprojects/scheduler')
+project(':raservice').projectDir    = file('subprojects/raservice')
