@@ -1,0 +1,54 @@
+// =============================================================================
+// :raservice — PKI Registration Authority core service
+// =============================================================================
+// Handles certificate lifecycle operations:
+//   - Certificate request intake and validation
+//   - RA business rules and approval workflow
+//   - REST API consumed by :gui and external clients
+//
+// No direct DB access — delegates persistence to :common via service calls.
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot)
+}
+
+description = 'PKI-RA Service — core RA business logic and REST API'
+
+dependencies {
+
+    // Shared domain models, exceptions, audit entities
+    implementation project(':common')
+
+    // API Documentation
+    implementation project(':documentation')
+
+    // -------------------------------------------------------------------------
+    // Web — REST controllers + validation
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.web
+
+    // -------------------------------------------------------------------------
+    // API Documentation — Swagger UI
+    // -------------------------------------------------------------------------
+    implementation libs.springdoc.openapi.ui
+
+    // -------------------------------------------------------------------------
+    // Development
+    // -------------------------------------------------------------------------
+    developmentOnly libs.spring.boot.devtools
+
+    // -------------------------------------------------------------------------
+    // Testing
+    // -------------------------------------------------------------------------
+    testImplementation libs.spring.boot.test
+}
+
+bootJar {
+    archiveFileName = "pki-ra-raservice-${project.version}.jar"
+}
+
+bootRun {
+    jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
+            '-Dspring.profiles.active=dev'
+}

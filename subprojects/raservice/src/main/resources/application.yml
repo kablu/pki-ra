@@ -1,0 +1,56 @@
+# =============================================================================
+# PKI-RA RAService — Application Configuration
+# =============================================================================
+# No direct database connection — persistence is handled by :common module.
+# =============================================================================
+
+spring:
+  application:
+    name: pki-ra-raservice
+
+  config:
+    import: classpath:application-common.yml
+
+  # Disable all auto-configurations that require a DataSource
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+
+# -----------------------------------------------------------------------------
+# Server
+# -----------------------------------------------------------------------------
+server:
+  port: 8083
+  servlet:
+    context-path: /ra-api
+  error:
+    include-message: always
+    include-binding-errors: always
+
+# -----------------------------------------------------------------------------
+# SpringDoc / Swagger UI
+# -----------------------------------------------------------------------------
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+  default-produces-media-type: application/json
+
+# -----------------------------------------------------------------------------
+# Actuator
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    com.pki.ra: DEBUG
