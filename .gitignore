@@ -1,4 +1,4 @@
-# =============================================================================
+    # =============================================================================
 # pki-ra — .gitignore
 # =============================================================================
 
@@ -8,16 +8,36 @@ build/
 **/build/
 !gradle/wrapper/gradle-wrapper.jar
 
-# IntelliJ IDEA
-.idea/
+# IntelliJ IDEA — ignore only machine-specific / generated files
+# Shared project config (.idea/modules.xml, runConfigurations, codeStyles, etc.)
+# is intentionally kept so the project opens correctly on any machine.
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries/
+.idea/**/shelf/
+.idea/**/contentModel.xml
+.idea/**/misc.xml
+.idea/**/dataSources/
+.idea/**/dataSources.ids
+.idea/**/dataSources.local.xml
+.idea/**/sqlDataSources.xml
+.idea/**/dynamic.xml
+.idea/**/uiDesigner.xml
+.idea/**/gradle.xml
+.idea/**/libraries/
+.idea/**/androidTestRunConfiguration.xml
+.idea/httpRequests/
 *.iml
 *.iws
+*.ipr
 out/
 
 # Eclipse
 .classpath
 .project
 .settings/
+*.launch
 
 # Environment / secrets — NEVER commit these
 .env
