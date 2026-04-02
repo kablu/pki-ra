@@ -23,6 +23,11 @@ dependencies {
     implementation project(':common')
 
     // -------------------------------------------------------------------------
+    // Persistence — EntityScan, EnableJpaRepositories, EnableJpaAuditing
+    // -------------------------------------------------------------------------
+    implementation libs.spring.boot.data.jpa
+
+    // -------------------------------------------------------------------------
     // Web — REST controllers + validation
     // -------------------------------------------------------------------------
     implementation libs.bundles.web

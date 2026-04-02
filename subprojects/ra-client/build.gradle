@@ -1,0 +1,44 @@
+// =============================================================================
+// :ra-client — RA Client REST API consumer
+// =============================================================================
+// Provides:
+//   - HTTP client integration with the RA service
+//   - Certificate request submission and status polling
+//   - REST client configuration (WebClient / RestClient)
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot)
+}
+
+description = 'PKI-RA Client — REST client for RA service integration'
+
+dependencies {
+
+    // Shared domain models, exceptions, audit entities
+    implementation project(':common')
+
+    // -------------------------------------------------------------------------
+    // Web — REST client + validation
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.web
+
+    // -------------------------------------------------------------------------
+    // Development
+    // -------------------------------------------------------------------------
+    developmentOnly libs.spring.boot.devtools
+
+    // -------------------------------------------------------------------------
+    // Testing
+    // -------------------------------------------------------------------------
+    testImplementation libs.spring.boot.test
+}
+
+bootJar {
+    archiveFileName = "pki-ra-client-${project.version}.jar"
+}
+
+bootRun {
+    jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
+            '-Dspring.profiles.active=dev'
+}
