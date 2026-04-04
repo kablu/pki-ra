@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration debug="false" scanPeriod="10 seconds">
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{ISO8601} | %highlight(%-5.5p) | %-50.50logger{50} | %m%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>raservice.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>raservice.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>3GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{ISO8601} | %-5.5p | %-60.60logger{60} | %m%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="AUDIT" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>audit-raservice.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>audit-raservice.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>3GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{ISO8601} | %-5.5p | %-60.60logger{60} | %m%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="FILE" />
+    </root>
+
+    <!-- RA Application logger configuration ============================================================ -->
+
+    <logger name="com.pki.ra"                                                        level="INFO" />
+    <logger name="com.pki.ra.raservice"                                              level="INFO" />
+
+    <logger name="CERTIFICATEREQUESTLOGGER"   level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="CERTIFICATEISSUANCELOGGER"  level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="REVOCATIONLOGGER"           level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="APPROVALLOGGER"             level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="RAAUDITLOGGER"              level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="KEYSTORELOGGER"             level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="CERTPROFILELOGGER"          level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="CACERTIFICATELOGGER"        level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="USERACCOUNTLOGGER"          level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="APPROVALTASKLOGGER"         level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+    <logger name="ACCESSTOKENAUTHLOGGER"      level="INFO" additivity="false"><appender-ref ref="AUDIT" /> </logger>
+
+    <!-- 3rd party frameworks logger configuration ====================================================== -->
+
+    <logger name="org.springframework"                         level="INFO" />
+    <logger name="org.springframework.data"                    level="WARN" />
+    <logger name="org.springframework.boot.autoconfigure"      level="INFO" />
+    <logger name="org.springframework.boot.actuate"            level="INFO" />
+    <logger name="org.springframework.boot.web"                level="INFO" />
+    <logger name="org.springframework.security"                level="INFO" />
+
+    <logger name="com.zaxxer.hikari"                           level="WARN" />
+    <logger name="io.netty"                                    level="WARN" />
+    <logger name="io.netty.handler.logging.LoggingHandler"     level="WARN" />
+    <logger name="javax.net.debug"                             level="WARN" />
+    <logger name="org.apache"                                  level="WARN" />
+    <logger name="org.ehcache"                                 level="WARN" />
+
+</configuration>
