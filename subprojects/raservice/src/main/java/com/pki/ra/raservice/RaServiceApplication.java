@@ -3,7 +3,7 @@ package com.pki.ra.raservice;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.pki.ra")
 public class RaServiceApplication {
 
     public static void main(String[] args) {
