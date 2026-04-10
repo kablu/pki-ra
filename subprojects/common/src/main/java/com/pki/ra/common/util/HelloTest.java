@@ -1,6 +1,5 @@
 package com.pki.ra.common.util;
 
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
@@ -12,7 +11,6 @@ import org.springframework.stereotype.Component;
  * @author pki-ra
  * @since  1.0.0
  */
-@Slf4j
 @Component
 public class HelloTest {
 
@@ -22,8 +20,6 @@ public class HelloTest {
      * @return greeting string
      */
     public String sayHello() {
-        String message = "Hello from common module HelloTest bean!";
-        log.info(message);
-        return message;
+        return "Hello from common module HelloTest bean!";
     }
 }
