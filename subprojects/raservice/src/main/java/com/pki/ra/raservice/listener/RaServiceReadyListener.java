@@ -1,5 +1,6 @@
 package com.pki.ra.raservice.listener;
 
+import com.pki.ra.common.util.HelloTest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -46,6 +47,7 @@ public class RaServiceReadyListener implements ApplicationListener<ApplicationRe
 
     private final ApplicationContext context;
     private final Environment        environment;
+    private final HelloTest          helloTest;
 
     // -------------------------------------------------------------------------
 
@@ -77,6 +79,12 @@ public class RaServiceReadyListener implements ApplicationListener<ApplicationRe
         row("JVM Uptime",      formatUptime(event.getSpringApplication()
                 .getMainApplicationClass()));
         row("Total Beans",     String.valueOf(context.getBeanDefinitionCount()));
+        log.info(SEP_THIN);
+
+        // -- HelloTest bean from common module -----------------------------------
+        log.info("  COMMON MODULE BEAN");
+        log.info(SEP_THIN);
+        row("HelloTest", helloTest.sayHello());
         log.info(SEP_THIN);
 
         // -- RA Beans loaded in raservice package --------------------------------
