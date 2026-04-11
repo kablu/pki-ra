@@ -23,9 +23,9 @@ dependencies {
     implementation project(':common')
 
     // -------------------------------------------------------------------------
-    // Persistence — EntityScan, EnableJpaRepositories, EnableJpaAuditing
+    // Persistence — JPA + MariaDB driver + Flyway migrations
     // -------------------------------------------------------------------------
-    implementation libs.spring.boot.data.jpa
+    implementation libs.bundles.persistence
 
     // -------------------------------------------------------------------------
     // Web — REST controllers + validation

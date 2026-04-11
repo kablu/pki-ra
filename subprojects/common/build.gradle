@@ -23,9 +23,11 @@ description = 'PKI-RA Common — shared models, utils, exceptions, audit logging
 dependencies {
 
     // -------------------------------------------------------------------------
-    // Persistence — Audit log entity + JPA base classes
+    // Persistence — JPA annotations and EntityManager for audit entities
+    // NOTE: MariaDB driver and flyway belong in modules that connect to a DB,
+    //       not in the shared common library.
     // -------------------------------------------------------------------------
-    api libs.bundles.persistence        // 'api' = exposed to all modules that depend on :common
+    api libs.spring.boot.data.jpa
 
     // -------------------------------------------------------------------------
     // Web — base REST response wrappers, validation annotations, HttpStatus
