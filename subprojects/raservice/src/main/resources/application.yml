@@ -10,8 +10,8 @@ spring:
 
   config:
     import:
-      - "optional:file:../../common/config/common.properties"
-      - "optional:file:../../common/config/logging.properties"
+      - "optional:file:../common/config/common.properties"
+      - "optional:file:../common/config/logging.properties"
 
   # Disable all auto-configurations that require a DataSource
   autoconfigure:
