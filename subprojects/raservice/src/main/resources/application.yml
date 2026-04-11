@@ -9,7 +9,7 @@ spring:
     name: pki-ra-raservice
 
   config:
-    import: classpath:application-common.yml
+    import: classpath:common.properties
 
   # Disable all auto-configurations that require a DataSource
   autoconfigure:
