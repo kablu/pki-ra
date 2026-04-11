@@ -24,7 +24,7 @@ dependencies {
 
     // -------------------------------------------------------------------------
     // Persistence — JPA annotations and EntityManager for audit entities
-    // NOTE: postgresql driver and flyway belong in modules that connect to a DB,
+    // NOTE: MariaDB driver and flyway belong in modules that connect to a DB,
     //       not in the shared common library.
     // -------------------------------------------------------------------------
     api libs.spring.boot.data.jpa

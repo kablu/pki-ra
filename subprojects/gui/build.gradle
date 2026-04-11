@@ -30,6 +30,11 @@ dependencies {
     implementation project(':uiservice')
 
     // -------------------------------------------------------------------------
+    // Persistence — JPA + MariaDB driver + Flyway migrations
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.persistence
+
+    // -------------------------------------------------------------------------
     // GUI bundle — Web + Thymeleaf + Spring Security + Actuator
     // -------------------------------------------------------------------------
     implementation libs.bundles.gui
