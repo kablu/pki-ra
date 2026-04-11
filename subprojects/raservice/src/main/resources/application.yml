@@ -9,7 +9,9 @@ spring:
     name: pki-ra-raservice
 
   config:
-    import: classpath:common.properties
+    import:
+      - "../../common/config/common.properties"
+      - "../../common/config/logging.properties"
 
   # Disable all auto-configurations that require a DataSource
   autoconfigure:
