@@ -17,7 +17,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  *   <li>Audit log archiving job (weekly)</li>
  * </ul>
  *
- * <p>Quartz job store uses the same PostgreSQL database ({@code pki_ra})
+ * <p>Quartz job store uses the same MariaDB database ({@code pki_ra})
  * via the {@code QRTZ_*} tables created by Flyway migration.
  *
  * <p>Run with: {@code ./gradlew :scheduler:bootRun}

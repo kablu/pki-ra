@@ -48,7 +48,7 @@ public class Employee extends BaseAuditEntity {
     /**
      * DB auto-generated primary key.
      *
-     * <p>{@code IDENTITY} strategy — PostgreSQL {@code BIGSERIAL} / {@code IDENTITY} column use karta hai.
+     * <p>{@code IDENTITY} strategy — MariaDB {@code BIGINT AUTO_INCREMENT} column use karta hai.
      */
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -85,7 +85,7 @@ public class Employee extends BaseAuditEntity {
     private String designation;
 
     /**
-     * Salary — precision 12, scale 2 (e.g. 999999999999.99).
+     * Salary — DECIMAL(12,2) in MariaDB (e.g. 999999999999.99).
      */
     @Column(name = "salary", nullable = false, precision = 12, scale = 2)
     private java.math.BigDecimal salary;

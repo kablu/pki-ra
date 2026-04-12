@@ -62,7 +62,7 @@ public class JpaConfig {
     @Value("${spring.datasource.password}")
     private String dbPassword;
 
-    @Value("${spring.datasource.driver-class-name:org.postgresql.Driver}")
+    @Value("${spring.datasource.driver-class-name:org.mariadb.jdbc.Driver}")
     private String driverClassName;
 
     // -------------------------------------------------------------------------
@@ -138,14 +138,14 @@ public class JpaConfig {
         config.setPoolName(poolName);
 
         // -- Connection validation --
-        config.setConnectionTestQuery("SELECT 1");      // PostgreSQL health check
+        config.setConnectionTestQuery("SELECT 1");      // MariaDB health check
 
-        // -- PostgreSQL specific optimizations --
+        // -- MariaDB specific optimizations --
         config.addDataSourceProperty("cachePrepStmts",          "true");
         config.addDataSourceProperty("prepStmtCacheSize",        "250");
         config.addDataSourceProperty("prepStmtCacheSqlLimit",    "2048");
         config.addDataSourceProperty("useServerPrepStmts",       "true");
-        config.addDataSourceProperty("reWriteBatchedInserts",    "true");  // batch insert speed
+        config.addDataSourceProperty("rewriteBatchedStatements", "true");  // batch insert speed
 
         log.info("HikariCP pool initialized: pool={}, maxSize={}, minIdle={}",
                  poolName, maximumPoolSize, minimumIdle);
@@ -202,7 +202,7 @@ public class JpaConfig {
      * <p>Har property ka purpose:
      * <ul>
      *   <li>{@code ddl-auto=validate}         — Schema Flyway se manage, Hibernate sirf validate kare</li>
-     *   <li>{@code dialect}                    — PostgreSQL specific SQL generate karne ke liye</li>
+     *   <li>{@code dialect}                    — MariaDB specific SQL generate karne ke liye</li>
      *   <li>{@code format_sql}                 — Debug mein readable SQL</li>
      *   <li>{@code jdbc.time_zone=UTC}         — Timestamp always UTC mein store ho</li>
      *   <li>{@code jdbc.batch_size}            — Bulk insert/update performance</li>
@@ -216,9 +216,9 @@ public class JpaConfig {
         // Schema management — NEVER use create/update in production
         props.put("hibernate.hbm2ddl.auto",                      "validate");
 
-        // PostgreSQL dialect — correct SQL syntax generate hogi
+        // MariaDB dialect — correct SQL syntax generate hogi
         props.put("hibernate.dialect",
-                  "org.hibernate.dialect.PostgreSQLDialect");
+                  "org.hibernate.dialect.MariaDBDialect");
 
         // SQL logging (dev mein true, prod mein false)
         props.put("hibernate.show_sql",                          "false");

@@ -9,10 +9,10 @@ spring:
     import: classpath:application-common.yml
 
   datasource:
-    url:               ${DB_URL:jdbc:postgresql://localhost:5432/pki_ra}
+    url:               ${DB_URL:jdbc:mariadb://localhost:3306/pki_ra}
     username:          ${DB_USERNAME:pki_ra_user}
     password:          ${DB_PASSWORD:pki_ra_pass}
-    driver-class-name: org.postgresql.Driver
+    driver-class-name: org.mariadb.jdbc.Driver
 
     # -----------------------------------------------------------------
     # HikariCP Connection Pool — production-ready settings
