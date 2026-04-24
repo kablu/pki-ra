@@ -28,7 +28,7 @@ spring-security         = "6.4.3"
 spring-ldap             = "3.2.10"
 
 # Persistence
-postgresql              = "42.7.5"
+mariadb                 = "3.5.1"
 flyway                  = "11.3.4"
 hibernate               = "6.6.4.Final"
 
@@ -80,9 +80,9 @@ spring-security-ldap        = { module = "org.springframework.security:spring-se
 spring-ldap-core            = { module = "org.springframework.ldap:spring-ldap-core",                version.ref = "spring-ldap" }
 
 # --- Persistence --------------------------------------------------------------
-postgresql                  = { module = "org.postgresql:postgresql",                                version.ref = "postgresql" }
-flyway-core                 = { module = "org.flywaydb:flyway-core",                                 version.ref = "flyway" }
-flyway-postgresql           = { module = "org.flywaydb:flyway-database-postgresql",                  version.ref = "flyway" }
+mariadb                     = { module = "org.mariadb.jdbc:mariadb-java-client",                     version.ref = "mariadb"  }
+flyway-core                 = { module = "org.flywaydb:flyway-core",                                 version.ref = "flyway"   }
+flyway-mysql                = { module = "org.flywaydb:flyway-mysql",                                version.ref = "flyway"   }
 
 # --- Code Generation ----------------------------------------------------------
 lombok                      = { module = "org.projectlombok:lombok",                                 version.ref = "lombok" }
@@ -120,7 +120,7 @@ mockito-junit-jupiter       = { module = "org.mockito:mockito-junit-jupiter",   
 assertj-core                = { module = "org.assertj:assertj-core",                                 version.ref = "assertj" }
 testcontainers-bom          = { module = "org.testcontainers:testcontainers-bom",                    version.ref = "testcontainers" }
 testcontainers-junit        = { module = "org.testcontainers:junit-jupiter" }
-testcontainers-postgresql   = { module = "org.testcontainers:postgresql" }
+testcontainers-mariadb      = { module = "org.testcontainers:mariadb" }
 
 # -----------------------------------------------------------------------------
 # [bundles] — Grouped dependencies for common use-cases
@@ -129,8 +129,8 @@ testcontainers-postgresql   = { module = "org.testcontainers:postgresql" }
 # Web layer — every REST/web module needs these
 web                 = ["spring-boot-web", "spring-boot-validation", "spring-boot-actuator"]
 
-# Persistence layer — JPA + PostgreSQL + Flyway migrations
-persistence         = ["spring-boot-data-jpa", "postgresql", "flyway-core", "flyway-postgresql"]
+# Persistence layer — JPA + MariaDB + Flyway migrations
+persistence         = ["spring-boot-data-jpa", "mariadb", "flyway-core", "flyway-mysql"]
 
 # Active Directory authentication
 ldap                = ["spring-boot-security", "spring-security-ldap", "spring-ldap-core"]
@@ -148,7 +148,7 @@ logging             = ["logback-classic", "slf4j-api"]
 testing             = ["junit-jupiter", "mockito-core", "mockito-junit-jupiter", "assertj-core"]
 
 # Integration testing with containers
-testing-containers  = ["testcontainers-junit", "testcontainers-postgresql"]
+testing-containers  = ["testcontainers-junit", "testcontainers-mariadb"]
 
 # UI / GUI layer
 gui                 = ["spring-boot-web", "spring-boot-thymeleaf", "spring-boot-security", "spring-boot-actuator"]

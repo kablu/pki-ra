@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=71", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name            = "gemini-mr-agent"
+version         = "1.0.0"
+description     = "Gemini-powered CLI agent for GitLab Merge Request creation and code review"
+requires-python = ">=3.11"
+dependencies = [
+    "google-generativeai>=0.8.3",
+    "python-gitlab>=4.9.0",
+    "gitpython>=3.1.43",
+    "click>=8.1.7",
+    "rich>=13.7.1",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.7.1",
+    "pydantic-settings>=2.3.1",
+    "tenacity>=8.3.0",
+]
+
+[project.scripts]
+gmr = "gemini_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gemini_agent*"]
