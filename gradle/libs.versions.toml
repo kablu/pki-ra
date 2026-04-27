@@ -21,6 +21,7 @@
 java                    = "25"
 spring-boot             = "4.0.0"
 spring-dep-mgmt         = "1.1.7"
+sonarqube               = "6.0.0.4799"
 jspecify                = "1.0.0"
 
 # Spring Security & LDAP (Active Directory)
@@ -162,3 +163,4 @@ scheduling          = ["spring-boot-quartz", "quartz"]
 [plugins]
 spring-boot         = { id = "org.springframework.boot",         version.ref = "spring-boot"     }
 spring-dep-mgmt     = { id = "io.spring.dependency-management",  version.ref = "spring-dep-mgmt" }
+sonarqube           = { id = "org.sonarqube",                     version.ref = "sonarqube"       }

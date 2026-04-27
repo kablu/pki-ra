@@ -17,6 +17,39 @@ plugins {
     // Spring Boot plugin at root level — provides dependency management BOM
     alias(libs.plugins.spring.boot)       apply false
     alias(libs.plugins.spring.dep.mgmt)   apply false
+    alias(libs.plugins.sonarqube)
+}
+
+// -----------------------------------------------------------------------------
+// SonarQube — multi-module analysis configuration
+// Run: ./gradlew sonar -Dsonar.token=<your-token>
+// Or set SONAR_TOKEN env var and just run: ./gradlew sonar
+// -----------------------------------------------------------------------------
+sonar {
+    properties {
+        property 'sonar.projectKey',        'pki-ra'
+        property 'sonar.projectName',       'PKI-RA (Registration Authority)'
+        property 'sonar.host.url',          'http://localhost:9000'
+
+        // Aggregate JaCoCo XML reports from all subprojects
+        property 'sonar.coverage.jacoco.xmlReportPaths',
+                 subprojects.collect {
+                     "${it.projectDir}/build/reports/jacoco/test/jacocoTestReport.xml"
+                 }.join(',')
+
+        // Exclusions — generated code, config files, docs
+        property 'sonar.exclusions', [
+            '**/generated/**',
+            '**/build/**',
+            '**/*Application.java',
+            '**/config/**',
+            '**/dto/**',
+            '**/entity/**',
+        ].join(',')
+
+        property 'sonar.java.source',       '25'
+        property 'sonar.sourceEncoding',    'UTF-8'
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -35,6 +68,7 @@ subprojects {
     // Apply Spring Boot dependency management BOM to every subproject
     apply plugin: 'java'
     apply plugin: 'io.spring.dependency-management'
+    apply plugin: 'jacoco'
 
     // -------------------------------------------------------------------------
     // Java Toolchain — reads version from libs.versions.toml [versions] java
@@ -88,6 +122,19 @@ subprojects {
         useJUnitPlatform()
         testLogging {
             events 'passed', 'skipped', 'failed'
+        }
+        finalizedBy jacocoTestReport   // test ke baad coverage report generate ho
+    }
+
+    // -------------------------------------------------------------------------
+    // JaCoCo — XML report (SonarQube isi ko padhta hai)
+    // -------------------------------------------------------------------------
+    jacocoTestReport {
+        dependsOn test
+        reports {
+            xml.required  = true
+            html.required = true
+            csv.required  = false
         }
     }
 
