@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/gui/pki-ra.gui.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/gui/pki-ra.gui.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/scheduler/pki-ra.scheduler.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/scheduler/pki-ra.scheduler.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/uiservice/pki-ra.uiservice.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/uiservice/pki-ra.uiservice.main.iml" />
+    </modules>
+  </component>
+</project>
