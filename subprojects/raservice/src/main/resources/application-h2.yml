@@ -39,6 +39,7 @@ spring:
       settings:
         web-allow-others: false
 
+
 logging:
   level:
     com.pki.ra: DEBUG
