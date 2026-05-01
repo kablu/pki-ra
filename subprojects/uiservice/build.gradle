@@ -60,5 +60,5 @@ bootJar {
 
 bootRun {
     jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
-            '-Dspring.profiles.active=dev'
+            '-Dspring.profiles.active=h2'
 }

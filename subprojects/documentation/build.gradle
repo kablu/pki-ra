@@ -9,7 +9,7 @@
 // =============================================================================
 
 plugins {
-    alias(libs.plugins.spring.boot)
+    id 'java-library'   // library module — no bootRun, no bootJar, no main class needed
 }
 
 description = 'PKI-RA Documentation — OpenAPI / Swagger UI configuration'
@@ -17,16 +17,11 @@ description = 'PKI-RA Documentation — OpenAPI / Swagger UI configuration'
 dependencies {
 
     // Shared models and base config
-    implementation project(':common')
+    api project(':common')
 
     // Web runtime needed to serve Swagger UI
-    implementation libs.spring.boot.web
+    api libs.spring.boot.web
 
     // SpringDoc OpenAPI — provides /swagger-ui.html and /v3/api-docs
-    implementation libs.springdoc.openapi.ui
+    api libs.springdoc.openapi.ui
 }
-
-// Documentation module does NOT produce an executable bootJar
-// It is included as a library in other modules
-bootJar.enabled = false
-jar.enabled     = true
