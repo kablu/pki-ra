@@ -8,6 +8,7 @@ import com.pki.ra.uiservice.model.Employee;
 import com.pki.ra.uiservice.model.Employee.EmployeeStatus;
 import com.pki.ra.uiservice.repository.EmployeeRepository;
 import com.pki.ra.common.exception.PkiRaException;
+import org.springframework.http.HttpStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -67,7 +68,8 @@ public class EmployeeService {
         // Business rule: email unique hona chahiye
         if (employeeRepository.existsByEmail(request.getEmail())) {
             throw new PkiRaException(
-                "Employee already exists with email: " + request.getEmail());
+                "Employee already exists with email: " + request.getEmail(),
+                HttpStatus.CONFLICT);
         }
 
         // DTO → Entity
@@ -167,7 +169,8 @@ public class EmployeeService {
         if (!employee.getEmail().equalsIgnoreCase(request.getEmail())
                 && employeeRepository.existsByEmail(request.getEmail())) {
             throw new PkiRaException(
-                "Email already in use: " + request.getEmail());
+                "Email already in use: " + request.getEmail(),
+                HttpStatus.CONFLICT);
         }
 
         // Existing entity update karo (partial update — null fields skip)

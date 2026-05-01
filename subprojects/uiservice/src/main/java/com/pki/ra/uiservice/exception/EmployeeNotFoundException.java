@@ -12,10 +12,10 @@ import com.pki.ra.common.exception.ResourceNotFoundException;
 public class EmployeeNotFoundException extends ResourceNotFoundException {
 
     public EmployeeNotFoundException(Long id) {
-        super("Employee not found with id: " + id);
+        super("Employee", id);
     }
 
     public EmployeeNotFoundException(String email) {
-        super("Employee not found with email: " + email);
+        super("Employee", email);
     }
 }
