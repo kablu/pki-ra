@@ -39,6 +39,12 @@ dependencies {
     developmentOnly libs.spring.boot.devtools
 
     // -------------------------------------------------------------------------
+    // Persistence — JPA infrastructure required by DatabaseConfig (@EnableJpaAuditing)
+    // and H2 DataSource bean from :common (active under h2 profile)
+    // -------------------------------------------------------------------------
+    implementation libs.spring.boot.data.jpa
+
+    // -------------------------------------------------------------------------
     // Testing
     // -------------------------------------------------------------------------
     testImplementation libs.spring.boot.test
@@ -50,5 +56,5 @@ bootJar {
 
 bootRun {
     jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
-            '-Dspring.profiles.active=dev'
+            '-Dspring.profiles.active=h2'
 }
