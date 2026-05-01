@@ -1,6 +1,10 @@
 # =============================================================================
 # Common module shared configuration
 # Imported by all runnable subprojects via spring.config.import
+#
+# Profile strategy:
+#   (default / prod) → MariaDB via database.properties in each runnable module
+#   h2               → H2 in-memory via db.properties + application-h2.yml
 # =============================================================================
 
 spring:
@@ -8,11 +12,13 @@ spring:
     hibernate:
       ddl-auto: validate          # Never auto-create schema — Flyway manages it
     show-sql: false
+    open-in-view: false           # Prevent lazy-loading issues in REST controllers
     properties:
       hibernate:
         format_sql: true
         jdbc:
           time_zone: UTC
+        generate_statistics: false
 
   data:
     jpa:
@@ -26,3 +32,4 @@ logging:
     com.pki.ra: INFO
     org.springframework.security: WARN
     org.hibernate.SQL: WARN
+    com.zaxxer.hikari: WARN

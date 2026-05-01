@@ -21,7 +21,7 @@
 java                    = "25"
 spring-boot             = "4.0.0"
 spring-dep-mgmt         = "1.1.7"
-sonarqube               = "6.0.0.4799"
+sonarqube               = "5.1.0.4882"
 jspecify                = "1.0.0"
 
 # Spring Security & LDAP (Active Directory)
@@ -55,6 +55,9 @@ testcontainers          = "1.20.5"
 jackson                 = "2.18.3"
 commons-lang3           = "3.17.0"
 guava                   = "33.4.0-jre"
+
+# Embedded DB (dev / test)
+h2                      = "2.3.232"
 
 # Scheduling
 quartz                  = "2.5.0"
@@ -122,6 +125,7 @@ assertj-core                = { module = "org.assertj:assertj-core",            
 testcontainers-bom          = { module = "org.testcontainers:testcontainers-bom",                    version.ref = "testcontainers" }
 testcontainers-junit        = { module = "org.testcontainers:junit-jupiter" }
 testcontainers-mariadb      = { module = "org.testcontainers:mariadb" }
+h2                          = { module = "com.h2database:h2",                                          version.ref = "h2" }
 
 # -----------------------------------------------------------------------------
 # [bundles] — Grouped dependencies for common use-cases
