@@ -1,0 +1,55 @@
+// =============================================================================
+// :caservice — PKI Certificate Authority Service
+// =============================================================================
+// Responsibilities:
+//   - Bootstrap self-signed Root CA and Intermediate CA on first run
+//   - Accept PKCS#10 CSR (PEM or DER) and issue end-entity DSC
+//   - Support both RSA (up to 4096-bit) and ECDSA (P-256 / P-384 / P-521)
+//   - Expose REST API consumed by :raservice
+//
+// Crypto: Bouncy Castle (bcprov-jdk18on + bcpkix-jdk18on)
+// =============================================================================
+
+plugins {
+    alias(libs.plugins.spring.boot)
+}
+
+description = 'PKI-CA Service — Certificate Authority for DSC issuance'
+
+dependencies {
+
+    // -------------------------------------------------------------------------
+    // Web — REST controllers + validation + actuator
+    // -------------------------------------------------------------------------
+    implementation libs.bundles.web
+
+    // -------------------------------------------------------------------------
+    // API Documentation — Swagger UI
+    // -------------------------------------------------------------------------
+    implementation libs.springdoc.openapi.ui
+
+    // -------------------------------------------------------------------------
+    // Bouncy Castle — cryptographic provider + PKIX/CMS/PKCS support
+    // -------------------------------------------------------------------------
+    implementation libs.bcprov
+    implementation libs.bcpkix
+
+    // -------------------------------------------------------------------------
+    // Development
+    // -------------------------------------------------------------------------
+    developmentOnly libs.spring.boot.devtools
+
+    // -------------------------------------------------------------------------
+    // Testing
+    // -------------------------------------------------------------------------
+    testImplementation libs.spring.boot.test
+}
+
+bootJar {
+    archiveFileName = "pki-ra-caservice-${project.version}.jar"
+}
+
+bootRun {
+    jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
+            '-Dspring.profiles.active=dev'
+}

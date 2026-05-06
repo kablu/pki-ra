@@ -59,6 +59,9 @@ guava                   = "33.4.0-jre"
 # Embedded DB (dev / test)
 h2                      = "2.3.232"
 
+# Bouncy Castle — PKI / cryptography
+bouncy-castle           = "1.80"
+
 # Scheduling
 quartz                  = "2.5.0"
 
@@ -127,6 +130,13 @@ testcontainers-junit        = { module = "org.testcontainers:junit-jupiter" }
 testcontainers-mariadb      = { module = "org.testcontainers:mariadb" }
 h2                          = { module = "com.h2database:h2",                                          version.ref = "h2" }
 
+# --- Bouncy Castle ------------------------------------------------------------
+bcprov                      = { module = "org.bouncycastle:bcprov-jdk18on",                             version.ref = "bouncy-castle" }
+bcpkix                      = { module = "org.bouncycastle:bcpkix-jdk18on",                             version.ref = "bouncy-castle" }
+
+# --- Bundles ------------------------------------------------------------------
+bouncy-castle-bundle        = { module = "org.bouncycastle:bcprov-jdk18on",                             version.ref = "bouncy-castle" }
+
 # -----------------------------------------------------------------------------
 # [bundles] — Grouped dependencies for common use-cases
 # -----------------------------------------------------------------------------
@@ -160,6 +170,9 @@ gui                 = ["spring-boot-web", "spring-boot-thymeleaf", "spring-boot-
 
 # Scheduling
 scheduling          = ["spring-boot-quartz", "quartz"]
+
+# Bouncy Castle PKI
+bouncy-castle       = ["bcprov", "bcpkix"]
 
 # -----------------------------------------------------------------------------
 # [plugins] — Plugin coordinates + version refs

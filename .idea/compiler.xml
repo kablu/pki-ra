@@ -14,6 +14,7 @@
         <module name="pki-ra.scheduler.main" />
         <module name="pki-ra.raservice.main" />
         <module name="pki-ra.gui.main" />
+        <module name="pki-ra.caservice.main" />
         <module name="pki-ra.ra-client.main" />
         <module name="pki-ra.uiservice.main" />
       </profile>
@@ -23,6 +24,7 @@
           <entry name="$USER_HOME$/.gradle/wrapper/dists/gradle-9.0.0-bin/d6wjpkvcgsg3oed0qlfss3wgl/gradle-9.0.0/caches/modules-2/files-2.1/org.projectlombok/lombok/1.18.38/57f8f5e02e92a30fd21b80cbd426a4172b5f8e29/lombok-1.18.38.jar" />
         </processorPath>
         <module name="pki-ra.raservice.test" />
+        <module name="pki-ra.caservice.test" />
         <module name="pki-ra.ra-client.test" />
         <module name="pki-ra.uiservice.test" />
         <module name="pki-ra.common.test" />
@@ -35,6 +37,9 @@
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="pki-ra.caservice" options="-Xlint:all -Xlint:-processing -parameters" />
+      <module name="pki-ra.caservice.main" options="-Xlint:all -Xlint:-processing -parameters" />
+      <module name="pki-ra.caservice.test" options="-Xlint:all -Xlint:-processing -parameters" />
       <module name="pki-ra.common" options="-Xlint:all -Xlint:-processing -parameters" />
       <module name="pki-ra.common.main" options="-Xlint:all -Xlint:-processing -parameters" />
       <module name="pki-ra.common.test" options="-Xlint:all -Xlint:-processing -parameters" />
