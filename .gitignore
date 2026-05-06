@@ -44,6 +44,7 @@ out/
 *.env
 **/application-prod.yml
 **/application-secrets.yml
+gradle.properties
 
 # OS
 .DS_Store

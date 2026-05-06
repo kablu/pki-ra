@@ -1,47 +1,38 @@
 // =============================================================================
-// :uiservice — Business logic layer for GUI operations
+// :caservice — PKI Certificate Authority Service
 // =============================================================================
-// Service layer between :gui controllers and :common domain/persistence.
+// Responsibilities:
+//   - Bootstrap self-signed Root CA and Intermediate CA on first run
+//   - Accept PKCS#10 CSR (PEM or DER) and issue end-entity DSC
+//   - Support both RSA (up to 4096-bit) and ECDSA (P-256 / P-384 / P-521)
+//   - Expose REST API consumed by :raservice
 //
-// Provides:
-//   - Certificate request processing services
-//   - User management services (backed by AD + local DB)
-//   - Audit log writing services
-//   - DTO ↔ Entity mappers (MapStruct)
-//   - REST API endpoints consumed by GUI
+// Crypto: Bouncy Castle (bcprov-jdk18on + bcpkix-jdk18on)
 // =============================================================================
 
 plugins {
     alias(libs.plugins.spring.boot)
 }
 
-description = 'PKI-RA UIService — business logic and REST API for the GUI layer'
+description = 'PKI-CA Service — Certificate Authority for DSC issuance'
 
 dependencies {
 
-    // Shared domain models, exceptions, audit entities
-    implementation project(':common')
-
     // -------------------------------------------------------------------------
-    // Persistence — EntityScan, EnableJpaRepositories, EnableJpaAuditing
-    // -------------------------------------------------------------------------
-    implementation libs.spring.boot.data.jpa
-
-    // -------------------------------------------------------------------------
-    // Web — REST controllers + validation
+    // Web — REST controllers + validation + actuator
     // -------------------------------------------------------------------------
     implementation libs.bundles.web
 
     // -------------------------------------------------------------------------
-    // Active Directory — user lookup and role resolution
+    // API Documentation — Swagger UI
     // -------------------------------------------------------------------------
-    implementation libs.bundles.ldap
+    implementation libs.springdoc.openapi.ui
 
     // -------------------------------------------------------------------------
-    // API Documentation
+    // Bouncy Castle — cryptographic provider + PKIX/CMS/PKCS support
     // -------------------------------------------------------------------------
-    implementation project(':documentation')
-    implementation libs.springdoc.openapi.ui
+    implementation libs.bcprov
+    implementation libs.bcpkix
 
     // -------------------------------------------------------------------------
     // Development
@@ -55,10 +46,10 @@ dependencies {
 }
 
 bootJar {
-    archiveFileName = "pki-ra-uiservice-${project.version}.jar"
+    archiveFileName = "pki-ra-caservice-${project.version}.jar"
 }
 
 bootRun {
     jvmArgs '-Dspring.output.ansi.enabled=ALWAYS',
-            '-Dspring.profiles.active=h2'
+            '-Dspring.profiles.active=dev'
 }

@@ -1,0 +1,6 @@
+# Copy this file to gradle.properties and fill in your token.
+# gradle.properties is gitignored — never commit it.
+#
+# Get token: http://localhost:9000 → My Account → Security → Generate Token
+
+systemProp.sonar.token=PASTE_YOUR_TOKEN_HERE

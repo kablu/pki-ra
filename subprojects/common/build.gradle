@@ -35,6 +35,11 @@ dependencies {
     api libs.spring.boot.autoconfigure
 
     // -------------------------------------------------------------------------
+    // Security — AuditorAwareImpl reads the Spring Security context
+    // -------------------------------------------------------------------------
+    api libs.spring.boot.security
+
+    // -------------------------------------------------------------------------
     // Logging
     // -------------------------------------------------------------------------
     api libs.bundles.logging
@@ -54,6 +59,12 @@ dependencies {
     // -------------------------------------------------------------------------
     api libs.commons.lang3
     api libs.guava
+
+    // -------------------------------------------------------------------------
+    // H2 — embedded in-memory database for dev / test profile
+    // Activated via @Profile("h2") — zero impact on production classpath at runtime
+    // -------------------------------------------------------------------------
+    api libs.h2
 
     // -------------------------------------------------------------------------
     // Testing

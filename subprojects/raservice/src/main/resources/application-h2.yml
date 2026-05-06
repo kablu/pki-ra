@@ -1,0 +1,47 @@
+# =============================================================================
+# PKI-RA RAService — H2 Profile Configuration
+# Active when: --spring.profiles.active=h2
+#
+# Purpose:
+#   Activates H2 in-memory database connectivity for raservice.
+#   Clears global autoconfigure exclusions so DataSourceConfig and
+#   DatabaseConfig (both from :common) can initialise the H2 DataSource,
+#   JPA infrastructure, and the "DB" connectivity checker bean.
+#
+# Bean activation chain (h2 profile):
+#   DataSourceConfig    (@Profile("h2"))  → HikariDataSource (jdbc:h2:mem:pki_ra)
+#   DatabaseConfig      (always active)   → @EnableJpaAuditing + @EnableJpaRepositories
+#   H2ConnectivityChecker (@Component("DB"), @Profile("h2")) → startup check
+# =============================================================================
+
+spring:
+  autoconfigure:
+    # Clear the Flyway exclusion set in application.yml — application-h2.yml
+    # from :common classpath already disables Flyway via spring.flyway.enabled=false.
+    exclude: []
+
+  jpa:
+    hibernate:
+      # raservice has no JPA entities of its own — create-drop gives Hibernate
+      # a clean schema lifecycle without needing migration scripts.
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+
+  # H2 web console — accessible at http://localhost:8083/ra-api/h2-console
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+      settings:
+        web-allow-others: false
+
+
+logging:
+  level:
+    com.pki.ra: DEBUG
+    org.hibernate.SQL: DEBUG
+    com.zaxxer.hikari: DEBUG

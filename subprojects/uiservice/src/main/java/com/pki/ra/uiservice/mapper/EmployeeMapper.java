@@ -32,9 +32,12 @@ public interface EmployeeMapper {
     /**
      * EmployeeRequest (DTO) → Employee (Entity).
      *
-     * <p>{@code id}, {@code createdAt}, {@code updatedAt} ignore kiye —
-     * yeh DB generate karta hai, client nahi deta.
+     * <p>{@code disableBuilder = true} — Lombok @Builder sirf Employee ke declared fields
+     * ka builder banata hai; inherited BaseAuditEntity fields (createdAt, updatedAt, etc.)
+     * EmployeeBuilder mein exist nahi karte. Builder disable kar ke MapStruct
+     * no-args constructor + setters use karta hai, jo inherited fields ko bhi cover karta hai.
      */
+    @BeanMapping(builder = @Builder(disableBuilder = true))
     @Mapping(target = "id",        ignore = true)
     @Mapping(target = "createdAt", ignore = true)
     @Mapping(target = "updatedAt", ignore = true)

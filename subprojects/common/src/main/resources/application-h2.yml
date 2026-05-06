@@ -1,0 +1,38 @@
+# =============================================================================
+# application-h2.yml — Spring profile overrides for H2 embedded database
+# Activated when profile "h2" is active.
+# Overrides values set in application-common.yml (which targets MariaDB/prod).
+# =============================================================================
+
+spring:
+  jpa:
+    hibernate:
+      # H2 has no persistent schema — Hibernate must create it on startup
+      # and drop it on shutdown (clean state per run)
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.H2Dialect
+        jdbc:
+          time_zone: UTC
+
+  # Disable Flyway for H2 — Hibernate DDL handles schema creation
+  flyway:
+    enabled: false
+
+  # H2 web console — enabled only when h2 profile is active
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+      settings:
+        web-allow-others: false
+        trace: false
+
+logging:
+  level:
+    com.pki.ra: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql: TRACE

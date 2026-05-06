@@ -3,10 +3,19 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.test.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.test.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/gui/pki-ra.gui.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/gui/pki-ra.gui.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/gui/pki-ra.gui.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/gui/pki-ra.gui.test.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/ra-client/pki-ra.ra-client.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/ra-client/pki-ra.ra-client.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/ra-client/pki-ra.ra-client.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/ra-client/pki-ra.ra-client.test.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/raservice/pki-ra.raservice.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/raservice/pki-ra.raservice.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/raservice/pki-ra.raservice.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/raservice/pki-ra.raservice.test.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/scheduler/pki-ra.scheduler.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/scheduler/pki-ra.scheduler.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/scheduler/pki-ra.scheduler.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/scheduler/pki-ra.scheduler.test.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/uiservice/pki-ra.uiservice.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/uiservice/pki-ra.uiservice.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/uiservice/pki-ra.uiservice.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/uiservice/pki-ra.uiservice.test.iml" />
     </modules>
   </component>
 </project>
