@@ -10,18 +10,7 @@
 
 The `ra-ad-csr-service` module reuses **all shared infrastructure beans** declared in the `:common` module with **zero re-declaration**. This eliminates code duplication across RA service modules and ensures consistent datasource, auditing, and exception handling behaviour.
 
-The single enablement mechanism is:
-
-```java
-@SpringBootApplication(scanBasePackages = "com.pki.ra")
-public class AdCsrServiceApplication { ... }
-```
-
-`scanBasePackages = "com.pki.ra"` causes Spring to scan both:
-- `com.pki.ra.common.*` — all `:common` beans
-- `com.pki.ra.adcsr.*` — all beans local to this service
-
-No `@Import`, no `@ComponentScan` duplication, no `@Bean` re-definition.
+The single enablement mechanism is the `scanBasePackages` attribute on the `@SpringBootApplication` annotation set to `"com.pki.ra"`. This causes Spring to scan both the `com.pki.ra.common.*` package tree, discovering all `:common` beans, and the `com.pki.ra.adcsr.*` package tree, discovering all beans local to this service. No `@Import`, no `@ComponentScan` duplication, and no `@Bean` re-definition is required anywhere in this module.
 
 ---
 
@@ -33,48 +22,13 @@ No `@Import`, no `@ComponentScan` duplication, no `@Bean` re-definition.
 **Profile:** `h2` only
 
 **What it provides:**
-```
-@Bean @Primary DataSource dataSource()
-  → HikariDataSource backed by H2 in-memory engine
-  → Loaded from classpath:db.properties via @PropertySource
-  → All pool parameters driven by DatabaseProperties
-```
+The `DataSourceConfig` class is annotated with `@Configuration` and `@Profile("h2")`. It declares a `@Bean @Primary DataSource` method that creates a `HikariDataSource` backed by an H2 in-memory engine. All pool parameters are loaded from a file named `db.properties` on the classpath, read via a `@PropertySource` annotation, and bound into a `DatabaseProperties` configuration properties bean.
 
 **How `ra-ad-csr-service` uses it:**
-- The `DataSource` bean is auto-injected into Spring Data JPA's `LocalContainerEntityManagerFactoryBean`
-- No code needed — Spring Boot auto-configuration detects the `DataSource` bean
+The `DataSource` bean is auto-detected by Spring Boot's JPA auto-configuration and injected into the `LocalContainerEntityManagerFactoryBean`. No configuration is needed in this module — Spring Boot does it automatically once the `DataSource` bean is present on the application context.
 
 **What `ra-ad-csr-service` must provide:**
-```
-src/main/resources/db.properties   ← copy from :common or raservice pattern
-```
-
-Example `db.properties` for H2:
-```properties
-db.datasource.url=jdbc:h2:mem:ra_ad_csr;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
-db.datasource.username=sa
-db.datasource.password=
-db.datasource.driver-class-name=org.h2.Driver
-db.datasource.hikari.pool-name=RA-AD-CSR-Pool
-db.datasource.hikari.maximum-pool-size=5
-db.datasource.hikari.minimum-idle=1
-db.datasource.hikari.connection-timeout=20000
-db.datasource.hikari.idle-timeout=300000
-db.datasource.hikari.max-lifetime=900000
-db.datasource.hikari.auto-commit=true
-db.h2.console.enabled=true
-db.h2.console.path=/h2-console
-db.h2.console.settings.web-allow-others=false
-db.h2.console.settings.trace=false
-```
-
-**For production (MariaDB profile):**
-```properties
-db.datasource.url=jdbc:mariadb://mariadb-host:3306/ra_ad_csr_db
-db.datasource.username=${DB_USERNAME}
-db.datasource.password=${DB_PASSWORD}
-db.datasource.driver-class-name=org.mariadb.jdbc.Driver
-```
+The module must include a `db.properties` file in `src/main/resources/`. This file must contain the JDBC URL, username, password, driver class name, and Hikari pool settings. The full list of required properties and their values for both H2 (development) and MariaDB (production) is documented in the Deployment and Profile Configuration section (Section 11).
 
 ---
 
@@ -84,21 +38,14 @@ db.datasource.driver-class-name=org.mariadb.jdbc.Driver
 **Profile:** All profiles (no `@Profile` restriction)
 
 **What it provides:**
-```java
-@Configuration
-@EnableTransactionManagement          ← Enables @Transactional in all beans
-@EnableJpaAuditing(auditorAwareRef = "auditorAwareImpl")  ← Wires AuditorAwareImpl
-@EnableJpaRepositories(basePackages = "com.pki.ra")       ← Scans ALL RA repositories
-```
+The `DatabaseConfig` class enables three critical JPA capabilities across the entire RA platform. It activates `@EnableTransactionManagement`, which makes the `@Transactional` annotation work on any Spring bean in any module. It activates `@EnableJpaAuditing` referencing the `auditorAwareImpl` bean name, which causes Spring Data to automatically populate audit columns on every entity save. It activates `@EnableJpaRepositories` with `basePackages = "com.pki.ra"`, which causes Spring Data to discover every `JpaRepository` sub-interface in any RA module, including `CsrSubmissionRepository` in this module.
 
 **How `ra-ad-csr-service` uses it:**
-- `@EnableTransactionManagement` makes `@Transactional` on `CsrSubmissionService` work
-- `@EnableJpaAuditing` populates `created_at`, `created_by`, `updated_at`, `updated_by`
-  on `CsrSubmissionRecord` (which extends `BaseAuditEntity`) automatically
-- `@EnableJpaRepositories(basePackages = "com.pki.ra")` discovers `CsrSubmissionRepository`
+- `@EnableTransactionManagement` makes `@Transactional` on `CsrSubmissionService` work.
+- `@EnableJpaAuditing` populates `created_at`, `created_by`, `updated_at`, `updated_by` on `CsrSubmissionRecord` (which extends `BaseAuditEntity`) automatically on every INSERT and UPDATE.
+- `@EnableJpaRepositories(basePackages = "com.pki.ra")` discovers `CsrSubmissionRepository` without any additional annotation.
 
-**No action required** in `ra-ad-csr-service` — `DatabaseConfig` is activated automatically
-by component scan.
+**No action required** in `ra-ad-csr-service` — `DatabaseConfig` is activated automatically by the component scan.
 
 ---
 
@@ -109,36 +56,12 @@ by component scan.
 **Interface:** `AuditorAware<String>`
 
 **What it provides:**
-```java
-@Override
-public Optional<String> getCurrentAuditor() {
-    // Returns AD sAMAccountName from Spring Security context
-    // Falls back to "system" for background jobs / migrations
-}
-```
+`AuditorAwareImpl` implements the `AuditorAware<String>` interface and overrides `getCurrentAuditor()`. The method reads the current principal from the Spring Security `SecurityContextHolder`. If a non-anonymous `Authentication` is present, it returns the principal's name (the AD sAMAccountName). If the context contains an anonymous user or is empty, it falls back to returning `"system"`, which is used for background jobs and Flyway seed migrations.
 
 **How `ra-ad-csr-service` uses it:**
+Since the service uses the `AdIdentityFilter` (not Spring Security form login or OAuth), the Security context would otherwise contain an anonymous user after the filter runs. To make `AuditorAwareImpl` return the correct AD username, the `AdIdentityFilter` must set a `UsernamePasswordAuthenticationToken` in the `SecurityContextHolder` after building the `AdIdentity`. The token is constructed with the AD display name as the principal, a null credentials value, and an empty authorities list. Once this token is set, `AuditorAwareImpl` returns the display name, which is then automatically written to `created_by` and `updated_by` on every `CsrSubmissionRecord` save.
 
-Since the service uses the `AdIdentityFilter` (not Spring Security authentication),
-the Security context will have an anonymous user. Two options:
-
-**Option A (Recommended for Phase 1):** After extracting `AdIdentity` in `AdIdentityFilter`,
-set a `UsernamePasswordAuthenticationToken` in the `SecurityContext`:
-
-```java
-// In AdIdentityFilter, after building AdIdentity:
-UsernamePasswordAuthenticationToken auth =
-    new UsernamePasswordAuthenticationToken(
-        identity.displayName(), null, List.of());
-SecurityContextHolder.getContext().setAuthentication(auth);
-```
-
-This causes `AuditorAwareImpl` to return the AD username automatically,
-which then populates `created_by` / `updated_by` on `CsrSubmissionRecord`.
-
-**Option B:** Override `AuditorAwareImpl` by providing a local bean with the same name
-(Spring Boot allows overriding with `spring.main.allow-bean-definition-overriding=true`).
-**Not recommended** — breaks the shared contract.
+**Option B (not recommended):** Override `AuditorAwareImpl` by providing a local bean with the same name. This requires enabling `spring.main.allow-bean-definition-overriding=true`, which undermines the contract of the shared `:common` module and is not recommended.
 
 ---
 
@@ -157,40 +80,9 @@ which then populates `created_by` / `updated_by` on `CsrSubmissionRecord`.
 | `log(username, action, resourceId, description, ipAddress, outcome)` | Full control |
 
 **How `ra-ad-csr-service` uses it:**
+`CsrSubmissionService` declares `AuditLogService` as a constructor-injected dependency. On a successful CSR submission, it calls `logSuccess()` with the action `CSR_SUBMIT` and the newly assigned `submissionId`. On any failure path (duplicate, validation error, persistence error), it calls `logFailure()` with the appropriate action constant before re-throwing the exception.
 
-In `CsrSubmissionService`:
-```java
-@RequiredArgsConstructor
-public class CsrSubmissionService {
-
-    private final AuditLogService auditLogService; // injected from :common
-
-    public CsrSubmitResponse submit(...) {
-        try {
-            // ... business logic ...
-            auditLogService.logSuccess(
-                identity.displayName(),   // username
-                "CSR_SUBMIT",             // action
-                submissionId,             // resourceId
-                "CSR submitted for profile " + profile,  // description
-                sourceIp                  // ipAddress
-            );
-        } catch (Exception ex) {
-            auditLogService.logFailure(
-                identity.displayName(),
-                "CSR_SUBMIT",
-                null,
-                ex.getMessage(),
-                sourceIp
-            );
-            throw ex;
-        }
-    }
-}
-```
-
-**Key behaviour:** `REQUIRES_NEW` propagation means the audit record is committed to the
-database **even if the main transaction rolls back**. The audit trail is always complete.
+**Key behaviour:** The `REQUIRES_NEW` propagation means the audit record is committed to the database **even if the main transaction rolls back**. The audit trail is always complete, regardless of business logic exceptions.
 
 **Action constants used by `ra-ad-csr-service`:**
 
@@ -219,28 +111,7 @@ database **even if the main transaction rolls back**. The audit trail is always 
 | `updated_by` | `@LastModifiedBy` | AD username on last modification |
 
 **How `ra-ad-csr-service` uses it:**
-
-```java
-@Entity
-@Table(name = "csr_submission")
-public class CsrSubmissionRecord extends BaseAuditEntity {
-    // created_at, created_by, updated_at, updated_by — inherited, no code needed
-    // All four columns are automatically populated by Spring Data JPA Auditing
-}
-```
-
-**Database DDL result:**
-```sql
-CREATE TABLE csr_submission (
-    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
-    submission_id       VARCHAR(36)  NOT NULL UNIQUE,
-    -- ... other columns ...
-    created_at          TIMESTAMP    NOT NULL,
-    created_by          VARCHAR(100) NOT NULL,
-    updated_at          TIMESTAMP    NOT NULL,
-    updated_by          VARCHAR(100) NOT NULL
-);
-```
+`CsrSubmissionRecord` is declared as a JPA entity that extends `BaseAuditEntity`. By extending this class, the entity automatically inherits all four audit columns as JPA-mapped fields. No additional annotations or field declarations are needed in `CsrSubmissionRecord` — Spring Data JPA Auditing handles all four columns automatically on every save and update.
 
 ---
 
@@ -249,24 +120,7 @@ CREATE TABLE csr_submission (
 **Class:** `com.pki.ra.common.model.AuditLog`
 
 **What it provides:**
-
-The `audit_log` table entity, persisted by `AuditLogService`.
-`ra-ad-csr-service` does **not** directly manage `AuditLog` entities —
-it only calls `AuditLogService` methods and the service handles persistence.
-
-**Schema written by `:common`:**
-```sql
-CREATE TABLE audit_log (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    username    VARCHAR(100)  NOT NULL,
-    action      VARCHAR(100)  NOT NULL,
-    resource_id VARCHAR(200),
-    description VARCHAR(1000),
-    ip_address  VARCHAR(50),
-    outcome     VARCHAR(20)   NOT NULL DEFAULT 'SUCCESS',
-    created_at  TIMESTAMP     NOT NULL
-);
-```
+The `AuditLog` class is a JPA entity mapped to the `audit_log` table. It is used exclusively by `AuditLogService`. The `ra-ad-csr-service` does **not** directly manage `AuditLog` entities — it only calls `AuditLogService` methods and the service handles all persistence. The table schema is managed by the `:common` module's Flyway migration. The full column definitions are documented in the Database Design section (Section 7).
 
 ---
 
@@ -275,19 +129,7 @@ CREATE TABLE audit_log (
 **Class:** `com.pki.ra.common.model.RequestLog`
 
 **How `ra-ad-csr-service` uses it (optional):**
-
-Can be used in a `RequestLoggingFilter` to record every inbound request for diagnostics:
-
-```java
-// In a filter or interceptor:
-RequestLog log = RequestLog.builder()
-    .req("POST /api/ra/ad/csr/submit from " + sourceIp)
-    .reqTs(LocalDateTime.now())
-    .build();
-entityManager.persist(log);
-```
-
-This is optional for Phase 1 — the `AuditLog` via `AuditLogService` is the primary trail.
+`RequestLog` is a JPA entity mapped to the `request_log` table. In `ra-ad-csr-service`, it can optionally be used in a request logging filter to record every inbound HTTP request for diagnostics. The filter would build a `RequestLog` instance containing the HTTP method, request path, source IP, and timestamp, then persist it via the entity manager. This is optional for Phase 1 — the `AuditLog` written via `AuditLogService` is the primary audit trail. The `audit.request.log.enabled` configuration key controls whether the optional request logging is active.
 
 ---
 
@@ -296,25 +138,15 @@ This is optional for Phase 1 — the `AuditLog` via `AuditLogService` is the pri
 **Class:** `com.pki.ra.common.exception.PkiRaException`
 
 **What it provides:**
-```java
-public class PkiRaException extends RuntimeException {
-    private final HttpStatus status;
-    // ...
-}
-```
+`PkiRaException` extends `RuntimeException` and carries an `HttpStatus` field. It is the base class for all domain exceptions in the RA platform. The `GlobalExceptionHandler` catches `PkiRaException` and uses the `status` field to set the HTTP response status, so no per-exception `@ExceptionHandler` method is needed for each specific subclass.
 
 **How `ra-ad-csr-service` uses it:**
+All local exceptions extend `PkiRaException` with a fixed HTTP status:
 
-All local exceptions extend `PkiRaException`:
-```java
-// CsrValidationException       extends PkiRaException (400)
-// CsrIdentityMismatchException extends PkiRaException (422)
-// DuplicateCsrException        extends PkiRaException (409)
-// UnauthorizedProxyException   extends PkiRaException (403)
-```
-
-`GlobalExceptionHandler` catches `PkiRaException` and uses `ex.getStatus()` to set
-the HTTP response status — no per-exception `@ExceptionHandler` needed.
+- `CsrValidationException` — extends `PkiRaException` with HTTP 400
+- `CsrIdentityMismatchException` — extends `PkiRaException` with HTTP 422
+- `DuplicateCsrException` — extends `PkiRaException` with HTTP 409
+- `UnauthorizedProxyException` — extends `PkiRaException` with HTTP 403
 
 ---
 
@@ -322,23 +154,13 @@ the HTTP response status — no per-exception `@ExceptionHandler` needed.
 
 **Class:** `com.pki.ra.common.exception.ResourceNotFoundException`
 
-Used when a submission is looked up by `submissionId` but not found:
-
-```java
-public CsrSubmissionRecord findBySubmissionId(String id) {
-    return repository.findBySubmissionId(id)
-        .orElseThrow(() -> new ResourceNotFoundException(
-            "CSR submission not found: " + id));
-}
-```
+Used when a submission is looked up by `submissionId` but not found in the repository. The `CsrSubmissionService` calls `repository.findBySubmissionId(id)` and uses the `orElseThrow()` pattern to throw this exception if the result is empty. The `GlobalExceptionHandler` maps it to HTTP 404.
 
 ---
 
 ## 3. What `ra-ad-csr-service` Must NOT Re-Declare
 
-The following beans **must not** be redeclared in `ra-ad-csr-service`.
-Redeclaring them would cause `BeanDefinitionOverrideException` unless
-`spring.main.allow-bean-definition-overriding=true` is set (not recommended).
+The following beans **must not** be redeclared in `ra-ad-csr-service`. Redeclaring them would cause `BeanDefinitionOverrideException` at startup unless `spring.main.allow-bean-definition-overriding=true` is set, which is explicitly disabled in `application.properties` for this module.
 
 | Bean | Class in :common | Do NOT redeclare |
 |---|---|---|
@@ -351,16 +173,7 @@ Redeclaring them would cause `BeanDefinitionOverrideException` unless
 
 ## 4. Dependency Declaration in `build.gradle`
 
-The single line that makes all of the above available:
-
-```groovy
-dependencies {
-    implementation project(':common')
-    // ...
-}
-```
-
-Spring Boot's auto-configuration and `scanBasePackages = "com.pki.ra"` do the rest.
+The `:common` module is included in the `ra-ad-csr-service` Gradle build file with a single `implementation project(':common')` declaration in the `dependencies` block. Spring Boot's auto-configuration and the `scanBasePackages = "com.pki.ra"` setting on the application entry point do the rest — no further configuration is needed in this module to activate any of the shared beans.
 
 ---
 

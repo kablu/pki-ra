@@ -118,43 +118,21 @@ Once the AD gateway validates the user, it forwards the authenticated identity i
 
 ## 8. High-Level Architecture
 
-```
-  [ AD Applicant Browser / Client ]
-            │
-            │  HTTPS
-            ▼
-  [ AD Reverse Proxy / API Gateway ]
-    - Authenticates via Kerberos / NTLM / LDAP
-    - Injects X-AD-Username, X-AD-Email
-    - Strips existing identity headers from client
-            │
-            │  Internal HTTP (trusted network)
-            ▼
-  ┌─────────────────────────────────────────────────────┐
-  │            ra-ad-csr-service                        │
-  │                                                     │
-  │  SecurityFilter ──▶ AdIdentityFilter                │
-  │       │                    │                        │
-  │       │              HeaderValidator                │
-  │       ▼                    │                        │
-  │  CsrSubmitController ◀─────┘                       │
-  │       │                                             │
-  │       ▼                                             │
-  │  CsrValidationService                               │
-  │   ├── HeaderValidator                               │
-  │   ├── Pkcs10CsrValidator (Bouncy Castle)            │
-  │   └── CsrIdentityMatcher (CN vs AD user)           │
-  │       │                                             │
-  │       ▼                                             │
-  │  CsrSubmissionService                               │
-  │   ├── CsrSubmissionRepository (JPA)                 │
-  │   └── AuditLogService (:common)                     │
-  └─────────────────────────────────────────────────────┘
-            │
-            │  (Phase 2)
-            ▼
-  [ ca-pki Certificate Authority ]
-```
+The request flow through the system proceeds through four main tiers:
+
+**Tier 1 — AD Applicant Browser or Client:** The end user submits a CSR via a browser or API client over HTTPS. The client never communicates directly with the RA service.
+
+**Tier 2 — AD Reverse Proxy or API Gateway:** The proxy intercepts every request, authenticates the user via Kerberos, NTLM, or LDAP, and injects the `X-AD-Username` and `X-AD-Email` identity headers. Any pre-existing identity headers from the client are stripped before forwarding. The proxy then forwards the request to the RA service over an internal trusted HTTP channel.
+
+**Tier 3 — ra-ad-csr-service:** This is the core service. It processes each request through the following internal components in sequence:
+
+- **SecurityFilter and AdIdentityFilter** — The Spring Security filter chain runs first, enforcing CSRF and CORS policy. The `AdIdentityFilter` then validates the originating IP against the trusted proxy whitelist and extracts the AD identity headers.
+- **HeaderValidator** — Validates the extracted identity values against format rules and length limits.
+- **CsrSubmitController** — Receives the validated request and delegates immediately to the service layer. Contains no business logic itself.
+- **CsrValidationService** — Orchestrates the full nine-stage CSR validation pipeline, calling the header validator, PKCS#10 cryptographic validator (via Bouncy Castle), and the identity matcher.
+- **CsrSubmissionService** — Performs the duplicate hash check, persists the `CsrSubmissionRecord` entity, and records the audit log entry via `AuditLogService` from the `:common` module.
+
+**Tier 4 — CA Service (Phase 2):** In a future phase, approved submissions are forwarded to the `ca-pki` Certificate Authority for signing and certificate issuance. This integration is out of scope for Phase 1.
 
 ---
 

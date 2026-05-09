@@ -8,65 +8,22 @@
 
 ## 1. Module Structure
 
-```
-pki-ra/subprojects/ra-ad-csr-service/
-├── build.gradle
-└── src/
-    ├── main/
-    │   ├── java/com/pki/ra/adcsr/
-    │   │   ├── AdCsrServiceApplication.java
-    │   │   │
-    │   │   ├── config/
-    │   │   │   ├── SecurityConfig.java          ← Spring Security (CSRF, CORS, headers)
-    │   │   │   ├── TrustedProxyConfig.java      ← Trusted AD proxy IP whitelist
-    │   │   │   └── OpenApiConfig.java           ← Swagger / SpringDoc
-    │   │   │
-    │   │   ├── filter/
-    │   │   │   └── AdIdentityFilter.java        ← Extract + validate AD headers
-    │   │   │
-    │   │   ├── controller/
-    │   │   │   └── CsrSubmitController.java     ← POST /api/ra/ad/csr/submit
-    │   │   │
-    │   │   ├── dto/
-    │   │   │   ├── CsrSubmitRequest.java        ← Request body (pkcs10 PEM)
-    │   │   │   ├── CsrSubmitResponse.java       ← Success response
-    │   │   │   └── AdIdentity.java              ← Extracted header identity (record)
-    │   │   │
-    │   │   ├── validation/
-    │   │   │   ├── HeaderValidator.java         ← Username/email format rules
-    │   │   │   ├── Pkcs10CsrValidator.java      ← BC-based CSR cryptographic checks
-    │   │   │   ├── CsrIdentityMatcher.java      ← CN/SAN vs AD identity
-    │   │   │   └── annotation/
-    │   │   │       ├── ValidCsrPem.java         ← Custom constraint annotation
-    │   │   │       └── ValidCsrPemValidator.java
-    │   │   │
-    │   │   ├── service/
-    │   │   │   ├── CsrValidationService.java    ← Orchestrates all validators
-    │   │   │   └── CsrSubmissionService.java    ← Business logic, persistence, audit
-    │   │   │
-    │   │   ├── model/
-    │   │   │   └── CsrSubmissionRecord.java     ← JPA entity (extends BaseAuditEntity)
-    │   │   │
-    │   │   ├── repository/
-    │   │   │   └── CsrSubmissionRepository.java ← Spring Data JPA
-    │   │   │
-    │   │   └── exception/
-    │   │       ├── CsrValidationException.java  ← 400 — invalid CSR or header
-    │   │       ├── UnauthorizedProxyException.java ← 403 — untrusted proxy
-    │   │       └── GlobalExceptionHandler.java  ← @RestControllerAdvice
-    │   │
-    │   └── resources/
-    │       ├── application.yml
-    │       ├── application-h2.yml
-    │       └── db.properties               ← reused from :common pattern
-    │
-    └── test/
-        └── java/com/pki/ra/adcsr/
-            ├── controller/CsrSubmitControllerTest.java
-            ├── validation/Pkcs10CsrValidatorTest.java
-            ├── validation/CsrIdentityMatcherTest.java
-            └── service/CsrSubmissionServiceTest.java
-```
+The module lives at `pki-ra/subprojects/ra-ad-csr-service/` and follows standard Spring Boot multi-module conventions. The main source tree under `src/main/java/com/pki/ra/adcsr/` is organised into the following packages:
+
+- **Root** — Contains `AdCsrServiceApplication`, the Spring Boot entry point.
+- **`config/`** — Spring configuration classes: `SecurityConfig` for the security filter chain, `TrustedProxyConfig` for the IP whitelist bean, and `OpenApiConfig` for Swagger.
+- **`filter/`** — Contains `AdIdentityFilter`, the `OncePerRequestFilter` that validates every incoming request.
+- **`controller/`** — Contains `CsrSubmitController`, which maps `POST /api/ra/ad/csr/submit`.
+- **`dto/`** — Data transfer objects: `CsrSubmitRequest` (inbound), `CsrSubmitResponse` (outbound), and `AdIdentity` (the extracted AD identity record).
+- **`validation/`** — Validation components: `HeaderValidator`, `Pkcs10CsrValidator` (Bouncy Castle), `CsrIdentityMatcher`, and the `annotation/` sub-package containing the `@ValidCsrPem` custom constraint.
+- **`service/`** — Business logic: `CsrValidationService` (pipeline orchestrator) and `CsrSubmissionService` (persistence and audit).
+- **`model/`** — JPA entity `CsrSubmissionRecord`, which extends `BaseAuditEntity` from `:common`.
+- **`repository/`** — `CsrSubmissionRepository`, a Spring Data JPA repository.
+- **`exception/`** — Application exceptions (`CsrValidationException`, `UnauthorizedProxyException`) and `GlobalExceptionHandler`.
+
+The `src/main/resources/` directory contains `application.properties`, profile-specific overrides (`application-h2.properties`, `application-mariadb.properties`, `application-prod.properties`), and `db.properties` (loaded by `:common` `DataSourceConfig`).
+
+The `src/test/java/com/pki/ra/adcsr/` directory mirrors the main structure with test classes for the controller, validation components, and service layer.
 
 ---
 
@@ -76,33 +33,20 @@ pki-ra/subprojects/ra-ad-csr-service/
 
 ### 2.1 `AdCsrServiceApplication`
 
-Entry point. Scans `com.pki.ra` to pick up `:common` beans.
-
-```java
-@SpringBootApplication(scanBasePackages = "com.pki.ra")
-public class AdCsrServiceApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(AdCsrServiceApplication.class, args);
-    }
-}
-```
-
-**Key:** `scanBasePackages = "com.pki.ra"` ensures `:common` configuration classes
-(`DataSourceConfig`, `DatabaseConfig`, `AuditorAwareImpl`, `AuditLogService`) are discovered.
+Entry point for the Spring Boot application. The class is annotated with `@SpringBootApplication` and sets `scanBasePackages` to `"com.pki.ra"`. This single setting causes Spring to scan both the `com.pki.ra.common.*` package tree (picking up all `:common` infrastructure beans) and the `com.pki.ra.adcsr.*` package tree (picking up all local service beans). No `@Import`, `@ComponentScan`, or `@Bean` re-declaration is required to activate the shared beans.
 
 ---
 
 ### 2.2 `SecurityConfig`
 
-Configures Spring Security 7 for the service.
+Configures Spring Security 7 for the service. Its responsibilities are:
 
-**Responsibilities:**
-- Disable default form login (stateless / header-based identity)
-- Enable CSRF protection with `CookieCsrfTokenRepository` (double-submit cookie)
-- Configure CORS — allow only the trusted AD proxy origin
-- Set security response headers (XSS, CSP, HSTS, frame options, referrer policy)
-- Permit only `POST /api/ra/ad/csr/submit` — all other paths 403
-- Register `AdIdentityFilter` before `UsernamePasswordAuthenticationFilter`
+- Disable default form login — the service uses header-based identity, not form authentication.
+- Enable CSRF protection using the double-submit cookie pattern via `CookieCsrfTokenRepository`.
+- Configure CORS to allow only the trusted AD proxy origin.
+- Set all security response headers (see table below).
+- Restrict access so that only `POST /api/ra/ad/csr/submit`, the actuator health endpoint, and the Swagger UI paths are permitted. All other paths return 403.
+- Register `AdIdentityFilter` before the standard authentication filter in the filter chain.
 
 **Security Headers Configured:**
 
@@ -121,43 +65,26 @@ Configures Spring Security 7 for the service.
 
 ### 2.3 `TrustedProxyConfig`
 
-Loads the allowlist of trusted AD proxy IP addresses from configuration.
-
-```yaml
-# application.yml
-ra.ad.trusted-proxy-ips:
-  - 10.0.1.10   # AD Gateway prod
-  - 10.0.1.11   # AD Gateway standby
-  - 127.0.0.1   # localhost (dev/test)
-```
-
-Exposes a `Set<String> trustedProxyIps()` bean consumed by `AdIdentityFilter`.
+Loads the allowlist of trusted AD proxy IP addresses from the `ra_config` cache (key `security.proxy.whitelist.ips`). The list is comma-separated and split at startup. It exposes a `Set<String>` of trusted IP strings consumed by `AdIdentityFilter`. Because the list is loaded from `RaConfigCacheService`, it can be refreshed at runtime via the admin API without restarting the service.
 
 ---
 
 ### 2.4 `AdIdentityFilter`
 
-`OncePerRequestFilter` — first line of defense, runs before the controller.
+A `OncePerRequestFilter` that runs before the controller as the first line of defence. It processes every request in the following steps:
 
-**Flow:**
-```
-Request arrives
-  │
-  ├─ Extract client IP from X-Forwarded-For (outermost hop)
-  ├─ Is IP in trustedProxyIps? ──No──▶ 403 UnauthorizedProxyException
-  │
-  ├─ Read X-AD-Username header
-  ├─ Read X-AD-Email header
-  ├─ At least one must be present ──No──▶ 401
-  │
-  ├─ Strip X-AD-* headers from response (never echo back)
-  ├─ Construct AdIdentity record
-  ├─ Store in request attribute: "AD_IDENTITY"
-  │
-  └─ chain.doFilter(request, response)
-```
+1. Extract the client IP from the `X-Forwarded-For` header (outermost hop) or from `RemoteAddr` if the header is absent.
+2. Check whether the IP is in the trusted proxy list. If not, return HTTP 403 and throw `UnauthorizedProxyException`.
+3. Read the `X-AD-Username` header (header name is configurable via `ra_config`).
+4. Read the `X-AD-Email` header (header name is configurable via `ra_config`).
+5. Verify that at least one of the two identity headers is present and non-blank. If both are absent, return HTTP 401.
+6. Strip any CRLF characters from both header values to prevent header injection attacks.
+7. Construct an `AdIdentity` record from the sanitised values and the client IP.
+8. Store the `AdIdentity` as a request attribute under the key `"AD_IDENTITY"` for retrieval by the controller.
+9. Set a `UsernamePasswordAuthenticationToken` in the Spring Security `SecurityContextHolder` using the AD display name. This enables `AuditorAwareImpl` (from `:common`) to populate `created_by` and `updated_by` audit columns automatically.
+10. Call `chain.doFilter()` to pass the request to the next filter.
 
-**Header names (configurable):**
+**Header names are configurable:**
 
 | Property | Default |
 |---|---|
@@ -168,161 +95,122 @@ Request arrives
 
 ### 2.5 `AdIdentity` (Record)
 
-Immutable value object carrying the extracted and pre-validated AD identity.
+An immutable Java record carrying the extracted and pre-validated AD identity. It holds three fields:
 
-```java
-public record AdIdentity(
-    String username,   // sAMAccountName — may be null if only email present
-    String email,      // UPN / email — may be null if only username present
-    String sourceIp    // originating client IP (from X-Forwarded-For)
-) {
-    public String displayName() {
-        return username != null ? username : email;
-    }
-}
-```
+| Field | Type | Description |
+|---|---|---|
+| `username` | String | AD sAMAccountName — may be null if only email header is present |
+| `email` | String | UPN or email — may be null if only username header is present |
+| `sourceIp` | String | Originating client IP, extracted from `X-Forwarded-For` |
+
+The record also provides a `displayName()` helper that returns `username` if non-null, otherwise `email`. This is used as the canonical identity string for audit log entries and CN matching.
 
 ---
 
 ### 2.6 `CsrSubmitController`
 
-Single endpoint: `POST /api/ra/ad/csr/submit`
+Single endpoint controller mapped to `POST /api/ra/ad/csr/submit`. It receives three inputs: the `AdIdentity` object injected from the request attribute, the `@Valid CsrSubmitRequest` body, and the `HttpServletRequest` for extracting the source IP. The controller performs no business logic — it logs the incoming request and immediately delegates to `CsrSubmissionService.submit()`. It returns the result as `HTTP 202 Accepted`.
 
-**Request:**
-- Header: `X-AD-Username` and/or `X-AD-Email` (set by proxy, validated by `AdIdentityFilter`)
-- Header: `X-CSRF-Token` (required for browser clients)
-- Body: `CsrSubmitRequest` (JSON — contains `pkcs10_pem`, optional `certificate_profile`, `validity_days`)
+**Response status codes:**
 
-**Response:**
-- 202 Accepted — CSR accepted, returns `submission_id` and `status: PENDING`
-- 400 Bad Request — validation failed (CSR invalid, header malformed)
-- 401 Unauthorized — no AD identity header
-- 403 Forbidden — request not from trusted proxy
-- 409 Conflict — duplicate CSR (same hash already submitted)
-- 422 Unprocessable — CSR parsed but identity mismatch
-
-**Design:** The controller does zero validation itself. All validation is delegated to `CsrValidationService`.
+| Status | Meaning |
+|---|---|
+| 202 Accepted | CSR accepted, returns `submission_id` and `status: PENDING` |
+| 400 Bad Request | Validation failed — CSR invalid or header malformed |
+| 401 Unauthorized | No AD identity header present |
+| 403 Forbidden | Request not from trusted proxy |
+| 409 Conflict | Duplicate CSR (same hash already submitted) |
+| 422 Unprocessable | CSR parsed but identity does not match AD user |
 
 ---
 
 ### 2.7 `CsrSubmitRequest` (DTO)
 
-```
-{
-  "pkcs10_pem":          string  -- REQUIRED. PEM or base64-DER
-  "certificate_profile": string  -- OPTIONAL. DSC | DOCUMENT_SIGNING | CODE_SIGNING
-  "validity_days":       integer -- OPTIONAL. 1–3650
-  "remarks":             string  -- OPTIONAL. Applicant note. Max 500 chars.
-}
-```
+The inbound JSON request body. Fields and their validation constraints:
 
-**Bean Validation constraints:**
-- `pkcs10_pem` — `@NotBlank`, max 8192 chars, `@ValidCsrPem` (custom)
-- `certificate_profile` — `@Pattern(regexp = "DSC|DOCUMENT_SIGNING|CODE_SIGNING|TLS_CLIENT|TLS_SERVER|EMAIL_ENCRYPT")`
-- `validity_days` — `@Min(1)`, `@Max(3650)`
-- `remarks` — `@Size(max = 500)`, HTML-sanitized before persistence
+| Field | JSON Key | Required | Constraints | Description |
+|---|---|---|---|---|
+| `pkcs10Pem` | `pkcs10_pem` | Yes | Not blank, max 8192 chars, `@ValidCsrPem` | PEM-encoded PKCS#10 CSR |
+| `certificateProfile` | `certificate_profile` | No | Must match allowed profile pattern | DSC, DOCUMENT_SIGNING, CODE_SIGNING, TLS_CLIENT, TLS_SERVER, EMAIL_ENCRYPT |
+| `validityDays` | `validity_days` | No | Min 1, Max 3650 | Requested certificate validity in days |
+| `remarks` | `remarks` | No | Max 500 chars, HTML-sanitised before persistence | Optional applicant note |
 
 ---
 
 ### 2.8 `HeaderValidator`
 
-Stateless component validating the extracted `AdIdentity`.
+A stateless Spring component that validates the `AdIdentity` extracted by the filter. It performs the following checks in order:
 
-**Checks performed:**
-1. At least one of `username` or `email` is non-blank
-2. `username` — matches `^[a-zA-Z0-9._-]{1,64}$` (sAMAccountName safe chars)
-3. `email` — matches RFC 5321 pattern (Jakarta `@Email` equivalent regex)
-4. No null bytes, CRLF sequences, or HTML tags in either field (header injection prevention)
-5. Length limit: username ≤ 64 chars, email ≤ 254 chars
+1. Verifies that at least one of `username` or `email` is non-blank.
+2. If `username` is present: validates it against the pattern `^[a-zA-Z0-9._-]{1,64}$` (characters safe for AD sAMAccountName) and enforces a 64-character maximum length.
+3. If `email` is present: validates it against an RFC 5321 email pattern and enforces a 254-character maximum length.
+4. Checks that neither value contains null bytes, CRLF sequences, or HTML tags (header injection prevention).
 
 ---
 
 ### 2.9 `Pkcs10CsrValidator`
 
-Bouncy Castle-based cryptographic CSR validator.
+A Bouncy Castle-based cryptographic CSR validator. It performs the following checks in order:
 
-**Checks performed (in order):**
+| Check | Failure Response |
+|---|---|
+| 1. Parse PEM or base64-DER | 400 — unparseable CSR |
+| 2. Verify CSR self-signature | 400 — signature invalid |
+| 3. Key algorithm: RSA or ECDSA only | 400 — unsupported algorithm |
+| 4. RSA key size at or above 2048 bits | 400 — key too weak |
+| 5. ECDSA curve: P-256, P-384, or P-521 | 400 — unsupported curve |
+| 6. Subject CN is present and non-blank | 400 — missing CN |
+| 7. CSR size at or below configured maximum | 400 — CSR too large |
 
-| # | Check | Failure |
-|---|---|---|
-| 1 | Parse PEM / base64-DER | 400 — unparseable CSR |
-| 2 | Verify CSR self-signature | 400 — signature invalid |
-| 3 | Key algorithm: RSA or ECDSA only | 400 — unsupported algorithm |
-| 4 | RSA key size ≥ 2048 bits | 400 — key too weak |
-| 5 | ECDSA curve: P-256, P-384, or P-521 | 400 — unsupported curve |
-| 6 | Subject CN is present and non-blank | 400 — missing CN |
-| 7 | CSR size ≤ 16 KB raw bytes | 400 — CSR too large |
-| 8 | Not expired (if notBefore extension present) | 400 — stale CSR |
-
-**Result:** Returns parsed `PKCS10CertificationRequest` on success, throws `CsrValidationException` on any failure.
+On success it returns the parsed `PKCS10CertificationRequest` object for use by downstream components. On any failure it throws `CsrValidationException`.
 
 ---
 
 ### 2.10 `CsrIdentityMatcher`
 
-Cross-validates the CSR Subject DN / SAN against the AD identity.
+Cross-validates the CSR Subject DN against the AD identity. The matching logic is as follows:
 
-**Matching logic:**
-
-```
-If X-AD-Email present:
-  CSR Subject CN  ==  email            → MATCH
-  CSR SAN rfc822  contains email       → MATCH
-  CSR Subject CN  ==  username         → MATCH (email used as secondary)
-
-If only X-AD-Username present:
-  CSR Subject CN  ==  username         → MATCH
-
-None match → 422 CsrIdentityMismatchException
-```
-
-**Case-insensitive comparison** for both CN and email fields.
+1. Extract the Common Name from the CSR Subject using Bouncy Castle's `X500Name` and `BCStyle.CN`.
+2. Extract any `rfc822Name` entries from the Subject Alternative Name extension in the CSR attributes.
+3. Convert the CN, all SAN emails, the AD username, and the AD email to lowercase for case-insensitive comparison.
+4. If AD email is present: check whether the CN equals the email, or whether the SAN email list contains the email. If either matches, accept.
+5. If AD username is present: check whether the CN equals the username. If it matches, accept.
+6. If no match was found through any of the above paths: throw `CsrIdentityMismatchException` with error code `RA-IDN-001`.
 
 ---
 
 ### 2.11 `CsrValidationService`
 
-Orchestrates the full validation pipeline.
+Orchestrates the full validation pipeline by calling three validators in sequence:
 
-```
-validate(adIdentity, csrSubmitRequest):
-  1. headerValidator.validate(adIdentity)
-  2. pkcs10CsrValidator.validate(csrSubmitRequest.pkcs10Pem())
-  3. csrIdentityMatcher.match(adIdentity, parsedCsr)
-  4. Return CsrValidationResult (parsedCsr + adIdentity + profile)
-```
+1. Calls `HeaderValidator.validate(adIdentity)` — validates AD header values.
+2. Calls `Pkcs10CsrValidator.validate(pkcs10Pem)` — performs cryptographic CSR checks and returns the parsed `PKCS10CertificationRequest`.
+3. Calls `CsrIdentityMatcher.match(adIdentity, parsedCsr)` — confirms CN matches AD identity.
+4. Returns a `CsrValidationResult` containing the parsed CSR, the identity, the requested profile, and the requested validity period.
 
-Throws `CsrValidationException` (400) or `CsrIdentityMismatchException` (422) on failure.
+Any exception from the three validators propagates immediately and the pipeline is aborted.
 
 ---
 
 ### 2.12 `CsrSubmissionService`
 
-Business logic layer — runs after successful validation.
+Business logic layer — runs after the validation pipeline succeeds. Its flow:
 
-**Flow:**
-```
-1. Compute SHA-256 hash of raw pkcs10 bytes
-2. Check CsrSubmissionRepository.existsByPkcs10Hash(hash) → 409 if duplicate
-3. Build CsrSubmissionRecord entity
-4. repository.save(record)
-5. auditLogService.logSuccess(username, "CSR_SUBMIT", submissionId, description, ip)
-6. Return CsrSubmitResponse(submissionId, status=PENDING)
-```
+1. Compute the SHA-256 hash of the raw PKCS#10 PEM bytes.
+2. Query `CsrSubmissionRepository.existsByPkcs10Hash(hash)`. If a duplicate is found within the configured time window, write a failure audit log entry and throw `DuplicateCsrException`.
+3. Build the `CsrSubmissionRecord` entity with all extracted fields: submission ID (UUID), AD username, AD email, CSR hash, PEM, subject CN, key algorithm, key size, EC curve, profile, status `PENDING`, and source IP.
+4. Sanitise the `remarks` field using OWASP Java HTML Sanitizer before assigning it to the entity.
+5. Call `repository.save(record)` to persist the entity.
+6. Call `auditLogService.logSuccess()` from `:common` with action `CSR_SUBMIT`.
+7. Return a `CsrSubmitResponse` with the submission ID, status, submitter name, timestamp, and confirmation message.
 
-On any exception in step 4+:
-```
-auditLogService.logFailure(username, "CSR_SUBMIT", null, reason, ip)
-throw PkiRaException(500)
-```
-
-`AuditLogService` runs in `REQUIRES_NEW` — audit record is committed even if main TX rolls back.
+On any exception in steps 4 through 7: call `auditLogService.logFailure()` and then re-throw the exception. Because `AuditLogService` runs in `REQUIRES_NEW` propagation, the failure audit record is committed to the database even if the main transaction rolls back.
 
 ---
 
 ### 2.13 `CsrSubmissionRecord` (JPA Entity)
 
-Extends `BaseAuditEntity` from `:common`.
+Extends `BaseAuditEntity` from `:common`. The entity maps to the `csr_submission` table and inherits `created_at`, `created_by`, `updated_at`, and `updated_by` columns from the parent class.
 
 | Column | Type | Description |
 |---|---|---|
@@ -351,22 +239,21 @@ Extends `BaseAuditEntity` from `:common`.
 
 ### 2.14 `CsrSubmissionRepository`
 
-Spring Data JPA repository.
+Spring Data JPA repository that extends `JpaRepository<CsrSubmissionRecord, Long>`. The following query methods are declared on the interface:
 
-```java
-interface CsrSubmissionRepository extends JpaRepository<CsrSubmissionRecord, Long> {
-    boolean existsByPkcs10Hash(String hash);
-    Optional<CsrSubmissionRecord> findBySubmissionId(String submissionId);
-    Page<CsrSubmissionRecord> findByAdUsername(String username, Pageable pageable);
-    Page<CsrSubmissionRecord> findByStatus(String status, Pageable pageable);
-}
-```
+| Method | Return Type | Description |
+|---|---|---|
+| `existsByPkcs10Hash(hash)` | boolean | Duplicate CSR check — called before every save |
+| `findBySubmissionId(id)` | Optional | Status query by submission ID |
+| `findByAdUsername(username, pageable)` | Page | List all submissions by an AD user |
+| `findByStatus(status, pageable)` | Page | RA operator queue filtered by status |
+| `countByAdUsernameAndCreatedAtAfter(username, since)` | long | Rate limit check — submissions per user within a window |
 
 ---
 
 ### 2.15 `GlobalExceptionHandler`
 
-`@RestControllerAdvice` — maps all exceptions to RFC 7807 Problem Detail responses.
+A `@RestControllerAdvice` that maps all application exceptions to structured error responses. All user-controlled data in error messages is HTML-encoded before inclusion in the response body to prevent reflected XSS.
 
 | Exception | HTTP Status | Title |
 |---|---|---|
@@ -375,27 +262,16 @@ interface CsrSubmissionRepository extends JpaRepository<CsrSubmissionRecord, Lon
 | `UnauthorizedProxyException` | 403 | Forbidden |
 | `DuplicateCsrException` | 409 | Duplicate Submission |
 | `MethodArgumentNotValidException` | 400 | Validation Failed |
-| `PkiRaException` | (from exception) | Operation Failed |
+| `PkiRaException` | (from exception field) | Operation Failed |
 | `Exception` (fallback) | 500 | Internal Server Error |
-
-**XSS Prevention in error responses:** All user-controlled data in error messages is HTML-encoded before inclusion in the Problem Detail body.
 
 ---
 
 ### 2.16 `ValidCsrPem` (Custom Constraint)
 
-```java
-@Constraint(validatedBy = ValidCsrPemValidator.class)
-@Target(ElementType.FIELD)
-@Retention(RetentionPolicy.RUNTIME)
-public @interface ValidCsrPem {
-    String message() default "pkcs10_pem must be a valid PEM or base64 DER encoded PKCS#10 CSR";
-    Class<?>[] groups() default {};
-    Class<? extends Payload>[] payload() default {};
-}
-```
+A Jakarta Bean Validation constraint annotation applied to the `pkcs10Pem` field on `CsrSubmitRequest`. It is annotated with `@Constraint`, targeting `ElementType.FIELD`, and references `ValidCsrPemValidator` as its implementing class.
 
-`ValidCsrPemValidator` performs a fast syntactic check (PEM header present OR valid base64) before the full Bouncy Castle parse in `Pkcs10CsrValidator`. This separates syntactic from cryptographic validation.
+The `ValidCsrPemValidator` performs a fast syntactic check — it verifies that the PEM header and footer markers are present, or that the value is valid Base64-encoded content, before the full Bouncy Castle parse is attempted in `Pkcs10CsrValidator`. This separates syntactic validation (fast, in Spring MVC's validation phase) from cryptographic validation (slower, in the service layer), giving a cleaner error message to callers who submit obviously malformed input.
 
 ---
 
@@ -403,16 +279,9 @@ public @interface ValidCsrPem {
 
 ### 3.1 CSRF Protection
 
-```
-Strategy: Double-Submit Cookie (stateless, works with REST + browsers)
+The service uses the double-submit cookie pattern. Spring Security generates a cryptographically random CSRF token and stores it in a cookie named `XSRF-TOKEN`. Browser-based clients must read this token from the cookie and include its value in the `X-XSRF-TOKEN` request header. Spring Security compares the two values on every state-changing request. A mismatch results in a 403 Forbidden response. This pattern is effective because an attacker's origin cannot read the cookie value due to the same-origin policy enforced by browsers.
 
-1. Client sends POST /api/ra/ad/csr/submit
-2. Spring Security checks:
-   a. Cookie XSRF-TOKEN is present
-   b. Header X-XSRF-TOKEN matches the cookie value
-3. Mismatch → 403 Forbidden
-4. For API clients (non-browser): CSRF can be disabled per-IP via config flag
-```
+For non-browser API clients such as internal service-to-service calls, CSRF protection can be disabled on a per-endpoint basis via the security configuration, since these clients are not subject to cross-site request forgery attacks.
 
 ### 3.2 XSS Prevention
 
@@ -425,106 +294,48 @@ Strategy: Double-Submit Cookie (stateless, works with REST + browsers)
 
 ### 3.3 Header Injection Prevention
 
-- `X-AD-Username` and `X-AD-Email` are validated against allowlist regex before use
-- CRLF sequences (`\r`, `\n`) in header values → 400 Bad Request
-- Null bytes (`\0`) in header values → 400 Bad Request
-- Identity headers are **never echoed** in responses
+- `X-AD-Username` and `X-AD-Email` are validated against allowlist regex patterns before use.
+- CRLF sequences (`\r`, `\n`) in header values result in a 400 Bad Request.
+- Null bytes (`\0`) in header values result in a 400 Bad Request.
+- Identity headers are never echoed back in responses.
 
 ### 3.4 Request Size Limits
 
-```yaml
-spring:
-  servlet:
-    multipart:
-      max-file-size: 16KB
-      max-request-size: 32KB
-server:
-  tomcat:
-    max-http-form-post-size: 32KB
-```
+The maximum HTTP request body size is configured to 64 KB. CSR payloads are expected to be well under 16 KB. The `csr.max.size.bytes` configuration key enforces a tighter limit on the CSR field specifically. Jakarta Bean Validation constraints enforce field-level maximum lengths on all string inputs.
 
 ### 3.5 Rate Limiting (Phase 2)
 
-- Per `X-AD-Username`: max 10 CSR submissions per 60 minutes
-- Per `sourceIp`: max 50 requests per 60 minutes
-- Implementation: Bucket4j with in-memory or Redis backend
+- Per `X-AD-Username`: maximum 10 CSR submissions per 60 minutes.
+- Per `sourceIp`: maximum 50 requests per 60 minutes.
+- Implementation: Bucket4j with in-memory or Redis backend.
 
 ---
 
 ## 4. Request / Response Flow (End to End)
 
-```
-AD Applicant Browser
-  │
-  │  POST /api/ra/ad/csr/submit
-  │  Headers: X-AD-Username, X-AD-Email, X-XSRF-TOKEN
-  │  Cookie:  XSRF-TOKEN
-  │  Body:    { "pkcs10_pem": "-----BEGIN CERTIFICATE REQUEST-----..." }
-  │
-  ▼
-AD Reverse Proxy (strips existing identity headers, injects X-AD-*)
-  │
-  ▼
-Spring Security Filter Chain
-  ├── CsrfFilter           — validates XSRF token
-  ├── AdIdentityFilter     — IP check → extract headers → store AdIdentity
-  └── SecurityHeaders      — add XSS/CSP/HSTS headers to response
-  │
-  ▼
-CsrSubmitController.submit(request, adIdentity)
-  │
-  ▼
-  @Valid CsrSubmitRequest  — Bean Validation (NotBlank, ValidCsrPem, Size)
-  │
-  ▼
-CsrValidationService.validate(adIdentity, request)
-  ├── HeaderValidator.validate(adIdentity)
-  ├── Pkcs10CsrValidator.validate(pkcs10Pem)    ← Bouncy Castle
-  └── CsrIdentityMatcher.match(adIdentity, csr)
-  │
-  ▼
-CsrSubmissionService.submit(validationResult)
-  ├── Hash check (duplicate prevention)
-  ├── repository.save(CsrSubmissionRecord)
-  └── auditLogService.logSuccess(...)
-  │
-  ▼
-Response 202 Accepted
-  { "submission_id": "uuid", "status": "PENDING", "message": "CSR accepted" }
-```
+The following describes the complete journey of a CSR submission from the browser to the database:
+
+1. The AD applicant's browser or client application sends a `POST /api/ra/ad/csr/submit` request with the AD identity headers (`X-AD-Username`, `X-AD-Email`), the CSRF header (`X-XSRF-TOKEN`) and cookie (`XSRF-TOKEN`), and the JSON request body containing the PEM-encoded CSR.
+2. The request arrives at the AD reverse proxy, which strips any pre-existing identity headers from the client, injects the authenticated `X-AD-*` headers, and forwards the request to the RA service on the internal network.
+3. The Spring Security `CsrfFilter` runs first, validates the CSRF token, and rejects the request with 403 if the token is invalid.
+4. The `AdIdentityFilter` runs next: validates the proxy IP against the whitelist, extracts and sanitises the AD identity headers, constructs the `AdIdentity` record, stores it as a request attribute, and sets the `SecurityContextHolder` authentication.
+5. Spring Security adds all configured response headers (XSS, CSP, HSTS, etc.) to the outgoing response.
+6. The request reaches `CsrSubmitController.submit()`, which retrieves the `AdIdentity` from the request attribute, reads the `@Valid CsrSubmitRequest` body, and delegates to `CsrSubmissionService.submit()`.
+7. Jakarta Bean Validation fires on the request body, checking `pkcs10_pem` is not blank and the profile is valid. Failures return 400 before the service layer is entered.
+8. `CsrValidationService.validate()` runs the full nine-stage pipeline: header format check, PEM size check, PEM format check, PKCS#10 ASN.1 parse, self-signature verification, algorithm policy check, key size check, CN-vs-AD-identity match. Any stage failure throws the appropriate exception.
+9. `CsrSubmissionService.submit()` computes the CSR hash, checks for duplicates, builds and saves the `CsrSubmissionRecord`, writes the success audit log entry, and returns the `CsrSubmitResponse`.
+10. The controller returns `HTTP 202 Accepted` with the response body containing the `submission_id`, status `PENDING`, submitter name, and timestamp.
 
 ---
 
 ## 5. Configuration Properties Reference
 
-```yaml
-# application.yml
+All runtime-tunable parameters for the service are stored in the `ra_config` database table and served from the `RaConfigCacheService` in-memory cache. The full list of configuration keys, their default values, and their groups is documented in Section 6 (RA Configuration Table). Key categories include:
 
-server:
-  port: 8083
-  servlet:
-    context-path: /
-
-spring:
-  application:
-    name: ra-ad-csr-service
-  profiles:
-    active: h2   # override with 'prod' for MariaDB
-
-ra:
-  ad:
-    header:
-      username: X-AD-Username
-      email: X-AD-Email
-    trusted-proxy-ips:
-      - 10.0.1.10
-      - 127.0.0.1
-    validation:
-      min-rsa-key-bits: 2048
-      allowed-ec-curves: [P-256, P-384, P-521]
-      max-csr-size-bytes: 16384
-      allow-duplicate-csr: false
-  cors:
-    allowed-origins:
-      - https://ra.pki.internal
-```
+| Group | What it controls |
+|---|---|
+| `CSR` | Max CSR size, allowed algorithms, allowed key sizes and curves, CN length limit, validity limit, duplicate window |
+| `SECURITY` | Trusted proxy IP whitelist, rate limit parameters, header max length, CORS origins, CSRF cookie secure flag |
+| `AD` | HTTP header names for username, display name, email, groups; AD group requirements |
+| `AUDIT` | Log retention days, request log enable flag, sensitive field masking list |
+| `SYSTEM` | Maintenance mode, submission timeout, max concurrent submissions |
