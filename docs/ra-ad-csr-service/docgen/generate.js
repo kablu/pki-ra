@@ -9,7 +9,7 @@ const fs   = require("fs");
 const path = require("path");
 const {
     Document, Packer, Paragraph, TextRun, HeadingLevel,
-    Header, Footer, PageNumber, PageNumberElement, NumberFormat,
+    Header, Footer, PageNumber, NumberFormat,
     AlignmentType, BorderStyle, WidthType,
     Table, TableRow, TableCell, ShadingType,
     TabStopPosition, TabStopType,
@@ -249,11 +249,11 @@ function parseMarkdown(md) {
     let inTable  = false;
     let tableHdr = [];
     let tableRows= [];
+    let blankCount = 0; // collapse consecutive blank lines into one spacer
 
     const flushTable = () => {
         if (!inTable) return;
         elems.push(buildTable(tableHdr, tableRows));
-        elems.push(spacer(120));
         inTable = false; tableHdr = []; tableRows = [];
     };
 
@@ -263,14 +263,15 @@ function parseMarkdown(md) {
 
         // ── Code fence ─────────────────────────────────────────────────────
         if (line.startsWith("```")) {
-            if (!inCode) { flushTable(); inCode = true; elems.push(spacer(60)); }
-            else          { inCode = false; elems.push(spacer(80)); }
+            if (!inCode) { flushTable(); inCode = true; }
+            else          { inCode = false; }
             continue;
         }
         if (inCode) { elems.push(codeLine(line)); continue; }
 
         // ── Table row ──────────────────────────────────────────────────────
         if (line.startsWith("|")) {
+            blankCount = 0;
             const cells = line.split("|").slice(1, -1).map(c => c.trim());
             if (cells.every(c => /^[-: ]+$/.test(c))) continue; // separator row
             if (!inTable) { tableHdr = cells; inTable = true; }
@@ -280,16 +281,17 @@ function parseMarkdown(md) {
         flushTable();
 
         // ── Skip pure HR lines ─────────────────────────────────────────────
-        if (/^---+$/.test(line.trim())) { elems.push(rule()); continue; }
+        if (/^---+$/.test(line.trim())) { blankCount = 0; elems.push(rule()); continue; }
 
         // ── Headings ───────────────────────────────────────────────────────
-        if (/^# /.test(line))   { elems.push(pageBreak()); elems.push(h1(line.replace(/^# /, ""))); continue; }
-        if (/^## /.test(line))  { elems.push(h2(line.replace(/^## /, ""))); continue; }
-        if (/^### /.test(line)) { elems.push(h3(line.replace(/^### /, ""))); continue; }
+        if (/^# /.test(line))   { blankCount = 0; elems.push(pageBreak()); elems.push(h1(line.replace(/^# /, ""))); continue; }
+        if (/^## /.test(line))  { blankCount = 0; elems.push(h2(line.replace(/^## /, ""))); continue; }
+        if (/^### /.test(line)) { blankCount = 0; elems.push(h3(line.replace(/^### /, ""))); continue; }
 
         // ── Bullets ────────────────────────────────────────────────────────
         const bulletMatch = line.match(/^(\s*)[-*] (.+)/);
         if (bulletMatch) {
+            blankCount = 0;
             const level = Math.floor(bulletMatch[1].length / 2);
             elems.push(bullet(bulletMatch[2], level));
             continue;
@@ -298,6 +300,7 @@ function parseMarkdown(md) {
         // ── Checkbox bullets ───────────────────────────────────────────────
         const cbMatch = line.match(/^(\s*)- \[([ x])\] (.+)/);
         if (cbMatch) {
+            blankCount = 0;
             const done  = cbMatch[2] === "x";
             const level = Math.floor(cbMatch[1].length / 2);
             const txt   = (done ? "☑ " : "☐ ") + cbMatch[3];
@@ -307,12 +310,17 @@ function parseMarkdown(md) {
 
         // ── Numbered list ──────────────────────────────────────────────────
         const numMatch = line.match(/^(\s*)\d+\. (.+)/);
-        if (numMatch) { elems.push(bullet(numMatch[2], 0)); continue; }
+        if (numMatch) { blankCount = 0; elems.push(bullet(numMatch[2], 0)); continue; }
 
-        // ── Blank line ─────────────────────────────────────────────────────
-        if (line.trim() === "") { elems.push(spacer(80)); continue; }
+        // ── Blank line — emit at most one spacer per consecutive blank run ──
+        if (line.trim() === "") {
+            blankCount++;
+            if (blankCount === 1) elems.push(spacer(80));
+            continue;
+        }
 
         // ── Body paragraph ─────────────────────────────────────────────────
+        blankCount = 0;
         elems.push(body(line));
     }
 
@@ -436,7 +444,7 @@ function makeFooter() {
                 children: [
                     new TextRun({ text: "CONFIDENTIAL — Internal Use Only   |   ", font: FONT_BODY, size: SZ.small, color: C.white }),
                     new TextRun({ text: "Page ", font: FONT_BODY, size: SZ.small, color: "BBCCDD" }),
-                    new PageNumberElement(PageNumber.CURRENT, { font: FONT_BODY, size: SZ.small, color: "BBCCDD" }),
+                    new TextRun({ children: [PageNumber.CURRENT], font: FONT_BODY, size: SZ.small, color: "BBCCDD" }),
                     new TextRun({ text: "   |   © PKI-RA Team " + new Date().getFullYear(), font: FONT_BODY, size: SZ.small, color: "BBCCDD" }),
                 ],
                 shading: { type: ShadingType.SOLID, color: C.headerBg, fill: C.headerBg },
