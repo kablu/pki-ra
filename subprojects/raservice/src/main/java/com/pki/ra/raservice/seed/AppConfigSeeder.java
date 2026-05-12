@@ -9,16 +9,17 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 /**
  * Inserts sample {@code app_config} rows for local H2 development.
  *
- * <p>Active only under the {@code h2} Spring profile.  Uses
- * {@link AppConfigRepository} (JPA) for the INSERT — consistent with how
- * {@code ConfigBean} reads data via the same repository.
+ * <p>Each row holds a single plain-string field value — no JSON.
+ * All rows with the same {@code config_type} are assembled into one DTO
+ * by {@code ConfigBean} on {@code ApplicationReadyEvent}.
  *
- * <p>Because {@link ApplicationRunner} executes <em>before</em>
- * {@code ApplicationReadyEvent} is published, the rows inserted here are
- * guaranteed to be present when {@code ConfigBean.loadOnReady()} fires.
+ * <p>Runs as {@link ApplicationRunner} — before {@code ApplicationReadyEvent} —
+ * so data is present when {@code ConfigBean.loadOnReady()} fires.
  */
 @Component
 @Profile("h2")
@@ -41,18 +42,30 @@ public class AppConfigSeeder implements ApplicationRunner {
 
         log.info("AppConfigSeeder: seeding sample app_config rows...");
 
-        repository.save(AppConfig.builder()
-                .configKey("isSecLdap")
-                .configType("LDAP")
-                .configValue("""
-                        {"host":"ldap.pki.internal","port":636,"baseDn":"DC=pki,DC=internal",\
-                        "bindDn":"CN=svc-pki-bind,OU=ServiceAccounts,DC=pki,DC=internal",\
-                        "bindPassword":"change-me","useSsl":true,\
-                        "connectionTimeoutMs":5000,"readTimeoutMs":10000}""")
-                .description("Active Directory LDAP connectivity settings")
-                .isActive(true)
-                .build());
+        repository.saveAll(List.of(
 
-        log.info("AppConfigSeeder: {} row(s) in app_config after seed.", repository.count());
+            // ── LDAP config — one row per field ──────────────────────────────
+            row("host",                "LDAP", "ldap.pki.internal",                                     "LDAP server hostname"),
+            row("port",                "LDAP", "636",                                                   "LDAP port (636 = LDAPS)"),
+            row("baseDn",              "LDAP", "DC=pki,DC=internal",                                    "Base DN for user search"),
+            row("bindDn",              "LDAP", "CN=svc-pki-bind,OU=ServiceAccounts,DC=pki,DC=internal", "Service account DN"),
+            row("bindPassword",        "LDAP", "change-me",                                             "Service account password"),
+            row("useSsl",              "LDAP", "true",                                                  "Enable LDAPS (SSL)"),
+            row("connectionTimeoutMs", "LDAP", "5000",                                                  "Connection timeout in ms"),
+            row("readTimeoutMs",       "LDAP", "10000",                                                 "Read timeout in ms")
+
+        ));
+
+        log.info("AppConfigSeeder: {} row(s) inserted.", repository.count());
+    }
+
+    private AppConfig row(String key, String type, String value, String description) {
+        return AppConfig.builder()
+                .configKey(key)
+                .configType(type)
+                .configValue(value)
+                .description(description)
+                .isActive(true)
+                .build();
     }
 }

@@ -13,29 +13,34 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * In-memory cache for all database-backed application configuration.
  *
- * <p>Uses {@link AppConfigRepository} (JPA) to query the {@code app_config}
- * table — the same {@link javax.sql.DataSource} bean from {@code DataSourceConfig}
- * backs the JPA {@code EntityManager} under the hood.
+ * <p>On {@link ApplicationReadyEvent}, fetches all active rows from
+ * {@code app_config} via JPA.  Rows are grouped by {@code config_type}.
+ * Each group is assembled into a flat {@code Map<String, String>} of
+ * {@code config_key → config_value}, then converted into the appropriate
+ * {@link ConfigDto} subtype using {@link ObjectMapper#convertValue}.
  *
- * <p>On {@link ApplicationReadyEvent}, a single JPQL query fetches every active
- * row from {@code app_config}.  Each row's {@code config_value} JSON is
- * deserialised into the appropriate {@link ConfigDto} subtype via
- * {@link ConfigDtoRegistry} and stored in a {@link ConcurrentHashMap}
- * keyed by {@code config_key}.
+ * <p>Example — three rows in DB with {@code config_type = "LDAP"}:
+ * <pre>
+ *   host  | LDAP | ldap.pki.internal
+ *   port  | LDAP | 636
+ *   useSsl| LDAP | true
+ * </pre>
+ * are assembled into {@code LdapConfigDto} and stored in cache under key {@code "LDAP"}.
  *
- * <p>After startup, <strong>no database call is made on the request path</strong>.
- * All config reads are pure in-memory lookups.
+ * <p>After startup, <strong>no DB call is made on the request path</strong>.
+ * All reads are pure in-memory lookups.
  *
- * <p>{@code @Order(10)} ensures this listener fires before any consumer listeners
- * (e.g. {@code RaConfigLogger} at {@code @Order(20)}) that depend on the populated cache.
+ * <p>{@code @Order(10)} ensures this listener fires before consumer listeners
+ * (e.g. {@code RaConfigLogger} at {@code @Order(20)}).
  *
- * <p>Usage example:
+ * <p>Usage:
  * <pre>{@code
- * LdapConfigDto ldap = configBean.get("isSecLdap", LdapConfigDto.class)
+ * LdapConfigDto ldap = configBean.get("LDAP", LdapConfigDto.class)
  *         .orElseThrow(() -> new IllegalStateException("LDAP config missing"));
  * }</pre>
  */
@@ -53,19 +58,19 @@ public class ConfigBean {
     public ConfigBean(AppConfigRepository repository,
                       ConfigDtoRegistry registry,
                       ObjectMapper objectMapper) {
-        this.repository   = repository;
-        this.registry     = registry;
+        this.repository  = repository;
+        this.registry    = registry;
         this.objectMapper = objectMapper;
     }
 
     // -------------------------------------------------------------------------
-    // Startup loading  — JPA query via AppConfigRepository
+    // Startup loading
     // -------------------------------------------------------------------------
 
     /**
-     * Loads all active configuration entries from {@code app_config} into the
-     * in-memory cache using a JPQL query.  Fired once the application context
-     * is fully ready.
+     * Groups all active rows by {@code config_type}, builds a flat property map
+     * per type, then converts each map to the registered {@link ConfigDto} subtype.
+     * Cache key = {@code config_type} (e.g. {@code "LDAP"}).
      */
     @EventListener(ApplicationReadyEvent.class)
     @Order(10)
@@ -75,44 +80,57 @@ public class ConfigBean {
         var loaded  = 0;
         var skipped = 0;
 
-        for (var row : repository.findAllActive()) {
+        // Group all active rows by config_type
+        var grouped = repository.findAllActive()
+                .stream()
+                .collect(Collectors.groupingBy(
+                        row -> row.getConfigType(),
+                        Collectors.toMap(
+                                row -> row.getConfigKey(),
+                                row -> row.getConfigValue()
+                        )
+                ));
+
+        for (var entry : grouped.entrySet()) {
+            var type  = entry.getKey();
+            var props = entry.getValue();
             try {
-                var dtoClass = registry.resolve(row.getConfigType());
-                var dto      = objectMapper.readValue(row.getConfigValue(), dtoClass);
-                cache.put(row.getConfigKey(), dto);
-                log.debug("ConfigBean: cached key='{}' type='{}'", row.getConfigKey(), row.getConfigType());
+                var dtoClass = registry.resolve(type);
+                // Convert flat Map<String,String> → DTO (Jackson handles type coercion)
+                var dto = objectMapper.convertValue(props, dtoClass);
+                cache.put(type, dto);
+                log.debug("ConfigBean: cached type='{}' fields={}", type, props.keySet());
                 loaded++;
             } catch (Exception ex) {
-                log.warn("ConfigBean: skipping key='{}' type='{}' — {}",
-                        row.getConfigKey(), row.getConfigType(), ex.getMessage());
+                log.warn("ConfigBean: skipping type='{}' — {}", type, ex.getMessage());
                 skipped++;
             }
         }
 
-        log.info("ConfigBean: ready — {} loaded, {} skipped.", loaded, skipped);
+        log.info("ConfigBean: ready — {} type(s) loaded, {} skipped.", loaded, skipped);
     }
 
     // -------------------------------------------------------------------------
-    // Typed accessors
+    // Typed accessors  (cache key = config_type, e.g. "LDAP")
     // -------------------------------------------------------------------------
 
     /**
-     * Returns the cached {@link ConfigDto} for {@code key}, or empty if absent.
+     * Returns the cached {@link ConfigDto} for the given {@code configType}.
      *
-     * @param key the {@code config_key} value, e.g. {@code "isSecLdap"}
+     * @param configType the {@code config_type} discriminator, e.g. {@code "LDAP"}
      */
-    public Optional<ConfigDto> get(String key) {
-        return Optional.ofNullable(cache.get(key));
+    public Optional<ConfigDto> get(String configType) {
+        return Optional.ofNullable(cache.get(configType));
     }
 
     /**
-     * Returns the cached config cast to {@code type}, or empty if absent or wrong type.
+     * Returns the cached config cast to {@code type}, or empty if absent or type mismatch.
      *
-     * @param key  the {@code config_key} value
-     * @param type the expected DTO class, e.g. {@code LdapConfigDto.class}
+     * @param configType the {@code config_type} discriminator, e.g. {@code "LDAP"}
+     * @param type       expected DTO class, e.g. {@code LdapConfigDto.class}
      */
-    public <T extends ConfigDto> Optional<T> get(String key, Class<T> type) {
-        return Optional.ofNullable(cache.get(key))
+    public <T extends ConfigDto> Optional<T> get(String configType, Class<T> type) {
+        return Optional.ofNullable(cache.get(configType))
                 .filter(type::isInstance)
                 .map(type::cast);
     }
@@ -121,28 +139,24 @@ public class ConfigBean {
     // Cache management
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns an unmodifiable view of the entire cache — useful for diagnostics and logging.
-     */
+    /** Returns an unmodifiable view of the full cache — for logging and diagnostics. */
     public Map<String, ConfigDto> getAll() {
         return Collections.unmodifiableMap(cache);
     }
 
-    /** Returns {@code true} if the cache contains an entry for {@code key}. */
-    public boolean containsKey(String key) {
-        return cache.containsKey(key);
+    /** Returns {@code true} if the cache contains an entry for {@code configType}. */
+    public boolean containsKey(String configType) {
+        return cache.containsKey(configType);
     }
 
-    /** Returns the number of entries currently in the cache. */
+    /** Returns the number of config types currently in the cache. */
     public int size() {
         return cache.size();
     }
 
     /**
      * Clears and reloads the cache from the database.
-     * Intended for admin-triggered hot-reload without service restart.
-     *
-     * @return number of active entries loaded after refresh
+     * For admin-triggered hot-reload without service restart.
      */
     public int refresh() {
         log.info("ConfigBean: manual cache refresh triggered.");

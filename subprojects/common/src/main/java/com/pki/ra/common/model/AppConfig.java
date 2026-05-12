@@ -6,7 +6,10 @@ import lombok.*;
 @Entity
 @Table(
     name = "app_config",
-    uniqueConstraints = @UniqueConstraint(name = "uq_app_config_key", columnNames = "config_key")
+    uniqueConstraints = @UniqueConstraint(
+        name = "uq_app_config_key_type",
+        columnNames = { "config_key", "config_type" }
+    )
 )
 @Getter
 @Setter
@@ -19,19 +22,23 @@ public class AppConfig extends BaseAuditEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** Logical name used as the cache key, e.g. {@code isSecLdap}. */
+    /**
+     * Field name within the config type, e.g. {@code host}, {@code port}.
+     * Unique per {@code config_type} — same key can exist across different types.
+     */
     @Column(name = "config_key", nullable = false, length = 100)
     private String configKey;
 
     /**
-     * Discriminator that tells {@code ConfigDtoRegistry} which DTO class to
-     * deserialise {@code configValue} into, e.g. {@code LDAP}.
+     * Groups related keys into one logical config unit, e.g. {@code LDAP}.
+     * All rows with the same {@code config_type} are assembled into one DTO
+     * by {@code ConfigBean}.
      */
     @Column(name = "config_type", nullable = false, length = 50)
     private String configType;
 
-    /** JSON-serialised DTO payload. Deserialised by {@code ConfigBean} at startup. */
-    @Column(name = "config_value", nullable = false, columnDefinition = "TEXT")
+    /** Plain string value for this field — no JSON, no nesting. */
+    @Column(name = "config_value", nullable = false, length = 500)
     private String configValue;
 
     @Column(name = "description", length = 500)
