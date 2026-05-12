@@ -70,4 +70,5 @@ dependencies {
     // Testing
     // -------------------------------------------------------------------------
     testImplementation libs.spring.boot.test
+    testRuntimeOnly     'org.junit.platform:junit-platform-launcher'
 }
