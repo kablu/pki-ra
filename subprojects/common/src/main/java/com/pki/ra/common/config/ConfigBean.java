@@ -2,12 +2,12 @@ package com.pki.ra.common.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pki.ra.common.config.dto.ConfigDto;
-import com.pki.ra.common.model.AppConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.annotation.Order;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -18,10 +18,14 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * In-memory cache for all database-backed application configuration.
  *
- * <p>On {@link ApplicationReadyEvent} (fired once Spring context is fully ready),
- * this service reads every active row from the {@code app_config} table, deserialises
- * the {@code config_value} JSON into the appropriate {@link ConfigDto} subtype via
- * {@link ConfigDtoRegistry}, and stores the result in a {@link ConcurrentHashMap}
+ * <p>Uses the existing {@link javax.sql.DataSource} bean (declared in
+ * {@code DataSourceConfig}) via Spring Boot's auto-configured
+ * {@link JdbcTemplate} — no JPA repository required.
+ *
+ * <p>On {@link ApplicationReadyEvent}, a single SQL query fetches every active
+ * row from {@code app_config}.  Each row's {@code config_value} JSON is
+ * deserialised into the appropriate {@link ConfigDto} subtype via
+ * {@link ConfigDtoRegistry} and stored in a {@link ConcurrentHashMap}
  * keyed by {@code config_key}.
  *
  * <p>After startup, <strong>no database call is made on the request path</strong>.
@@ -41,50 +45,57 @@ public class ConfigBean {
 
     private static final Logger log = LoggerFactory.getLogger(ConfigBean.class);
 
-    private final AppConfigRepository  repository;
-    private final ConfigDtoRegistry    registry;
-    private final ObjectMapper         objectMapper;
+    private static final String FETCH_ACTIVE_SQL =
+            "SELECT config_key, config_type, config_value FROM app_config WHERE is_active = TRUE";
+
+    private final JdbcTemplate      jdbcTemplate;
+    private final ConfigDtoRegistry registry;
+    private final ObjectMapper      objectMapper;
 
     private final ConcurrentHashMap<String, ConfigDto> cache = new ConcurrentHashMap<>();
 
-    public ConfigBean(AppConfigRepository repository,
+    public ConfigBean(JdbcTemplate jdbcTemplate,
                       ConfigDtoRegistry registry,
                       ObjectMapper objectMapper) {
-        this.repository   = repository;
-        this.registry     = registry;
-        this.objectMapper = objectMapper;
+        this.jdbcTemplate  = jdbcTemplate;
+        this.registry      = registry;
+        this.objectMapper  = objectMapper;
     }
 
     // -------------------------------------------------------------------------
-    // Startup loading
+    // Startup loading  — uses existing DataSource bean via JdbcTemplate
     // -------------------------------------------------------------------------
 
     /**
-     * Loads all active configuration entries from the database into the cache.
-     * Fired once the application context is fully initialised.
+     * Loads all active configuration entries from {@code app_config} into the
+     * in-memory cache.  Fired once the application context is fully ready.
      */
     @EventListener(ApplicationReadyEvent.class)
     @Order(10)
     public void loadOnReady() {
-        log.info("ConfigBean: loading application configuration from DB...");
+        log.info("ConfigBean: loading configuration from app_config via DataSource...");
+        cache.clear();
         var loaded  = 0;
         var skipped = 0;
 
-        for (AppConfig row : repository.findAllByIsActiveTrue()) {
+        var rows = jdbcTemplate.queryForList(FETCH_ACTIVE_SQL);
+        for (var row : rows) {
+            var key   = (String) row.get("config_key");
+            var type  = (String) row.get("config_type");
+            var value = (String) row.get("config_value");
             try {
-                var dtoClass = registry.resolve(row.getConfigType());
-                var dto      = objectMapper.readValue(row.getConfigValue(), dtoClass);
-                cache.put(row.getConfigKey(), dto);
-                log.debug("ConfigBean: cached key='{}' type='{}'", row.getConfigKey(), row.getConfigType());
+                var dtoClass = registry.resolve(type);
+                var dto      = objectMapper.readValue(value, dtoClass);
+                cache.put(key, dto);
+                log.debug("ConfigBean: cached key='{}' type='{}'", key, type);
                 loaded++;
             } catch (Exception ex) {
-                log.warn("ConfigBean: skipping key='{}' type='{}' — {}",
-                        row.getConfigKey(), row.getConfigType(), ex.getMessage());
+                log.warn("ConfigBean: skipping key='{}' type='{}' — {}", key, type, ex.getMessage());
                 skipped++;
             }
         }
 
-        log.info("ConfigBean: configuration ready — {} loaded, {} skipped.", loaded, skipped);
+        log.info("ConfigBean: ready — {} loaded, {} skipped.", loaded, skipped);
     }
 
     // -------------------------------------------------------------------------
