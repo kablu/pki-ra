@@ -1,6 +1,7 @@
 package com.pki.ra.common.config;
 
 import com.pki.ra.common.config.dto.AppConfigDto;
+import com.pki.ra.common.config.dto.ConfigRefreshResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -8,6 +9,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
@@ -119,9 +121,21 @@ public class ConfigBean {
         return cache.size();
     }
 
-    /** Clears and reloads from DB — for admin-triggered hot-reload. */
-    public int refresh() {
+    /**
+     * Admin-triggered hot-reload: clears cache, reloads all active rows from DB,
+     * and returns a structured response with the count, timestamp, and who triggered it.
+     *
+     * @param triggeredBy username from the authenticated principal (e.g. "admin")
+     * @return {@link ConfigRefreshResponse} with count, refreshedAt, triggeredBy
+     */
+    public ConfigRefreshResponse refresh(String triggeredBy) {
+        log.info("ConfigBean: manual refresh triggered by '{}'", triggeredBy);
         loadOnReady();
-        return cache.size();
+        return new ConfigRefreshResponse(cache.size(), Instant.now(), triggeredBy);
+    }
+
+    /** Convenience overload — used internally or by tests; reports triggeredBy as "system". */
+    public ConfigRefreshResponse refresh() {
+        return refresh("system");
     }
 }
