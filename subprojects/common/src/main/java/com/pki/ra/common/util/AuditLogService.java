@@ -12,13 +12,26 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <h3>Responsibilities</h3>
  * <ul>
- *   <li>Build and save {@code AuditLog} rows via {@link AuditLogRepository}.</li>
- *   <li>Always runs in its own transaction ({@link Propagation#REQUIRES_NEW}) so
- *       audit entries are committed even when the caller rolls back.</li>
+ *   <li>Build and save {@link AuditLog} rows via {@link AuditLogRepository}.</li>
+ *   <li>Each public method carries {@link Propagation#REQUIRES_NEW} so audit
+ *       entries are committed in their own transaction — independent of the
+ *       caller's transaction outcome (rollback does not erase the audit row).</li>
+ * </ul>
+ *
+ * <h3>Self-invocation fix</h3>
+ * Spring AOP cannot intercept {@code this.method()} calls within the same bean
+ * (the proxy is bypassed). Therefore:
+ * <ul>
+ *   <li>Every <em>public</em> method carries {@code @Transactional(REQUIRES_NEW)}
+ *       and delegates to the <em>private</em> {@link #persistEntry} method.</li>
+ *   <li>{@code persistEntry} is <strong>not</strong> annotated — it relies on
+ *       the transaction already opened by its public caller.</li>
+ *   <li>This guarantees that exactly one {@code REQUIRES_NEW} transaction is
+ *       created per call, regardless of which public method is used.</li>
  * </ul>
  *
  * <h3>Read / query path</h3>
- * Use {@link AuditLogRepository} directly — it provides paginated, filtered,
+ * Inject {@link AuditLogRepository} directly — it provides paginated, filtered
  * and aggregated queries without going through this service.
  *
  * <h3>jSpecify nullability</h3>
@@ -38,23 +51,24 @@ public class AuditLogService {
         this.auditLogRepository = auditLogRepository;
     }
 
-    // -------------------------------------------------------------------------
-    // Core write method
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Public API — each method carries REQUIRES_NEW
+    // =========================================================================
 
     /**
-     * Builds and persists one {@link AuditLog} entry in a fresh transaction.
+     * Records one audit entry with a caller-supplied outcome.
      *
-     * <p>{@link Propagation#REQUIRES_NEW} suspends any existing transaction and
-     * opens a new one, so the audit row is committed regardless of what the
-     * caller's transaction does.
+     * <p>Opens a brand-new transaction ({@link Propagation#REQUIRES_NEW}),
+     * builds the {@link AuditLog} via the builder, saves it through
+     * {@link AuditLogRepository#save}, then commits — all independently
+     * of any surrounding transaction.
      *
      * @param username    AD sAMAccountName of the acting user — never null
-     * @param action      action-type constant, e.g. {@code CONFIG_REFRESH} — never null
-     * @param resourceId  optional resource identifier (e.g. table name, serial number)
+     * @param action      action-type constant, e.g. {@code CONFIG_REFRESH}
+     * @param resourceId  optional resource the action targeted (table name, serial, etc.)
      * @param description human-readable summary of what happened
-     * @param ipAddress   originating client IP — null for batch / scheduled jobs
-     * @param outcome     {@code SUCCESS} or {@code FAILURE}
+     * @param ipAddress   originating client IP — {@code null} for batch/scheduler jobs
+     * @param outcome     {@code "SUCCESS"} or {@code "FAILURE"}
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void log(String username,
@@ -63,6 +77,103 @@ public class AuditLogService {
                     @Nullable String description,
                     @Nullable String ipAddress,
                     String outcome) {
+
+        persistEntry(username, action, resourceId, description, ipAddress, outcome);
+    }
+
+    /**
+     * Records a successful action — outcome fixed to {@code "SUCCESS"}.
+     *
+     * @param username    AD username
+     * @param action      action-type constant
+     * @param resourceId  optional resource identifier
+     * @param description human-readable summary
+     * @param ipAddress   originating IP ({@code null} for batch jobs)
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void logSuccess(String username,
+                           String action,
+                           @Nullable String resourceId,
+                           @Nullable String description,
+                           @Nullable String ipAddress) {
+
+        persistEntry(username, action, resourceId, description, ipAddress, "SUCCESS");
+    }
+
+    /**
+     * Records a failed action — outcome fixed to {@code "FAILURE"}.
+     *
+     * @param username    AD username
+     * @param action      action-type constant
+     * @param resourceId  optional resource identifier
+     * @param description failure reason or exception message
+     * @param ipAddress   originating IP ({@code null} for batch jobs)
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void logFailure(String username,
+                           String action,
+                           @Nullable String resourceId,
+                           @Nullable String description,
+                           @Nullable String ipAddress) {
+
+        persistEntry(username, action, resourceId, description, ipAddress, "FAILURE");
+    }
+
+    /**
+     * Records a system/batch action with no HTTP context.
+     *
+     * <p>{@code ipAddress} is set to {@code null} automatically — batch jobs and
+     * scheduler tasks run without an inbound HTTP request.
+     *
+     * <p>Example:
+     * <pre>{@code
+     * auditLogService.logSystem(
+     *     "system", "CERT_EXPIRY_SCAN", "cert-expiry-job",
+     *     "Scanned 1024 certs — 3 expiring within 30 days");
+     * }</pre>
+     *
+     * @param username    typically {@code "system"} or the scheduler job name
+     * @param action      action-type constant
+     * @param resourceId  optional resource identifier
+     * @param description human-readable summary
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void logSystem(String username,
+                          String action,
+                          @Nullable String resourceId,
+                          @Nullable String description) {
+
+        persistEntry(username, action, resourceId, description, null, "SUCCESS");
+    }
+
+    // =========================================================================
+    // Private helper — NO @Transactional (relies on the caller's REQUIRES_NEW)
+    // =========================================================================
+
+    /**
+     * Builds and saves one {@link AuditLog} entry.
+     *
+     * <p><strong>Not annotated with {@code @Transactional}</strong> by design.
+     * Spring AOP cannot intercept same-bean {@code this.x()} calls (self-invocation
+     * bypasses the proxy). Putting {@code REQUIRES_NEW} here would silently
+     * <em>not</em> create a new transaction when called from a public sibling method.
+     *
+     * <p>The correct pattern: each <em>public</em> method owns one
+     * {@code REQUIRES_NEW} transaction and delegates here.
+     *
+     * @param username    AD sAMAccountName
+     * @param action      action-type constant
+     * @param resourceId  nullable resource identifier
+     * @param description nullable human-readable summary
+     * @param ipAddress   nullable client IP
+     * @param outcome     {@code "SUCCESS"} or {@code "FAILURE"}
+     */
+    private void persistEntry(String username,
+                              String action,
+                              @Nullable String resourceId,
+                              @Nullable String description,
+                              @Nullable String ipAddress,
+                              String outcome) {
 
         AuditLog entry = AuditLog.builder()
                 .username(username)
@@ -77,73 +188,5 @@ public class AuditLogService {
 
         log.debug("Audit  user={}  action={}  resource={}  outcome={}  ip={}",
                   username, action, resourceId, outcome, ipAddress);
-    }
-
-    // -------------------------------------------------------------------------
-    // Convenience overloads
-    // -------------------------------------------------------------------------
-
-    /**
-     * Records a successful action — outcome is fixed to {@code SUCCESS}.
-     *
-     * @param username    AD username
-     * @param action      action-type constant
-     * @param resourceId  optional resource identifier
-     * @param description human-readable summary
-     * @param ipAddress   originating IP (null for batch jobs)
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void logSuccess(String username,
-                           String action,
-                           @Nullable String resourceId,
-                           @Nullable String description,
-                           @Nullable String ipAddress) {
-
-        log(username, action, resourceId, description, ipAddress, "SUCCESS");
-    }
-
-    /**
-     * Records a failed action — outcome is fixed to {@code FAILURE}.
-     *
-     * @param username    AD username
-     * @param action      action-type constant
-     * @param resourceId  optional resource identifier
-     * @param description failure reason / error message
-     * @param ipAddress   originating IP (null for batch jobs)
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void logFailure(String username,
-                           String action,
-                           @Nullable String resourceId,
-                           @Nullable String description,
-                           @Nullable String ipAddress) {
-
-        log(username, action, resourceId, description, ipAddress, "FAILURE");
-    }
-
-    /**
-     * Minimal overload for system / batch actions that have no HTTP context.
-     *
-     * <p>Sets {@code ipAddress = null} automatically — batch jobs run without
-     * an inbound request.
-     *
-     * <p>Example:
-     * <pre>{@code
-     * auditLogService.logSystem("system", "CERT_EXPIRY_SCAN", "cert-expiry-job",
-     *                           "Scanned 1024 certs, 3 expiring within 30 days");
-     * }</pre>
-     *
-     * @param username    typically {@code "system"} or a scheduler job name
-     * @param action      action-type constant
-     * @param resourceId  optional resource identifier
-     * @param description human-readable summary
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void logSystem(String username,
-                          String action,
-                          @Nullable String resourceId,
-                          @Nullable String description) {
-
-        log(username, action, resourceId, description, null, "SUCCESS");
     }
 }
