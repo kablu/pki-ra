@@ -45,6 +45,16 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AuditLogService {
 
+    // =========================================================================
+    // Outcome constants — single source of truth, eliminates magic strings
+    // =========================================================================
+
+    /** Outcome value written when an action completes successfully. */
+    public static final String OUTCOME_SUCCESS = "SUCCESS";
+
+    /** Outcome value written when an action fails for any reason. */
+    public static final String OUTCOME_FAILURE = "FAILURE";
+
     private final AuditLogRepository auditLogRepository;
 
     public AuditLogService(AuditLogRepository auditLogRepository) {
@@ -97,7 +107,7 @@ public class AuditLogService {
                            @Nullable String description,
                            @Nullable String ipAddress) {
 
-        persistEntry(username, action, resourceId, description, ipAddress, "SUCCESS");
+        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_SUCCESS);
     }
 
     /**
@@ -116,7 +126,7 @@ public class AuditLogService {
                            @Nullable String description,
                            @Nullable String ipAddress) {
 
-        persistEntry(username, action, resourceId, description, ipAddress, "FAILURE");
+        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_FAILURE);
     }
 
     /**
@@ -143,7 +153,7 @@ public class AuditLogService {
                           @Nullable String resourceId,
                           @Nullable String description) {
 
-        persistEntry(username, action, resourceId, description, null, "SUCCESS");
+        persistEntry(username, action, resourceId, description, null, OUTCOME_SUCCESS);
     }
 
     // =========================================================================

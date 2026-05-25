@@ -2,17 +2,14 @@ package com.pki.ra.common.util;
 
 import com.pki.ra.common.model.AuditLog;
 import com.pki.ra.common.util.dto.ActionSummaryProjection;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 
-import java.time.Instant;
 import java.util.List;
 
 /**
- * JPA repository for querying the {@code audit_log} table.
+ * JPA repository for the {@code audit_log} table.
  *
  * <h3>Responsibilities</h3>
  * <ul>
@@ -20,82 +17,36 @@ import java.util.List;
  *   <li>Write path is owned by {@link AuditLogService} (REQUIRES_NEW propagation).</li>
  * </ul>
  *
- * <h3>Query categories</h3>
+ * <h3>Specification Pattern (since design-pattern refactor)</h3>
+ * This repository now extends {@link JpaSpecificationExecutor}, which exposes
+ * {@code findAll(Specification, Pageable)} and friends. All former derived-query
+ * methods (findByUsername…, findByAction…, etc.) have been removed — callers
+ * compose {@link com.pki.ra.common.util.AuditLogSpecification} predicates instead:
+ *
+ * <pre>{@code
+ * Specification<AuditLog> spec = Specification
+ *     .where(AuditLogSpecification.hasUsername(username))
+ *     .and(AuditLogSpecification.hasAction(action))
+ *     .and(AuditLogSpecification.hasOutcome(outcome));
+ *
+ * Page<AuditLog> page = auditLogRepository.findAll(spec, pageable);
+ * }</pre>
+ *
+ * <h3>Query categories retained</h3>
  * <ol>
- *   <li>Paginated — for REST endpoints that return large datasets.</li>
- *   <li>List — for filtered lookups (by user, action, outcome, resource).</li>
- *   <li>Count / exists — for quick statistics and existence checks.</li>
- *   <li>Aggregate — {@link ActionSummaryProjection} for dashboard summary.</li>
+ *   <li>Count / exists — for quick statistics and anomaly detection.</li>
+ *   <li>Aggregate — {@link ActionSummaryProjection} for dashboard summaries.</li>
  * </ol>
  *
  * <p>Registered automatically by
  * {@code @EnableJpaRepositories(basePackages = "com.pki.ra")} in {@code DatabaseConfig}.
  */
-public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
+public interface AuditLogRepository
+        extends JpaRepository<AuditLog, Long>,
+                JpaSpecificationExecutor<AuditLog> {
 
     // =========================================================================
-    // Paginated queries — use these for REST endpoints
-    // =========================================================================
-
-    /**
-     * All audit entries — newest first, paginated.
-     * Default page size is enforced in the controller (max 100).
-     */
-    Page<AuditLog> findAllByOrderByCreatedAtDesc(Pageable pageable);
-
-    /**
-     * All entries for a given username — newest first, paginated.
-     * Use when a single user may have thousands of entries.
-     */
-    Page<AuditLog> findByUsernameOrderByCreatedAtDesc(String username, Pageable pageable);
-
-    /**
-     * All entries for a given action type — newest first, paginated.
-     * Use when a high-frequency action (e.g. LOGIN) may have thousands of entries.
-     */
-    Page<AuditLog> findByActionOrderByCreatedAtDesc(String action, Pageable pageable);
-
-    /**
-     * All entries for a given outcome — newest first, paginated.
-     * Useful for "show me all failures" queries on large datasets.
-     */
-    Page<AuditLog> findByOutcomeOrderByCreatedAtDesc(String outcome, Pageable pageable);
-
-    // =========================================================================
-    // List queries — for targeted lookups expected to return small sets
-    // =========================================================================
-
-    /**
-     * All entries for a given username and action — newest first.
-     * Example: "Every CONFIG_REFRESH done by admin."
-     */
-    List<AuditLog> findByUsernameAndActionOrderByCreatedAtDesc(String username, String action);
-
-    /**
-     * All entries for a given username and outcome — newest first.
-     * Example: "Every failed action by john.doe."
-     */
-    List<AuditLog> findByUsernameAndOutcomeOrderByCreatedAtDesc(String username, String outcome);
-
-    /**
-     * All entries within a UTC time window — newest first.
-     * Example: "Everything that happened between 09:00 and 10:00 today."
-     */
-    List<AuditLog> findByCreatedAtBetweenOrderByCreatedAtDesc(Instant from, Instant to);
-
-    /**
-     * All entries for a specific resource identifier — newest first.
-     * Example: "Who touched the LDAP config rows?"
-     */
-    @Query("""
-            SELECT a FROM AuditLog a
-            WHERE a.resourceId = :resourceId
-            ORDER BY a.createdAt DESC
-            """)
-    List<AuditLog> findByResourceId(@Param("resourceId") String resourceId);
-
-    // =========================================================================
-    // Count / exists queries — for quick statistics
+    // Count / exists — for quick statistics and anomaly detection
     // =========================================================================
 
     /** Total number of audit entries recorded for a specific user. */
@@ -104,7 +55,7 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
     /** Total number of audit entries for a specific action type. */
     long countByAction(String action);
 
-    /** Total number of entries with a given outcome (SUCCESS / FAILURE). */
+    /** Total number of entries with a given outcome ({@code SUCCESS} / {@code FAILURE}). */
     long countByOutcome(String outcome);
 
     /** Total failures recorded for a specific user — useful for anomaly detection. */
@@ -120,9 +71,9 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
     /**
      * Returns action-level entry counts — ordered by count descending.
      *
-     * <p>Uses a {@link ActionSummaryProjection} interface projection so Spring Data
-     * maps the JPQL aliases ({@code action}, {@code count}) directly to typed
-     * getters — no {@code Object[]} casting needed.
+     * <p>Uses {@link ActionSummaryProjection} so Spring Data maps JPQL aliases
+     * ({@code action}, {@code count}) directly to typed getters —
+     * no {@code Object[]} casting needed.
      *
      * <p>Example result:
      * <pre>
@@ -140,7 +91,7 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
     List<ActionSummaryProjection> summariseByAction();
 
     /**
-     * Returns outcome counts (SUCCESS / FAILURE) across the entire table.
+     * Returns outcome counts ({@code SUCCESS} / {@code FAILURE}) across the entire table.
      * Useful for a quick health-check: how many failures vs successes?
      */
     @Query("""
