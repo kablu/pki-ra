@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
 
 /**
@@ -101,18 +102,26 @@ public abstract class AbstractRefreshController {
      * <p>Marked {@code final} — audit and error-handling contract
      * must not be bypassed by subclasses.
      *
-     * @param authentication Spring Security principal — never null (enforced by filter)
-     * @param request        inbound HTTP request for client IP resolution
+     * <h3>Why SecurityContextHolder instead of Authentication parameter?</h3>
+     * Spring MVC's {@code HandlerMethodArgumentResolver} does not reliably
+     * inject {@code Authentication} into methods declared on an abstract class —
+     * argument resolution targets the concrete {@code @RestController} class,
+     * not its inherited methods. Reading directly from
+     * {@link SecurityContextHolder} always works because it is a thread-local
+     * populated by Spring Security's filter chain before any controller method
+     * is invoked, regardless of class hierarchy.
+     *
+     * @param request inbound HTTP request — for client IP resolution only
      * @return {@code 200 OK} with {@link RefreshResult} on success;
      *         exceptions re-thrown to global {@code @ControllerAdvice}
      */
     @PostMapping("/refresh")
-    public final ResponseEntity<RefreshResult> refresh(
-            Authentication authentication,
-            HttpServletRequest request) {
+    public final ResponseEntity<RefreshResult> refresh(HttpServletRequest request) {
+
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
         Refreshable service    = refreshableService();
-        String      username   = authentication.getName();
+        String      username   = resolveUsername(authentication);
         String      ip         = resolveClientIp(request);
         String      action     = service.getAuditAction();   // e.g. "APP_CONFIG_REFRESH"
         String      resourceId = service.getResourceId();    // e.g. "app_config"
@@ -157,6 +166,29 @@ public abstract class AbstractRefreshController {
     // =========================================================================
     // Private helper — defined once, not duplicated in any subclass
     // =========================================================================
+
+    /**
+     * Resolves the authenticated username from the {@link Authentication} object.
+     *
+     * <p>Returns {@code "anonymous"} as a safe fallback when:
+     * <ul>
+     *   <li>The security filter chain did not populate the context (misconfiguration).</li>
+     *   <li>The endpoint is called in a context without an active security session.</li>
+     * </ul>
+     * In production the admin security filter chain guarantees a non-null,
+     * authenticated principal for every {@code /api/admin/**} request.
+     *
+     * @param authentication the {@link Authentication} from {@link SecurityContextHolder},
+     *                       may be {@code null}
+     * @return username string — never null
+     */
+    private String resolveUsername(Authentication authentication) {
+        if (authentication != null && authentication.isAuthenticated()) {
+            return authentication.getName();
+        }
+        log.warn("refresh() called with no authenticated principal — using 'anonymous'");
+        return "anonymous";
+    }
 
     /**
      * Resolves the real client IP address.
