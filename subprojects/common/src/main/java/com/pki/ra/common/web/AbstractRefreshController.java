@@ -3,6 +3,7 @@ package com.pki.ra.common.web;
 import com.pki.ra.common.config.Refreshable;
 import com.pki.ra.common.config.dto.RefreshResult;
 import com.pki.ra.common.util.AuditLogService;
+import com.pki.ra.common.util.IpAddressResolver;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -201,10 +202,6 @@ public abstract class AbstractRefreshController {
      * @return resolved client IP — never null
      */
     private String resolveClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
+        return IpAddressResolver.resolve(request);
     }
 }
