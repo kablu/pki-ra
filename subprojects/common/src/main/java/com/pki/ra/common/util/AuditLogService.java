@@ -1,10 +1,12 @@
 package com.pki.ra.common.util;
 
 import com.pki.ra.common.model.AuditLog;
+import com.pki.ra.common.user.UserManagementService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.Nullable;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +33,17 @@ public class AuditLogService {
     private EntityManager entityManager;
 
     /**
+     * Injected lazily to break the potential Spring circular-dependency cycle:
+     * {@code AuditLogService} ← {@code UserManagementService} ← repositories.
+     * {@code @Lazy} defers proxy creation until first method call.
+     */
+    private final UserManagementService userManagementService;
+
+    public AuditLogService(@Lazy UserManagementService userManagementService) {
+        this.userManagementService = userManagementService;
+    }
+
+    /**
      * Records an audit log entry with REQUIRES_NEW propagation.
      *
      * @param username   AD sAMAccountName of the acting user (non-null)
@@ -48,8 +61,11 @@ public class AuditLogService {
                     @Nullable String ipAddress,
                     String outcome) {
 
+        Long userId = userManagementService.resolveUserId(username).orElse(null);
+
         AuditLog entry = AuditLog.builder()
                 .username(username)
+                .userId(userId)
                 .action(action)
                 .resourceId(resourceId)
                 .description(description)
@@ -58,7 +74,7 @@ public class AuditLogService {
                 .build();
 
         entityManager.persist(entry);
-        log.debug("Audit: user={} action={} resource={} outcome={}", username, action, resourceId, outcome);
+        log.debug("Audit: user={} userId={} action={} resource={} outcome={}", username, userId, action, resourceId, outcome);
     }
 
     /**

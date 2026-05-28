@@ -1,0 +1,21 @@
+# =============================================================================
+# RAService — MariaDB profile overrides
+# Activated when profile "mariadb" is active.
+# Enables Flyway migration (disabled globally in application.yml).
+# =============================================================================
+
+spring:
+  autoconfigure:
+    exclude: []          # Clear the global Flyway exclusion from application.yml
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+  jpa:
+    hibernate:
+      ddl-auto: validate   # Schema managed by Flyway — Hibernate only validates
+
+# DataSource configured by common/config/DataSourceConfig via database.properties
