@@ -6,6 +6,7 @@ import com.pki.ra.common.user.dto.UserCreateRequest;
 import com.pki.ra.common.user.dto.UserDto;
 import com.pki.ra.common.user.dto.UserUpdateRequest;
 import com.pki.ra.common.util.AuditLogService;
+import com.pki.ra.common.util.IpAddressResolver;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -251,10 +252,6 @@ public abstract class AbstractUserController {
     }
 
     private String resolveClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
+        return IpAddressResolver.resolve(request);
     }
 }
