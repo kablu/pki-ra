@@ -1,13 +1,18 @@
 package com.pki.ra.common.error;
 
+import com.pki.ra.common.config.Refreshable;
+import com.pki.ra.common.config.dto.RefreshResult;
 import com.pki.ra.common.error.dto.ErrorCatalogDto;
+import com.pki.ra.common.model.ErrorCatalog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -36,11 +41,12 @@ import java.util.stream.Collectors;
  * }</pre>
  */
 @Service
-public class ErrorCatalogBean {
+public class ErrorCatalogBean implements Refreshable {
 
     private static final Logger log = LoggerFactory.getLogger(ErrorCatalogBean.class);
 
     private final ErrorCatalogRepository repository;
+    private final String                 applicationName;
 
     // Primary index: internal_code → dto
     private final ConcurrentHashMap<String, ErrorCatalogDto> byInternalCode = new ConcurrentHashMap<>();
@@ -48,8 +54,29 @@ public class ErrorCatalogBean {
     // Secondary index: external_code → dto
     private final ConcurrentHashMap<String, ErrorCatalogDto> byExternalCode = new ConcurrentHashMap<>();
 
-    public ErrorCatalogBean(ErrorCatalogRepository repository) {
-        this.repository = repository;
+    public ErrorCatalogBean(ErrorCatalogRepository repository,
+                            @Value("${spring.application.name}") String applicationName) {
+        this.repository      = repository;
+        this.applicationName = applicationName;
+    }
+
+    // =========================================================================
+    // Refreshable implementation — hot-reload via AbstractRefreshController
+    // =========================================================================
+
+    @Override
+    public String getServiceName() { return applicationName; }
+
+    @Override
+    public Class<?> entityClass() { return ErrorCatalog.class; }
+
+    @Override
+    public RefreshResult refresh(String triggeredBy) {
+        log.info("ErrorCatalogBean: refresh triggered by '{}'", triggeredBy);
+        load();
+        log.info("ErrorCatalogBean: refresh complete — {} entries loaded.", byInternalCode.size());
+        return new RefreshResult(applicationName, getResourceId(), byInternalCode.size(),
+                                 Instant.now(), triggeredBy);
     }
 
     // -------------------------------------------------------------------------
@@ -145,18 +172,6 @@ public class ErrorCatalogBean {
     // Refresh — hot-reload without restart
     // -------------------------------------------------------------------------
 
-    /**
-     * Clears both indexes and reloads all active rows from DB.
-     * Use from an admin endpoint to pick up newly inserted error codes.
-     *
-     * @return number of entries loaded after refresh
-     */
-    public int refresh() {
-        log.info("ErrorCatalogBean: manual refresh triggered.");
-        load();
-        log.info("ErrorCatalogBean: refresh complete — {} entries loaded.", byInternalCode.size());
-        return byInternalCode.size();
-    }
 
     // -------------------------------------------------------------------------
     // Helpers
