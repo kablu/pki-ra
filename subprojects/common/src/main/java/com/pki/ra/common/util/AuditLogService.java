@@ -31,6 +31,18 @@ import org.springframework.transaction.annotation.Transactional;
  *       created per call, regardless of which public method is used.</li>
  * </ul>
  *
+ * <h3>userId resolution — single vs double DB call</h3>
+ * Two overload families are provided for {@code logSuccess} and {@code logFailure}:
+ * <ul>
+ *   <li><b>Without {@code userId}</b> — callers that do not already hold a resolved
+ *       userId (most services, event handlers). {@link #persistEntry} resolves the
+ *       userId internally via {@link UserLookupService#resolveUserId(String)}.</li>
+ *   <li><b>With {@code userId}</b> — callers that have <em>already</em> resolved the
+ *       userId (e.g. {@link com.pki.ra.common.web.AbstractRefreshController}).
+ *       Passing it here skips the second DB call inside {@code persistEntry} and
+ *       guarantees the logged value and the stored value are identical.</li>
+ * </ul>
+ *
  * <h3>Read / query path</h3>
  * Inject {@link AuditLogRepository} directly — it provides paginated, filtered
  * and aggregated queries without going through this service.
@@ -71,6 +83,7 @@ public class AuditLogService {
 
     /**
      * Records one audit entry with a caller-supplied outcome.
+     * userId is resolved internally — use when the caller does not already hold it.
      *
      * <p>Opens a brand-new transaction ({@link Propagation#REQUIRES_NEW}),
      * builds the {@link AuditLog} via the builder, saves it through
@@ -92,11 +105,17 @@ public class AuditLogService {
                     @Nullable String ipAddress,
                     String outcome) {
 
-        persistEntry(username, action, resourceId, description, ipAddress, outcome);
+        persistEntry(username, action, resourceId, description, ipAddress, outcome, null);
     }
+
+    // =========================================================================
+    // logSuccess — two overloads
+    // =========================================================================
 
     /**
      * Records a successful action — outcome fixed to {@code "SUCCESS"}.
+     * userId is resolved internally via {@link UserLookupService}.
+     * Use this when the caller does not already hold a resolved userId.
      *
      * @param username    AD username
      * @param action      action-type constant
@@ -111,11 +130,45 @@ public class AuditLogService {
                            @Nullable String description,
                            @Nullable String ipAddress) {
 
-        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_SUCCESS);
+        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_SUCCESS, null);
     }
 
     /**
+     * Records a successful action — outcome fixed to {@code "SUCCESS"}.
+     * Accepts a pre-resolved {@code userId} — skips the internal DB lookup,
+     * avoiding a redundant {@link UserLookupService#resolveUserId(String)} call.
+     *
+     * <p>Use this overload when the caller has <em>already</em> resolved the userId
+     * (e.g. {@link com.pki.ra.common.web.AbstractRefreshController}) so that
+     * the value logged in SLF4J and the value written to the DB are guaranteed
+     * to be identical — no second query, no inconsistency.
+     *
+     * @param username    AD username
+     * @param action      action-type constant
+     * @param resourceId  optional resource identifier
+     * @param description human-readable summary
+     * @param ipAddress   originating IP ({@code null} for batch jobs)
+     * @param userId      pre-resolved numeric user ID — {@code null} if unknown
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void logSuccess(String username,
+                           String action,
+                           @Nullable String resourceId,
+                           @Nullable String description,
+                           @Nullable String ipAddress,
+                           @Nullable Long userId) {
+
+        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_SUCCESS, userId);
+    }
+
+    // =========================================================================
+    // logFailure — two overloads
+    // =========================================================================
+
+    /**
      * Records a failed action — outcome fixed to {@code "FAILURE"}.
+     * userId is resolved internally via {@link UserLookupService}.
+     * Use this when the caller does not already hold a resolved userId.
      *
      * @param username    AD username
      * @param action      action-type constant
@@ -130,8 +183,38 @@ public class AuditLogService {
                            @Nullable String description,
                            @Nullable String ipAddress) {
 
-        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_FAILURE);
+        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_FAILURE, null);
     }
+
+    /**
+     * Records a failed action — outcome fixed to {@code "FAILURE"}.
+     * Accepts a pre-resolved {@code userId} — skips the internal DB lookup.
+     *
+     * <p>Use this overload when the caller has <em>already</em> resolved the userId
+     * (e.g. {@link com.pki.ra.common.web.AbstractRefreshController}) so that
+     * the value logged in SLF4J and the value written to the DB are identical.
+     *
+     * @param username    AD username
+     * @param action      action-type constant
+     * @param resourceId  optional resource identifier
+     * @param description failure reason or exception message
+     * @param ipAddress   originating IP ({@code null} for batch jobs)
+     * @param userId      pre-resolved numeric user ID — {@code null} if unknown
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void logFailure(String username,
+                           String action,
+                           @Nullable String resourceId,
+                           @Nullable String description,
+                           @Nullable String ipAddress,
+                           @Nullable Long userId) {
+
+        persistEntry(username, action, resourceId, description, ipAddress, OUTCOME_FAILURE, userId);
+    }
+
+    // =========================================================================
+    // logSystem — system/batch actors (no HTTP context, no userId)
+    // =========================================================================
 
     /**
      * Records a system/batch action with no HTTP context.
@@ -157,7 +240,8 @@ public class AuditLogService {
                           @Nullable String resourceId,
                           @Nullable String description) {
 
-        persistEntry(username, action, resourceId, description, null, OUTCOME_SUCCESS);
+        // system / anonymous actors always resolve to null userId — pass null directly
+        persistEntry(username, action, resourceId, description, null, OUTCOME_SUCCESS, null);
     }
 
     // =========================================================================
@@ -175,26 +259,39 @@ public class AuditLogService {
      * <p>The correct pattern: each <em>public</em> method owns one
      * {@code REQUIRES_NEW} transaction and delegates here.
      *
+     * <h3>userId resolution strategy</h3>
+     * <ul>
+     *   <li>If {@code userId} is non-null — use it directly. No DB call.
+     *       Caller already resolved it (e.g. {@link com.pki.ra.common.web.AbstractRefreshController}).</li>
+     *   <li>If {@code userId} is {@code null} — resolve via
+     *       {@link UserLookupService#resolveUserId(String)}, which is null-safe
+     *       and never throws — returns {@link java.util.Optional#empty()} on any failure.</li>
+     * </ul>
+     *
      * @param username    AD sAMAccountName
      * @param action      action-type constant
      * @param resourceId  nullable resource identifier
      * @param description nullable human-readable summary
      * @param ipAddress   nullable client IP
      * @param outcome     {@code "SUCCESS"} or {@code "FAILURE"}
+     * @param userId      pre-resolved userId, or {@code null} to trigger internal resolution
      */
     private void persistEntry(String username,
                               String action,
                               @Nullable String resourceId,
                               @Nullable String description,
                               @Nullable String ipAddress,
-                              String outcome) {
+                              String outcome,
+                              @Nullable Long userId) {
 
-        // Resolve userId — null-safe, never throws (see UserLookupService javadoc)
-        Long userId = userLookupService.resolveUserId(username).orElse(null);
+        // Use pre-resolved userId if provided; otherwise resolve now (one DB call max)
+        Long resolvedUserId = (userId != null)
+                ? userId
+                : userLookupService.resolveUserId(username).orElse(null);
 
         AuditLog entry = AuditLog.builder()
                 .username(username)
-                .userId(userId)
+                .userId(resolvedUserId)
                 .action(action)
                 .resourceId(resourceId)
                 .description(description)
@@ -205,6 +302,6 @@ public class AuditLogService {
         auditLogRepository.save(entry);
 
         log.debug("Audit  user={}  userId={}  action={}  resource={}  outcome={}  ip={}",
-                  username, userId, action, resourceId, outcome, ipAddress);
+                  username, resolvedUserId, action, resourceId, outcome, ipAddress);
     }
 }

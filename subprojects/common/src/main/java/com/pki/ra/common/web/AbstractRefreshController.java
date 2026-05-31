@@ -169,7 +169,8 @@ public abstract class AbstractRefreshController {
                     action,
                     resourceId,
                     result.count() + " item(s) loaded into " + result.serviceName(),
-                    ip
+                    ip,
+                    userId          // pre-resolved — no second DB call inside AuditLogService
             );
 
             log.info("[{}] refresh complete — count={} userId='{}' username='{}' ip='{}'",
@@ -184,7 +185,8 @@ public abstract class AbstractRefreshController {
                     action,
                     resourceId,
                     "Refresh failed: " + ex.getMessage(),
-                    ip
+                    ip,
+                    userId          // pre-resolved — no second DB call inside AuditLogService
             );
 
             log.error("[{}] refresh FAILED — userId='{}' username='{}' reason='{}'",
