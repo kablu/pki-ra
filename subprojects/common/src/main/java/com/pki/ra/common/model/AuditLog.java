@@ -41,7 +41,7 @@ public class AuditLog {
     /**
      * Numeric ID of the user who triggered the action.
      *
-     * <p>Resolved from {@code username} by {@link com.pki.ra.common.util.UserLookupService}
+     * <p>Resolved from {@code username} by {@link com.pki.ra.common.user.service.UserLookupService}
      * at the time the audit entry is written.
      *
      * <p>Nullable by design — backward compatible:

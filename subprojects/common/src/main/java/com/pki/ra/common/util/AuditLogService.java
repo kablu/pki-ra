@@ -1,6 +1,7 @@
 package com.pki.ra.common.util;
 
 import com.pki.ra.common.model.AuditLog;
+import com.pki.ra.common.user.service.UserLookupService;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;

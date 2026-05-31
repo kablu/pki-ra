@@ -2,9 +2,9 @@ package com.pki.ra.common.web;
 
 import com.pki.ra.common.config.Refreshable;
 import com.pki.ra.common.config.dto.RefreshResult;
+import com.pki.ra.common.user.service.UserLookupService;
 import com.pki.ra.common.util.AuditLogService;
 import com.pki.ra.common.util.IpAddressResolver;
-import com.pki.ra.common.util.UserLookupService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
