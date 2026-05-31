@@ -1,12 +1,23 @@
 # =============================================================================
-# RAService — MariaDB profile overrides
-# Activated when profile "mariadb" is active.
-# Enables Flyway migration (disabled globally in application.yml).
+# PKI-RA RAService — MariaDB Profile Configuration
+# Active when: --spring.profiles.active=mariadb
+#
+# Purpose:
+#   Connects raservice to a production MariaDB instance.
+#   Enables Flyway so migration scripts run automatically on startup.
+#   Sets ddl-auto to validate — Hibernate checks schema but never modifies it.
+#
+# Required before starting with this profile:
+#   1. MariaDB server running
+#   2. Database created:
+#        CREATE DATABASE pki_ra CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+#   3. db.properties on classpath with correct JDBC URL, username, password
 # =============================================================================
 
 spring:
   autoconfigure:
-    exclude: []          # Clear the global Flyway exclusion from application.yml
+    # Re-enable Flyway (excluded globally in application.yml for H2 profile)
+    exclude: []
 
   flyway:
     enabled: true
@@ -16,6 +27,17 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: validate   # Schema managed by Flyway — Hibernate only validates
+      # validate — Hibernate checks entity vs schema, never changes the table
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MariaDBDialect
+        format_sql: false
 
 # DataSource configured by common/config/DataSourceConfig via database.properties
+
+logging:
+  level:
+    com.pki.ra: INFO
+    org.flywaydb: INFO

@@ -39,10 +39,19 @@ public class AuditLog {
     private String username;
 
     /**
-     * FK to {@link User#getId()} — null for 'system' / scheduler entries
-     * that have no row in the users table.
+     * Numeric ID of the user who triggered the action.
+     *
+     * <p>Resolved from {@code username} at the time the audit entry is written.
      * Kept as plain {@code Long} (not {@code @ManyToOne}) to preserve
      * AuditLog immutability and avoid lazy-loading complexity.
+     *
+     * <p>Nullable by design — backward compatible:
+     * <ul>
+     *   <li>{@code system} / {@code anonymous} actors have no users-table row.</li>
+     *   <li>Rows written before user-management was deployed keep {@code NULL}.</li>
+     *   <li>If the {@code users} table is absent, falls back to {@code NULL}
+     *       automatically — audit logging never fails due to this field.</li>
+     * </ul>
      */
     @Column(name = "user_id")
     private Long userId;

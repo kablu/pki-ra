@@ -24,8 +24,8 @@ import jakarta.servlet.http.HttpServletRequest;
  *
  * <h3>Reusability</h3>
  * Used by every abstract controller that needs client IP:
- * {@link com.pki.ra.common.web.AbstractUserController} and any future
- * refresh / cert-operation controllers.
+ * {@link com.pki.ra.common.web.AbstractRefreshController} and
+ * {@link com.pki.ra.common.web.AbstractUserController}.
  * Defined once here — never duplicated.
  *
  * @author pki-ra
