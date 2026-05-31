@@ -44,6 +44,18 @@ import java.util.List;
  * Spring MVC's {@code HandlerMethodArgumentResolver} does not reliably inject
  * {@code Authentication} into inherited abstract-class methods.
  *
+ * <h3>userId resolution — single DB call per request</h3>
+ * Every mutating endpoint resolves the actor's {@code userId} once via
+ * {@link #resolveActorUserId(String)} at the start of the method. The resolved
+ * value is then passed to both the SLF4J log statement and the
+ * {@link AuditLogService} overload that accepts a pre-resolved {@code userId}.
+ * This guarantees:
+ * <ul>
+ *   <li>Exactly one {@code resolveUserId} DB call per HTTP request.</li>
+ *   <li>The {@code userId} printed in logs and stored in {@code audit_log} are
+ *       always identical — no subtle inconsistency from a second lookup.</li>
+ * </ul>
+ *
  * <h3>Audit actions written</h3>
  * <ul>
  *   <li>{@code USER_CREATE}     — POST /users</li>
@@ -82,7 +94,7 @@ public abstract class AbstractUserController {
     }
 
     // =========================================================================
-    // GET /users — list all
+    // GET /users — list all (read-only, no audit)
     // =========================================================================
 
     @GetMapping
@@ -93,7 +105,7 @@ public abstract class AbstractUserController {
     }
 
     // =========================================================================
-    // GET /users/{id}
+    // GET /users/{id} (read-only, no audit)
     // =========================================================================
 
     @GetMapping("/{id}")
@@ -111,21 +123,29 @@ public abstract class AbstractUserController {
             @Valid @RequestBody UserCreateRequest request,
             HttpServletRequest httpRequest) {
 
-        String actor = resolveUsername();
-        String ip    = resolveClientIp(httpRequest);
+        String actor    = resolveUsername();
+        Long   actorId  = resolveActorUserId(actor);   // single DB call
+        String ip       = resolveClientIp(httpRequest);
         String resource = request.username();
 
         try {
             UserDto created = userManagementService.createUser(request, actor);
+
             auditLogService.logSuccess(actor, ACTION_USER_CREATE, resource,
-                    "User created: " + created.username(), ip);
-            log.info("[USER_CREATE] username='{}' by='{}' ip='{}'", resource, actor, ip);
+                    "User created: " + created.username(), ip,
+                    actorId);    // pre-resolved — no second DB call inside AuditLogService
+
+            log.info("[USER_CREATE] username='{}' by='{}' actorId='{}' ip='{}'",
+                     resource, actor, actorId, ip);
             return ResponseEntity.status(HttpStatus.CREATED).body(created);
 
         } catch (Exception ex) {
             auditLogService.logFailure(actor, ACTION_USER_CREATE, resource,
-                    "Create failed: " + ex.getMessage(), ip);
-            log.error("[USER_CREATE] FAILED username='{}' reason='{}'", resource, ex.getMessage(), ex);
+                    "Create failed: " + ex.getMessage(), ip,
+                    actorId);
+
+            log.error("[USER_CREATE] FAILED username='{}' by='{}' actorId='{}' reason='{}'",
+                      resource, actor, actorId, ex.getMessage(), ex);
             throw ex;
         }
     }
@@ -141,18 +161,28 @@ public abstract class AbstractUserController {
             HttpServletRequest httpRequest) {
 
         String actor    = resolveUsername();
+        Long   actorId  = resolveActorUserId(actor);   // single DB call
         String ip       = resolveClientIp(httpRequest);
         String resource = String.valueOf(id);
 
         try {
             UserDto updated = userManagementService.updateUser(id, request, actor);
+
             auditLogService.logSuccess(actor, ACTION_USER_UPDATE, resource,
-                    "User updated: " + updated.username(), ip);
+                    "User updated: " + updated.username(), ip,
+                    actorId);
+
+            log.info("[USER_UPDATE] userId={} by='{}' actorId='{}' ip='{}'",
+                     id, actor, actorId, ip);
             return ResponseEntity.ok(updated);
 
         } catch (Exception ex) {
             auditLogService.logFailure(actor, ACTION_USER_UPDATE, resource,
-                    "Update failed: " + ex.getMessage(), ip);
+                    "Update failed: " + ex.getMessage(), ip,
+                    actorId);
+
+            log.error("[USER_UPDATE] FAILED userId={} by='{}' actorId='{}' reason='{}'",
+                      id, actor, actorId, ex.getMessage(), ex);
             throw ex;
         }
     }
@@ -167,19 +197,28 @@ public abstract class AbstractUserController {
             HttpServletRequest httpRequest) {
 
         String actor    = resolveUsername();
+        Long   actorId  = resolveActorUserId(actor);   // single DB call
         String ip       = resolveClientIp(httpRequest);
         String resource = String.valueOf(id);
 
         try {
             userManagementService.deactivateUser(id, actor);
+
             auditLogService.logSuccess(actor, ACTION_USER_DEACTIVATE, resource,
-                    "User deactivated: id=" + id, ip);
-            log.info("[USER_DEACTIVATE] id={} by='{}' ip='{}'", id, actor, ip);
+                    "User deactivated: id=" + id, ip,
+                    actorId);
+
+            log.info("[USER_DEACTIVATE] userId={} by='{}' actorId='{}' ip='{}'",
+                     id, actor, actorId, ip);
             return ResponseEntity.noContent().build();
 
         } catch (Exception ex) {
             auditLogService.logFailure(actor, ACTION_USER_DEACTIVATE, resource,
-                    "Deactivate failed: " + ex.getMessage(), ip);
+                    "Deactivate failed: " + ex.getMessage(), ip,
+                    actorId);
+
+            log.error("[USER_DEACTIVATE] FAILED userId={} by='{}' actorId='{}' reason='{}'",
+                      id, actor, actorId, ex.getMessage(), ex);
             throw ex;
         }
     }
@@ -195,18 +234,28 @@ public abstract class AbstractUserController {
             HttpServletRequest httpRequest) {
 
         String actor    = resolveUsername();
+        Long   actorId  = resolveActorUserId(actor);   // single DB call
         String ip       = resolveClientIp(httpRequest);
         String resource = "userId=" + id + " roleId=" + request.roleId();
 
         try {
             UserDto updated = userManagementService.assignRole(id, request, actor);
+
             auditLogService.logSuccess(actor, ACTION_ROLE_ASSIGN, resource,
-                    "Role assigned to user: " + resource, ip);
+                    "Role assigned to user: " + resource, ip,
+                    actorId);
+
+            log.info("[ROLE_ASSIGN] {} by='{}' actorId='{}' ip='{}'",
+                     resource, actor, actorId, ip);
             return ResponseEntity.ok(updated);
 
         } catch (Exception ex) {
             auditLogService.logFailure(actor, ACTION_ROLE_ASSIGN, resource,
-                    "Assign role failed: " + ex.getMessage(), ip);
+                    "Assign role failed: " + ex.getMessage(), ip,
+                    actorId);
+
+            log.error("[ROLE_ASSIGN] FAILED {} by='{}' actorId='{}' reason='{}'",
+                      resource, actor, actorId, ex.getMessage(), ex);
             throw ex;
         }
     }
@@ -222,26 +271,44 @@ public abstract class AbstractUserController {
             HttpServletRequest httpRequest) {
 
         String actor    = resolveUsername();
+        Long   actorId  = resolveActorUserId(actor);   // single DB call
         String ip       = resolveClientIp(httpRequest);
         String resource = "userId=" + id + " roleId=" + roleId;
 
         try {
             UserDto updated = userManagementService.removeRole(id, roleId, actor);
+
             auditLogService.logSuccess(actor, ACTION_ROLE_REMOVE, resource,
-                    "Role removed from user: " + resource, ip);
+                    "Role removed from user: " + resource, ip,
+                    actorId);
+
+            log.info("[ROLE_REMOVE] {} by='{}' actorId='{}' ip='{}'",
+                     resource, actor, actorId, ip);
             return ResponseEntity.ok(updated);
 
         } catch (Exception ex) {
             auditLogService.logFailure(actor, ACTION_ROLE_REMOVE, resource,
-                    "Remove role failed: " + ex.getMessage(), ip);
+                    "Remove role failed: " + ex.getMessage(), ip,
+                    actorId);
+
+            log.error("[ROLE_REMOVE] FAILED {} by='{}' actorId='{}' reason='{}'",
+                      resource, actor, actorId, ex.getMessage(), ex);
             throw ex;
         }
     }
 
     // =========================================================================
-    // Private helpers — same pattern as AbstractRefreshController
+    // Private helpers — defined once, not duplicated in any subclass
     // =========================================================================
 
+    /**
+     * Resolves the authenticated username from {@link SecurityContextHolder}.
+     *
+     * <p>Returns {@code "anonymous"} as a safe fallback when no authenticated
+     * principal is present (misconfiguration or non-production context).
+     *
+     * @return username string — never null
+     */
     private String resolveUsername() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth != null && auth.isAuthenticated()) {
@@ -251,6 +318,32 @@ public abstract class AbstractUserController {
         return "anonymous";
     }
 
+    /**
+     * Resolves the numeric {@code userId} for the given actor username.
+     *
+     * <p>Delegates to {@link UserManagementService#resolveUserId(String)} —
+     * null-safe, never throws; returns {@code null} for system/anonymous actors
+     * or when the {@code users} table is absent (backward-compatible).
+     *
+     * <p>Called once per mutating request. The resolved value is then passed
+     * to both the SLF4J log statement and {@link AuditLogService} — eliminating
+     * the double DB call that would occur if {@code AuditLogService} resolved
+     * it internally.
+     *
+     * @param actor the authenticated username
+     * @return resolved numeric userId, or {@code null}
+     */
+    private Long resolveActorUserId(String actor) {
+        return userManagementService.resolveUserId(actor).orElse(null);
+    }
+
+    /**
+     * Resolves the real client IP address, normalising IPv6 loopback to
+     * {@code "127.0.0.1"} for readable logs and consistent audit entries.
+     *
+     * @param request the inbound HTTP request
+     * @return resolved client IP — never null
+     */
     private String resolveClientIp(HttpServletRequest request) {
         return IpAddressResolver.resolve(request);
     }
