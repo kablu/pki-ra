@@ -20,7 +20,8 @@ import java.time.Instant;
 @Table(name = "audit_log", indexes = {
     @Index(name = "idx_audit_log_username",   columnList = "username"),
     @Index(name = "idx_audit_log_action",     columnList = "action"),
-    @Index(name = "idx_audit_log_created_at", columnList = "created_at")
+    @Index(name = "idx_audit_log_created_at", columnList = "created_at"),
+    @Index(name = "idx_audit_log_user_id",    columnList = "user_id")
 })
 @Getter
 @Setter
@@ -36,6 +37,23 @@ public class AuditLog {
     /** AD username (sAMAccountName) who triggered the action. */
     @Column(name = "username", nullable = false, length = 100)
     private String username;
+
+    /**
+     * Numeric ID of the user who triggered the action.
+     *
+     * <p>Resolved from {@code username} by {@link com.pki.ra.common.util.UserLookupService}
+     * at the time the audit entry is written.
+     *
+     * <p>Nullable by design — backward compatible:
+     * <ul>
+     *   <li>{@code system} / {@code anonymous} actors have no users-table row.</li>
+     *   <li>Rows written before user-management was deployed keep {@code NULL}.</li>
+     *   <li>If the {@code users} table is absent, falls back to {@code NULL}
+     *       automatically — audit logging never fails due to this field.</li>
+     * </ul>
+     */
+    @Column(name = "user_id")
+    private Long userId;
 
     /** Action type, e.g. CERT_REQUEST, CERT_APPROVE, CERT_REVOKE, LOGIN, LOGOUT. */
     @Column(name = "action", nullable = false, length = 100)

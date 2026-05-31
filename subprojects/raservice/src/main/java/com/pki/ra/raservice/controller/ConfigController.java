@@ -4,6 +4,7 @@ import com.pki.ra.common.config.AppConfigRepository;
 import com.pki.ra.common.config.Refreshable;
 import com.pki.ra.common.config.dto.AppConfigAuditDto;
 import com.pki.ra.common.util.AuditLogService;
+import com.pki.ra.common.util.UserLookupService;
 import com.pki.ra.common.web.AbstractRefreshController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,8 +58,9 @@ public class ConfigController extends AbstractRefreshController {
     public ConfigController(
             Refreshable configService,
             AppConfigRepository appConfigRepository,
-            AuditLogService auditLogService) {
-        super(auditLogService);
+            AuditLogService auditLogService,
+            UserLookupService userLookupService) {
+        super(auditLogService, userLookupService);
         this.configService       = configService;
         this.appConfigRepository = appConfigRepository;
     }

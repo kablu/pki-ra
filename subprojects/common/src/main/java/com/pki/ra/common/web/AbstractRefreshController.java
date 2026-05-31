@@ -4,6 +4,7 @@ import com.pki.ra.common.config.Refreshable;
 import com.pki.ra.common.config.dto.RefreshResult;
 import com.pki.ra.common.util.AuditLogService;
 import com.pki.ra.common.util.IpAddressResolver;
+import com.pki.ra.common.util.UserLookupService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,15 +20,18 @@ import org.springframework.web.bind.annotation.PostMapping;
  * <h3>Design Pattern — Template Method</h3>
  * Full refresh flow defined here once:
  * <ol>
- *   <li>Extract username + client IP from the request.</li>
- *   <li>Read service metadata (auditAction, resourceId) from the {@link Refreshable} bean.</li>
+ *   <li>Extract {@code username} + client IP from the request.</li>
+ *   <li>Resolve numeric {@code userId} from {@code username} via
+ *       {@link UserLookupService} — backward-compatible, never throws.</li>
+ *   <li>Read service metadata ({@code auditAction}, {@code resourceId})
+ *       from the {@link Refreshable} bean.</li>
  *   <li>Call {@link Refreshable#refresh(String)}.</li>
- *   <li>Write {@code SUCCESS} audit entry on success.</li>
+ *   <li>Write {@code SUCCESS} audit entry (with {@code userId}) on success.</li>
  *   <li>Return {@code 200 OK} with {@link RefreshResult}.</li>
  *   <li>On exception: write {@code FAILURE} audit entry, log error, re-throw.</li>
  * </ol>
  * Subclasses supply only the {@link Refreshable} bean via
- * {@link #refreshableService()} — all six steps are inherited.
+ * {@link #refreshableService()} — all steps are inherited.
  *
  * <h3>Adding a new module's refresh endpoint — 2 steps only</h3>
  * <pre>{@code
@@ -39,8 +43,9 @@ import org.springframework.web.bind.annotation.PostMapping;
  *
  *     public CmpConfigController(
  *             @Qualifier("cmpConfigBean") Refreshable cmpConfigBean,
- *             AuditLogService auditLogService) {
- *         super(auditLogService);
+ *             AuditLogService auditLogService,
+ *             UserLookupService userLookupService) {
+ *         super(auditLogService, userLookupService);
  *         this.cmpConfigBean = cmpConfigBean;
  *     }
  *
@@ -49,6 +54,15 @@ import org.springframework.web.bind.annotation.PostMapping;
  *     // POST /api/admin/cmp-config/refresh is live — nothing else needed
  * }
  * }</pre>
+ *
+ * <h3>userId in logs — why and how</h3>
+ * {@link UserLookupService#resolveUserId(String)} performs a lightweight
+ * native SQL query ({@code SELECT id FROM users WHERE username = ?}).
+ * The resolved {@code userId} is logged in every SLF4J statement so that
+ * log aggregation tools (Grafana Loki, Splunk, ELK) can filter by numeric ID
+ * instead of potentially changing username strings.
+ * Returns {@code null} gracefully if the {@code users} table is absent
+ * (backward compatible) — logs show {@code userId=null} instead of failing.
  *
  * <h3>Why {@code final} on the endpoint method?</h3>
  * Prevents subclasses from accidentally bypassing the audit / error-handling
@@ -61,21 +75,26 @@ import org.springframework.web.bind.annotation.PostMapping;
  * @see Refreshable
  * @see RefreshResult
  * @see AuditLogService
+ * @see UserLookupService
  */
 public abstract class AbstractRefreshController {
 
     private static final Logger log =
             LoggerFactory.getLogger(AbstractRefreshController.class);
 
-    private final AuditLogService auditLogService;
+    private final AuditLogService  auditLogService;
+    private final UserLookupService userLookupService;
 
     /**
-     * Constructor for subclasses — receives {@link AuditLogService} from Spring.
+     * Constructor for subclasses — receives both services from Spring.
      *
-     * @param auditLogService used to write SUCCESS / FAILURE audit entries — never null
+     * @param auditLogService   writes SUCCESS / FAILURE audit entries — never null
+     * @param userLookupService resolves numeric userId from AD username — never null
      */
-    protected AbstractRefreshController(AuditLogService auditLogService) {
-        this.auditLogService = auditLogService;
+    protected AbstractRefreshController(AuditLogService auditLogService,
+                                        UserLookupService userLookupService) {
+        this.auditLogService   = auditLogService;
+        this.userLookupService = userLookupService;
     }
 
     // =========================================================================
@@ -103,6 +122,15 @@ public abstract class AbstractRefreshController {
      * <p>Marked {@code final} — audit and error-handling contract
      * must not be bypassed by subclasses.
      *
+     * <h3>Flow</h3>
+     * <pre>
+     *  SecurityContextHolder → username
+     *  UserLookupService     → userId  (null-safe, backward-compatible)
+     *  IpAddressResolver     → ip      (X-Forwarded-For + IPv6 normalised)
+     *  Refreshable           → refresh()
+     *  AuditLogService       → logSuccess / logFailure
+     * </pre>
+     *
      * <h3>Why SecurityContextHolder instead of Authentication parameter?</h3>
      * Spring MVC's {@code HandlerMethodArgumentResolver} does not reliably
      * inject {@code Authentication} into methods declared on an abstract class —
@@ -123,14 +151,15 @@ public abstract class AbstractRefreshController {
 
         Refreshable service    = refreshableService();
         String      username   = resolveUsername(authentication);
+        Long        userId     = userLookupService.resolveUserId(username).orElse(null);
         String      ip         = resolveClientIp(request);
         String      action     = service.getAuditAction();   // e.g. "APP_CONFIG_REFRESH"
         String      resourceId = service.getResourceId();    // e.g. "app_config"
         // resourceId + action captured before refresh() is called —
         // safe to use in catch block even if refresh() throws
 
-        log.info("[{}] refresh requested — user='{}' ip='{}'",
-                 action, username, ip);
+        log.info("[{}] refresh requested — userId='{}' username='{}' ip='{}'",
+                 action, userId, username, ip);
 
         try {
             RefreshResult result = service.refresh(username);
@@ -143,8 +172,8 @@ public abstract class AbstractRefreshController {
                     ip
             );
 
-            log.info("[{}] refresh complete — count={} by='{}' ip='{}'",
-                     action, result.count(), username, ip);
+            log.info("[{}] refresh complete — count={} userId='{}' username='{}' ip='{}'",
+                     action, result.count(), userId, username, ip);
 
             return ResponseEntity.ok(result);
 
@@ -158,14 +187,14 @@ public abstract class AbstractRefreshController {
                     ip
             );
 
-            log.error("[{}] refresh FAILED — user='{}' reason='{}'",
-                      action, username, ex.getMessage(), ex);
+            log.error("[{}] refresh FAILED — userId='{}' username='{}' reason='{}'",
+                      action, userId, username, ex.getMessage(), ex);
             throw ex;
         }
     }
 
     // =========================================================================
-    // Private helper — defined once, not duplicated in any subclass
+    // Private helpers — defined once, not duplicated in any subclass
     // =========================================================================
 
     /**
@@ -192,11 +221,8 @@ public abstract class AbstractRefreshController {
     }
 
     /**
-     * Resolves the real client IP address.
-     *
-     * <p>Checks {@code X-Forwarded-For} first (set by reverse proxies /
-     * load balancers — first entry is the real client). Falls back to
-     * {@link HttpServletRequest#getRemoteAddr()} for direct connections.
+     * Resolves the real client IP address, normalising IPv6 loopback to
+     * {@code "127.0.0.1"} for readable logs and consistent audit entries.
      *
      * @param request the inbound HTTP request
      * @return resolved client IP — never null

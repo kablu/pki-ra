@@ -56,9 +56,12 @@ public class AuditLogService {
     public static final String OUTCOME_FAILURE = "FAILURE";
 
     private final AuditLogRepository auditLogRepository;
+    private final UserLookupService  userLookupService;
 
-    public AuditLogService(AuditLogRepository auditLogRepository) {
+    public AuditLogService(AuditLogRepository auditLogRepository,
+                           UserLookupService userLookupService) {
         this.auditLogRepository = auditLogRepository;
+        this.userLookupService  = userLookupService;
     }
 
     // =========================================================================
@@ -185,8 +188,12 @@ public class AuditLogService {
                               @Nullable String ipAddress,
                               String outcome) {
 
+        // Resolve userId — null-safe, never throws (see UserLookupService javadoc)
+        Long userId = userLookupService.resolveUserId(username).orElse(null);
+
         AuditLog entry = AuditLog.builder()
                 .username(username)
+                .userId(userId)
                 .action(action)
                 .resourceId(resourceId)
                 .description(description)
@@ -196,7 +203,7 @@ public class AuditLogService {
 
         auditLogRepository.save(entry);
 
-        log.debug("Audit  user={}  action={}  resource={}  outcome={}  ip={}",
-                  username, action, resourceId, outcome, ipAddress);
+        log.debug("Audit  user={}  userId={}  action={}  resource={}  outcome={}  ip={}",
+                  username, userId, action, resourceId, outcome, ipAddress);
     }
 }
