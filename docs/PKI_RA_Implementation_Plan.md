@@ -187,7 +187,7 @@ CaConnector (interface)
 
 ## Phase 9: Key Management & HSM Integration (XL)
 
-**Goal:** Key escrow, recovery (dual-control), HSM support
+**Goal:** Key escrow, recovery (dual-control), HSM as optional pluggable layer
 
 ### New Tables
 | Table | Purpose |
@@ -198,6 +198,64 @@ CaConnector (interface)
 
 ### New Roles
 - `ROLE_KEY_RECOVERY_AGENT` — dual-control approval for key recovery
+
+### Architecture Decision: HSM is Optional & Pluggable
+
+HSM integration is designed as an **optional pluggable layer** — NOT a mandatory dependency. The system works fully with software keystores (PKCS#12) and can be upgraded to hardware HSM without code changes.
+
+**When HSM IS Mandatory (Regulatory):**
+| Scenario | Why |
+|----------|-----|
+| PCI-DSS (payment) | Private keys must be in hardware — audit fails without HSM |
+| eIDAS (EU digital signatures) | Qualified certificates legally require HSM |
+| FIPS 140-2 Level 3+ (gov/defense) | Tamper-evident hardware mandated |
+| Public CA (TLS to public) | CA/Browser Forum Baseline Requirements |
+| Banking / Financial services | RBI / regulatory guidelines |
+
+**When HSM is NOT Required:**
+| Scenario | Why |
+|----------|-----|
+| Internal enterprise PKI | No external regulatory mandate |
+| Dev / Test / POC | PKCS#12 file works perfectly |
+| mTLS between microservices | Internal trust — HSM is overkill |
+| Small org (<500 certs) | Cost vs risk doesn't justify |
+
+**Pluggable Architecture (Strategy Pattern):**
+
+```
+CertificateIssuanceService
+         |
+         | uses
+         v
+KeyStoreProvider (interface)
+├── SoftwareKeyStoreProvider   ← Current (PKCS#12, works out of box)
+│     Phase 1-8, zero config
+└── HsmKeyStoreProvider        ← Phase 9 (PKCS#11, enable when needed)
+      SafeNet Luna, Thales nShield, AWS CloudHSM, SoftHSM2 (dev)
+```
+
+**Configuration — Switch is One Property:**
+
+```yaml
+# Default — software (no HSM needed)
+ca.keystore.provider: software
+ca.keystore.path: ca-keystore.p12
+
+# HSM — just change provider
+ca.keystore.provider: hsm
+ca.keystore.pkcs11.library: /opt/safenet/lib/libCryptoki2_64.so
+ca.keystore.pkcs11.slot: 0
+ca.keystore.pkcs11.pin: ${HSM_PIN}
+```
+
+**Cost:**
+| Option | Cost | Use Case |
+|--------|------|----------|
+| PKCS#12 (software) | Free | Internal PKI, dev, test |
+| SoftHSM2 | Free (open source) | Dev/test HSM simulation |
+| AWS CloudHSM | ~$1.50/hr | Cloud-native production |
+| SafeNet Luna | $15K-$50K | On-prem enterprise |
+| Thales nShield | $20K-$80K | High-security / government |
 
 ---
 
