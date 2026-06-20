@@ -1,0 +1,172 @@
+
+================================================================================
+  FLOW-05: CA SUBMISSION (Steps 28-31)
+  Master Flow Reference: MASTER_FLOW_CSR_To_Certificate.txt
+  Previous: FLOW-04 (Approval Workflow)
+  Next: FLOW-06 (Post-Issuance)
+================================================================================
+
+  This flow takes the APPROVED CSR and sends it to the CA for signing.
+  The CA is EXTERNAL to RA — RA only communicates via CaClient interface.
+
+
+  STEP 1 (Master Step 28): PREPARE CSR FOR CA
+  ===================================================================
+  What:   Enrich the CSR with template-defined extensions before
+          sending to CA. The CSR from the client may be minimal —
+          the RA adds policy-required extensions.
+
+  Actions:
+    a. Load certificate_template for this request
+    b. Determine final extensions to include:
+
+       +---------------------------+----------------------------------+
+       | Extension                 | Source                           |
+       +---------------------------+----------------------------------+
+       | Key Usage                 | From template.key_usages         |
+       |                           | e.g. digitalSignature,           |
+       |                           | keyEncipherment                  |
+       +---------------------------+----------------------------------+
+       | Extended Key Usage        | From template.ext_key_usages     |
+       |                           | e.g. serverAuth (1.3.6.1.5.5.7  |
+       |                           | .3.1)                            |
+       +---------------------------+----------------------------------+
+       | Basic Constraints         | CA=false (always for end-entity) |
+       +---------------------------+----------------------------------+
+       | Subject Alt Names         | From CSR + any RA-added SANs     |
+       +---------------------------+----------------------------------+
+       | CRL Distribution Point    | From ca.properties               |
+       |                           | .crlDistributionPoint            |
+       +---------------------------+----------------------------------+
+       | Authority Info Access     | OCSP URL from ca.properties      |
+       |                           | .ocspUrl                         |
+       +---------------------------+----------------------------------+
+       | Subject Key Identifier    | Computed from CSR public key     |
+       +---------------------------+----------------------------------+
+       | Authority Key Identifier  | From issuing CA cert             |
+       +---------------------------+----------------------------------+
+
+    c. Determine validity period:
+         - Requested by client?           → use if within template limits
+         - Not requested?                 → use template.default_validity_days
+         - Exceeds template max?          → cap to template max
+         - Would exceed CA cert validity? → cap to CA not_after - 1 day
+
+    d. Assemble the signing request:
+         CaClient.sign(
+           csrPem       = request.getCsrPem(),
+           validityDays = finalValidityDays,
+           sans         = finalSans
+         )
+
+
+  STEP 2 (Master Step 29): CALL CA CLIENT
+  ===================================================================
+  What:   Send the prepared CSR to the CA backend for signing
+  When:   Immediately after preparation
+  How:    Via CaClient interface (Strategy pattern)
+
+  Current implementation (BuiltinCaClient):
+    - REST call to caservice module: POST /api/ca/sign
+    - Body: { "pkcs10": "...", "validityDays": 365, "subjectAltNames": "..." }
+    - Timeout: 30 seconds
+    - Retry: 1 retry on timeout, 0 retries on 4xx
+
+  Future implementations (Phase 8):
+    - EjbcaCaConnector: REST call to EJBCA
+    - VaultPkiConnector: HTTP call to Vault PKI engine
+    - AwsAcmConnector: AWS SDK call to ACM Private CA
+    - AdcsCaConnector: WCF/DCOM call to Microsoft AD CS
+
+  CA connector selection:
+    a. Template has ca_connector_id?   → use that specific connector
+    b. No template binding?            → use default connector
+    c. Default connector down?         → failover to next priority
+    d. All connectors down?            → FAIL (Step 4)
+
+
+  STEP 3 (Master Step 30): RECEIVE CA RESPONSE
+  ===================================================================
+  What:   Parse the signed certificate returned by CA
+  When:   After CA responds successfully
+
+  CA returns (CaSigningResult):
+    +---------------------------+--------------------------------------+
+    | Field                     | Value                                |
+    +---------------------------+--------------------------------------+
+    | certificatePem            | PEM-encoded end-entity certificate   |
+    | certificateChain          | Full chain: end-entity + intermediate|
+    |                           | + root CA (all PEM concatenated)     |
+    | serialNumber              | Hex uppercase, e.g. "4F2A1B3C..."   |
+    | signatureAlgorithm        | e.g. "SHA256withRSA"                |
+    | subject                   | X.500 DN from cert                   |
+    | issuer                    | Issuing CA's X.500 DN                |
+    | notBefore                 | ISO-8601 UTC, e.g. "2026-06-20T..."  |
+    | notAfter                  | ISO-8601 UTC, e.g. "2027-06-20T..."  |
+    +---------------------------+--------------------------------------+
+
+  RA validates CA response:
+    a. certificatePem is valid X.509? (parse with CertificateFactory)
+    b. Subject DN matches CSR subject DN?
+    c. Serial number is unique? (check certificates table)
+    d. Signature algorithm is acceptable?
+    e. Validity period matches what was requested?
+    f. Chain is complete? (end-entity signed by intermediate,
+       intermediate signed by root)
+
+  If all valid → proceed to FLOW-06
+  If any issue → FAIL (Step 4)
+
+
+  STEP 4 (Master Step 31): HANDLE FAILURE
+  ===================================================================
+  What:   CA call failed — network error, CA error, validation error
+  When:   CA returns error, timeout, or invalid response
+
+  Failure scenarios:
+    +-------------------------------+----------------------------------+
+    | Failure Type                  | Action                           |
+    +-------------------------------+----------------------------------+
+    | CA unreachable (timeout)      | Retry once (30s timeout)         |
+    |                               | If retry fails → FAILED state    |
+    +-------------------------------+----------------------------------+
+    | CA returns HTTP 4xx           | No retry (CSR issue, not temp)   |
+    |                               | → FAILED state                   |
+    |                               | statusReason = CA error message  |
+    +-------------------------------+----------------------------------+
+    | CA returns HTTP 5xx           | Retry once                       |
+    |                               | If retry fails → FAILED state    |
+    +-------------------------------+----------------------------------+
+    | CA response invalid (parse)   | No retry → FAILED state          |
+    |                               | statusReason = "Invalid CA resp" |
+    +-------------------------------+----------------------------------+
+    | Serial number collision       | Regenerate serial, retry signing |
+    |                               | (very rare: 128-bit random)      |
+    +-------------------------------+----------------------------------+
+    | All CA connectors down        | FAILED state                     |
+    | (Phase 8 multi-CA)            | Alert admin: "All CAs unreachable"|
+    +-------------------------------+----------------------------------+
+
+  On FAILURE:
+    a. Update request:
+         status = FAILED
+         status_reason = [error message]
+    b. Audit log:
+         action = CERT_ISSUE_FAIL
+         outcome = FAILURE
+         description = [error details]
+    c. Notify:
+         Requester: "Certificate issuance failed for request #101"
+         Last approver: "Approved request #101 failed at CA"
+         Admin: if all connectors down
+    d. Request can be RETRIED:
+         Admin can trigger retry: POST /api/ra/requests/{id}/retry
+         This re-sends the same CSR to CA (no re-approval needed)
+
+  On SUCCESS → handoff to FLOW-06
+
+
+================================================================================
+  END OF FLOW-05
+  Next: FLOW-06 (Post-Issuance) → docs/internal/FLOW_06_...
+================================================================================
