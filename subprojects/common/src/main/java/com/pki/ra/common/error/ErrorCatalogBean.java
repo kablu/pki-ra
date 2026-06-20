@@ -1,21 +1,15 @@
 package com.pki.ra.common.error;
 
-import com.pki.ra.common.config.Refreshable;
-import com.pki.ra.common.config.dto.RefreshResult;
+import com.pki.ra.common.config.AbstractRefreshableCache;
 import com.pki.ra.common.error.dto.ErrorCatalogDto;
 import com.pki.ra.common.model.ErrorCatalog;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
-import java.time.Instant;
-import java.util.Collections;
+// ErrorCatalogProvider — decouples callers (ExceptionFactory, GlobalExceptionHandler)
+// from this concrete class. Tests mock the interface; production autowires this bean.
+
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -23,15 +17,26 @@ import java.util.stream.Collectors;
 /**
  * In-memory cache of all active {@code error_catalog} rows.
  *
- * <p>Loaded once on {@link ApplicationReadyEvent} — after the full Spring
- * context is ready. Two indexes are maintained:
+ * <p>Loaded once on {@link org.springframework.boot.context.event.ApplicationReadyEvent}
+ * — after the full Spring context is ready. Two indexes are maintained:
  * <ul>
- *   <li>Primary  — keyed by {@code internal_code} (used inside the application)</li>
- *   <li>Secondary — keyed by {@code external_code} (used for API/UI error lookup)</li>
+ *   <li>Primary  — {@link #cache}, keyed by {@code internal_code} (used inside the application)</li>
+ *   <li>Secondary — {@link #byExternalCode}, keyed by {@code external_code} (API/UI error lookup)</li>
  * </ul>
  *
  * <p>No DB calls on the request path after startup.
- * Call {@link #refresh()} to hot-reload without restarting.
+ * Call {@code POST /api/admin/error-catalog/refresh} to hot-reload without restarting.
+ *
+ * <h3>Extending {@link AbstractRefreshableCache}</h3>
+ * The following are fully inherited — zero duplication here:
+ * <ul>
+ *   <li>{@code applicationName} + {@link #getServiceName()}</li>
+ *   <li>{@code loadOnReady()} — {@code @EventListener(ApplicationReadyEvent)} startup trigger</li>
+ *   <li>{@code refresh(String)} — hot-reload body + {@link com.pki.ra.common.config.dto.RefreshResult}</li>
+ *   <li>{@link #getAll()}, {@link #size()}, {@link #containsKey(String)}</li>
+ * </ul>
+ * This class only implements {@link #entityClass()}, {@link #doLoad()},
+ * {@link #printTable()}, and the catalog-specific lookup API.
  *
  * <p>Usage:
  * <pre>{@code
@@ -39,185 +44,77 @@ import java.util.stream.Collectors;
  * ErrorCatalogDto err = errorCatalogBean.getByExternalCode("ERR-001").orElseThrow();
  * List<ErrorCatalogDto> certErrors = errorCatalogBean.getByCategory("CERTIFICATE");
  * }</pre>
+ *
+ * @see AbstractRefreshableCache
+ * @see com.pki.ra.common.exception.ExceptionFactory
  */
 @Service
-public class ErrorCatalogBean implements Refreshable {
-
-    private static final Logger log = LoggerFactory.getLogger(ErrorCatalogBean.class);
+public class ErrorCatalogBean extends AbstractRefreshableCache<ErrorCatalog, ErrorCatalogDto>
+        implements ErrorCatalogProvider {
 
     private final ErrorCatalogRepository repository;
-    private final String                 applicationName;
 
-    // Primary index: internal_code → dto
-    private final ConcurrentHashMap<String, ErrorCatalogDto> byInternalCode = new ConcurrentHashMap<>();
-
-    // Secondary index: external_code → dto
+    // Secondary index: external_code → dto  (primary = cache, keyed by internal_code)
     private final ConcurrentHashMap<String, ErrorCatalogDto> byExternalCode = new ConcurrentHashMap<>();
 
     public ErrorCatalogBean(ErrorCatalogRepository repository,
                             @Value("${spring.application.name}") String applicationName) {
-        this.repository      = repository;
-        this.applicationName = applicationName;
+        super(applicationName);
+        this.repository = repository;
     }
 
     // =========================================================================
-    // Refreshable implementation — hot-reload via AbstractRefreshController
+    // Refreshable — must implement
     // =========================================================================
 
     @Override
-    public String getServiceName() { return applicationName; }
-
-    @Override
-    public Class<?> entityClass() { return ErrorCatalog.class; }
-
-    @Override
-    public RefreshResult refresh(String triggeredBy) {
-        log.info("ErrorCatalogBean: refresh triggered by '{}'", triggeredBy);
-        load();
-        log.info("ErrorCatalogBean: refresh complete — {} entries loaded.", byInternalCode.size());
-        return new RefreshResult(applicationName, getResourceId(), byInternalCode.size(),
-                                 Instant.now(), triggeredBy);
+    public Class<?> entityClass() {
+        return ErrorCatalog.class;
     }
 
-    // -------------------------------------------------------------------------
-    // Startup loading
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // AbstractRefreshableCache — must implement
+    // =========================================================================
 
-    @EventListener(ApplicationReadyEvent.class)
-    @Order(10)
-    public void loadOnReady() {
-        load();
-        printTable();
-    }
-
-    private void load() {
-        byInternalCode.clear();
+    /**
+     * Clears both indexes and repopulates from all active {@code error_catalog} rows.
+     * Called on startup and on every hot-reload.
+     */
+    @Override
+    protected void doLoad() {
+        cache.clear();
         byExternalCode.clear();
 
         repository.findAllActive().forEach(row -> {
-            var dto = toDto(row);
-            byInternalCode.put(row.getInternalCode(), dto);
-            byExternalCode.put(row.getExternalCode(), dto);
+            ErrorCatalogDto dto = toDto(row);
+            cache.put(row.getInternalCode(), dto);            // primary index
+            byExternalCode.put(row.getExternalCode(), dto);   // secondary index
         });
     }
 
-    // -------------------------------------------------------------------------
-    // Lookup by internal code (use inside application / service layer)
-    // -------------------------------------------------------------------------
-
-    public Optional<ErrorCatalogDto> getByInternalCode(String internalCode) {
-        return Optional.ofNullable(byInternalCode.get(internalCode));
-    }
-
-    /** Convenience — returns message string for the given internal code. */
-    public Optional<String> getMessage(String internalCode) {
-        return getByInternalCode(internalCode).map(ErrorCatalogDto::message);
-    }
-
-    /** Convenience — returns HTTP status for the given internal code, or 500 if not found. */
-    public int getHttpStatus(String internalCode) {
-        return getByInternalCode(internalCode).map(ErrorCatalogDto::httpStatus).orElse(500);
-    }
-
-    // -------------------------------------------------------------------------
-    // Lookup by external code (use when mapping API/UI error codes)
-    // -------------------------------------------------------------------------
-
-    public Optional<ErrorCatalogDto> getByExternalCode(String externalCode) {
-        return Optional.ofNullable(byExternalCode.get(externalCode));
-    }
-
-    // -------------------------------------------------------------------------
-    // Filtered lookups
-    // -------------------------------------------------------------------------
-
-    /** Returns all errors for the given category (e.g. "CERTIFICATE", "AUTH"). */
-    public List<ErrorCatalogDto> getByCategory(String category) {
-        return byInternalCode.values().stream()
-                .filter(e -> e.category().equalsIgnoreCase(category))
-                .collect(Collectors.toList());
-    }
-
-    /** Returns all errors with the given severity (e.g. "CRITICAL", "ERROR"). */
-    public List<ErrorCatalogDto> getBySeverity(String severity) {
-        return byInternalCode.values().stream()
-                .filter(e -> e.severity().equalsIgnoreCase(severity))
-                .collect(Collectors.toList());
-    }
-
-    /** Returns all errors that are retryable. */
-    public List<ErrorCatalogDto> getRetryable() {
-        return byInternalCode.values().stream()
-                .filter(ErrorCatalogDto::isRetryable)
-                .collect(Collectors.toList());
-    }
-
-    // -------------------------------------------------------------------------
-    // Cache info
-    // -------------------------------------------------------------------------
-
-    public Map<String, ErrorCatalogDto> getAll() {
-        return Collections.unmodifiableMap(byInternalCode);
-    }
-
-    public boolean containsInternalCode(String internalCode) {
-        return byInternalCode.containsKey(internalCode);
-    }
-
-    public int size() {
-        return byInternalCode.size();
-    }
-
-    // -------------------------------------------------------------------------
-    // Refresh — hot-reload without restart
-    // -------------------------------------------------------------------------
-
-
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
-    private ErrorCatalogDto toDto(com.pki.ra.common.model.ErrorCatalog row) {
-        return new ErrorCatalogDto(
-                row.getInternalCode(),
-                row.getExternalCode(),
-                row.getMessage(),
-                row.getDescription(),
-                row.getCategory(),
-                row.getSeverity(),
-                row.getHttpStatus(),
-                row.isRetryable()
-        );
-    }
-
-    private void printTable() {
-        if (byInternalCode.isEmpty()) {
+    @Override
+    protected void printTable() {
+        if (cache.isEmpty()) {
             log.warn("ErrorCatalogBean: no active error catalog entries found.");
             return;
         }
 
-        int intW  = byInternalCode.values().stream().mapToInt(e -> e.internalCode().length()).max().orElse(15);
-        int extW  = byInternalCode.values().stream().mapToInt(e -> e.externalCode().length()).max().orElse(8);
-        int catW  = byInternalCode.values().stream().mapToInt(e -> e.category().length()).max().orElse(8);
-        int sevW  = byInternalCode.values().stream().mapToInt(e -> e.severity().length()).max().orElse(8);
-        int msgW  = Math.min(byInternalCode.values().stream().mapToInt(e -> e.message().length()).max().orElse(20), 40);
-
-        intW = Math.max(intW, 13);
-        extW = Math.max(extW, 13);
-        catW = Math.max(catW, 8);
-        sevW = Math.max(sevW, 8);
+        int intW = Math.max(cache.values().stream().mapToInt(e -> e.internalCode().length()).max().orElse(15), 13);
+        int extW = Math.max(cache.values().stream().mapToInt(e -> e.externalCode().length()).max().orElse(8),  13);
+        int catW = Math.max(cache.values().stream().mapToInt(e -> e.category().length()).max().orElse(8),       8);
+        int sevW = Math.max(cache.values().stream().mapToInt(e -> e.severity().length()).max().orElse(8),       8);
+        int msgW = Math.min(cache.values().stream().mapToInt(e -> e.message().length()).max().orElse(20), 40);
 
         String fmt     = "| %-" + intW + "s | %-" + extW + "s | %-" + catW + "s | %-" + sevW + "s | %4s | %-" + msgW + "s |";
         String divider = "+" + "-".repeat(intW + 2) + "+" + "-".repeat(extW + 2)
                        + "+" + "-".repeat(catW + 2) + "+" + "-".repeat(sevW + 2)
                        + "+" + "-".repeat(6) + "+" + "-".repeat(msgW + 2) + "+";
 
-        log.info("ErrorCatalogBean: {} active error entries loaded", byInternalCode.size());
+        log.info("ErrorCatalogBean: {} active error entries loaded", cache.size());
         log.info(divider);
         log.info(String.format(fmt, "internal_code", "external_code", "category", "severity", "http", "message"));
         log.info(divider);
-
-        byInternalCode.values().stream()
+        cache.values().stream()
                 .sorted((a, b) -> {
                     int cmp = a.category().compareTo(b.category());
                     return cmp != 0 ? cmp : a.internalCode().compareTo(b.internalCode());
@@ -230,7 +127,75 @@ public class ErrorCatalogBean implements Refreshable {
                             e.internalCode(), e.externalCode(),
                             e.category(), e.severity(), e.httpStatus(), msg));
                 });
-
         log.info(divider);
+    }
+
+    // =========================================================================
+    // Catalog lookup API — ErrorCatalogBean-specific
+    // =========================================================================
+
+    /** Lookup by internal code — use inside the service/exception layer. */
+    public Optional<ErrorCatalogDto> getByInternalCode(String internalCode) {
+        return Optional.ofNullable(cache.get(internalCode));
+    }
+
+    /** Convenience — returns the external message string for the given internal code. */
+    public Optional<String> getMessage(String internalCode) {
+        return getByInternalCode(internalCode).map(ErrorCatalogDto::message);
+    }
+
+    /** Convenience — returns HTTP status for the given internal code, or 500 if not found. */
+    public int getHttpStatus(String internalCode) {
+        return getByInternalCode(internalCode).map(ErrorCatalogDto::httpStatus).orElse(500);
+    }
+
+    /** Lookup by external code — use when mapping API/UI error codes inbound. */
+    public Optional<ErrorCatalogDto> getByExternalCode(String externalCode) {
+        return Optional.ofNullable(byExternalCode.get(externalCode));
+    }
+
+    /** Returns all errors for the given category (e.g. {@code "CERTIFICATE"}, {@code "AUTH"}). */
+    public List<ErrorCatalogDto> getByCategory(String category) {
+        return cache.values().stream()
+                .filter(e -> e.category().equalsIgnoreCase(category))
+                .collect(Collectors.toList());
+    }
+
+    /** Returns all errors with the given severity (e.g. {@code "CRITICAL"}, {@code "ERROR"}). */
+    public List<ErrorCatalogDto> getBySeverity(String severity) {
+        return cache.values().stream()
+                .filter(e -> e.severity().equalsIgnoreCase(severity))
+                .collect(Collectors.toList());
+    }
+
+    /** Returns all errors that are marked retryable. */
+    public List<ErrorCatalogDto> getRetryable() {
+        return cache.values().stream()
+                .filter(ErrorCatalogDto::isRetryable)
+                .collect(Collectors.toList());
+    }
+
+    /** Returns {@code true} if the primary (internal-code) cache contains this code. */
+    public boolean containsInternalCode(String internalCode) {
+        return cache.containsKey(internalCode);
+    }
+
+    // getAll(), size(), containsKey() — inherited from AbstractRefreshableCache
+
+    // =========================================================================
+    // Private helper
+    // =========================================================================
+
+    private ErrorCatalogDto toDto(ErrorCatalog row) {
+        return new ErrorCatalogDto(
+                row.getInternalCode(),
+                row.getExternalCode(),
+                row.getMessage(),
+                row.getDescription(),
+                row.getCategory(),
+                row.getSeverity(),
+                row.getHttpStatus(),
+                row.isRetryable()
+        );
     }
 }

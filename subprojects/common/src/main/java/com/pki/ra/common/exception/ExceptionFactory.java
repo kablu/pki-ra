@@ -1,6 +1,6 @@
 package com.pki.ra.common.exception;
 
-import com.pki.ra.common.error.ErrorCatalogBean;
+import com.pki.ra.common.error.ErrorCatalogProvider;
 import com.pki.ra.common.error.ErrorCodeKey;
 import com.pki.ra.common.error.dto.ErrorCatalogDto;
 import org.slf4j.Logger;
@@ -57,10 +57,10 @@ public class ExceptionFactory {
     private static final String FALLBACK_EXTERNAL_MESSAGE = "An unexpected error occurred. Please try again later.";
     private static final int    FALLBACK_HTTP_STATUS       = 500;
 
-    private final ErrorCatalogBean errorCatalogBean;
+    private final ErrorCatalogProvider errorCatalogProvider;
 
-    public ExceptionFactory(ErrorCatalogBean errorCatalogBean) {
-        this.errorCatalogBean = errorCatalogBean;
+    public ExceptionFactory(ErrorCatalogProvider errorCatalogProvider) {
+        this.errorCatalogProvider = errorCatalogProvider;
     }
 
     // =========================================================================
@@ -144,7 +144,7 @@ public class ExceptionFactory {
     // =========================================================================
 
     private ErrorCatalogDto resolve(String internalCode) {
-        return errorCatalogBean.getByInternalCode(internalCode)
+        return errorCatalogProvider.getByInternalCode(internalCode)
                 .orElseGet(() -> {
                     log.warn("ExceptionFactory: internalCode '{}' not found in error catalog — using fallback.",
                              internalCode);

@@ -2,30 +2,28 @@ package com.pki.ra.raservice.seed;
 
 import com.pki.ra.common.config.AppConfigRepository;
 import com.pki.ra.common.model.AppConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 /**
- * Inserts sample {@code app_config} rows for local H2 development.
+ * Seeds sample {@code app_config} rows for local H2 development.
  *
- * <p>Each row holds a single plain-string field value — no JSON.
- * All rows with the same {@code config_type} are assembled into one DTO
- * by {@code ConfigBean} on {@code ApplicationReadyEvent}.
+ * <p>Runs as {@link org.springframework.boot.ApplicationRunner} — before
+ * {@code ApplicationReadyEvent} — so data is present when
+ * {@link com.pki.ra.common.config.ConfigBean#loadOnReady()} fires.
  *
- * <p>Runs as {@link ApplicationRunner} — before {@code ApplicationReadyEvent} —
- * so data is present when {@code ConfigBean.loadOnReady()} fires.
+ * <p>Idempotent: skipped automatically if the table already contains data
+ * (handled by {@link AbstractH2Seeder#run(org.springframework.boot.ApplicationArguments)}).
+ *
+ * @see AbstractH2Seeder
  */
 @Component
 @Profile("h2")
-public class AppConfigSeeder implements ApplicationRunner {
-
-    private static final Logger log = LoggerFactory.getLogger(AppConfigSeeder.class);
+@Order(1)
+public class AppConfigSeeder extends AbstractH2Seeder {
 
     private final AppConfigRepository repository;
 
@@ -34,14 +32,12 @@ public class AppConfigSeeder implements ApplicationRunner {
     }
 
     @Override
-    public void run(ApplicationArguments args) {
-        if (repository.count() > 0) {
-            log.info("AppConfigSeeder: app_config already has data — skipping seed.");
-            return;
-        }
+    protected long count() {
+        return repository.count();
+    }
 
-        log.info("AppConfigSeeder: seeding sample app_config rows...");
-
+    @Override
+    protected void seed() {
         repository.saveAll(List.of(
 
             // ── LDAP config — one row per field ──────────────────────────────
@@ -55,8 +51,6 @@ public class AppConfigSeeder implements ApplicationRunner {
             row("readTimeoutMs",       "LDAP", "10000",                                                 "Read timeout in ms")
 
         ));
-
-        log.info("AppConfigSeeder: {} row(s) inserted.", repository.count());
     }
 
     private AppConfig row(String key, String type, String value, String description) {

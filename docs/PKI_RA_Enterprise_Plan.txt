@@ -1,0 +1,527 @@
+
+================================================================================
+     ENTERPRISE PKI REGISTRATION AUTHORITY — IMPLEMENTATION PLAN
+     Project  : pki-ra (Spring Boot 4.0 / Java 25)
+     Date     : 2026-06-20
+     Modules  : common, raservice, caservice, gui, scheduler, uiservice
+================================================================================
+
+
+================================================================================
+  CONTEXT
+================================================================================
+
+  The pki-ra project currently has foundational infrastructure:
+    - User Management (AD-synced, RBAC with ROLE_ADMIN)
+    - Role Management (roles, user_roles M:M)
+    - AppConfig (key-value config with hot-reload cache)
+    - Error Catalog (18+ error codes, internal/external separation)
+    - Audit Logging (immutable trail, filtered search, summaries)
+    - Exception Handling (8 handlers, correlationId, zero leaks)
+    - CA Service basics (CSR signing, root/intermediate cert endpoints)
+
+  Goal: Develop into a full enterprise RA comparable to EJBCA, Venafi,
+        or Sectigo — certificate lifecycle, approval workflows,
+        revocation, protocol support, and multi-CA connectivity.
+
+  Design Patterns in Use:
+    - Template Method    (Abstract controllers)
+    - Provider Pattern   (ErrorCatalogProvider)
+    - Specification      (AuditLog filtering)
+    - Strategy           (CaClient interface for multi-CA)
+    - Startup Validation (Error codes verified at boot)
+
+
+================================================================================
+  PHASE 1: CERTIFICATE LIFECYCLE CORE                    [Size: XL] [CRITICAL]
+================================================================================
+
+  Goal: End-to-end CSR submission -> approval -> issuance -> download
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | certificate_requests              | CSR blob, subject DN, requester,  |
+  |                                   | status (PENDING / APPROVED /      |
+  |                                   | REJECTED / ISSUED / FAILED),      |
+  |                                   | template_id FK                    |
+  +-----------------------------------+-----------------------------------+
+  | certificates                      | serial, subject, issuer,          |
+  |                                   | not_before, not_after, PEM,       |
+  |                                   | status (ACTIVE / REVOKED /        |
+  |                                   | EXPIRED / SUSPENDED),             |
+  |                                   | fingerprint_sha256, request_id FK |
+  +-----------------------------------+-----------------------------------+
+  | certificate_request_approvals     | request_id FK, approver_id FK,    |
+  |                                   | decision, comment, timestamp      |
+  +-----------------------------------+-----------------------------------+
+
+  +-----------------------------------------------------------------------+
+  | NEW REST APIs                                                         |
+  +--------+--------------------------------------+-----------------------+
+  | Method | Path                                 | Purpose               |
+  +--------+--------------------------------------+-----------------------+
+  | POST   | /api/ra/requests                     | Submit CSR            |
+  | GET    | /api/ra/requests/{id}                | Get request status    |
+  | GET    | /api/ra/requests                     | List requests (paged) |
+  | POST   | /api/ra/requests/{id}/approve        | Approve (OPERATOR)    |
+  | POST   | /api/ra/requests/{id}/reject         | Reject with reason    |
+  | GET    | /api/ra/certificates/{serial}        | Get cert details      |
+  | GET    | /api/ra/certificates/{serial}/download| Download PEM/DER/P12  |
+  +--------+--------------------------------------+-----------------------+
+
+  Flow:
+    User submits CSR --> PENDING --> Operator approves --> CA signs --> ISSUED
+                                --> Operator rejects  --> REJECTED
+                                --> CA fails          --> FAILED
+
+  Reuse:
+    - CertificateIssuanceService (caservice) -- called after approval
+    - AuditLogService            -- log every request/approval/issuance
+    - BaseAuditEntity            -- extend for new entities
+    - ErrorCodeKey               -- add codes PKI_CERT_001 to PKI_CERT_010
+    - AbstractGlobalExceptionHandler -- already handles all exception types
+
+  Module Placement:
+    - Entities      --> common
+    - Services/APIs --> raservice
+    - GUI pages     --> gui
+
+  STATUS: *** IMPLEMENTED ***
+
+
+================================================================================
+  PHASE 2: CERTIFICATE TEMPLATES & POLICY ENGINE         [Size: L] [HIGH]
+================================================================================
+
+  Goal: Predefined cert profiles enforcing key usage, validity, naming rules
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | certificate_templates             | name, key_usages,                 |
+  |                                   | ext_key_usages,                   |
+  |                                   | max_validity_days, min_key_size,  |
+  |                                   | allowed_algorithms,               |
+  |                                   | allowed_san_types,                |
+  |                                   | subject_dn_pattern, is_active     |
+  +-----------------------------------+-----------------------------------+
+  | template_permissions              | template_id FK, role_id FK        |
+  |                                   | (which roles can use which)       |
+  +-----------------------------------+-----------------------------------+
+
+  Template Types:
+    +-------------------+------------------------------------------+
+    | Template          | Key Usage / EKU                          |
+    +-------------------+------------------------------------------+
+    | TLS Server        | digitalSignature + serverAuth            |
+    | TLS Client        | digitalSignature + clientAuth            |
+    | Code Signing      | digitalSignature + codeSigning           |
+    | S/MIME Email       | digitalSignature + emailProtection       |
+    | Document Signing  | digitalSignature + nonRepudiation        |
+    +-------------------+------------------------------------------+
+
+  APIs:
+    GET  /api/ra/templates       -- list available templates
+    POST /api/ra/templates       -- create template (ROLE_ADMIN)
+    PUT  /api/ra/templates/{id}  -- update template
+    GET  /api/ra/templates/{id}  -- get template details
+
+  Reuse:
+    - AbstractRefreshableCache --> TemplateCacheBean
+    - AbstractRefreshController --> hot-reload endpoint
+
+
+================================================================================
+  PHASE 3: REVOCATION MANAGEMENT                         [Size: L] [HIGH]
+================================================================================
+
+  Goal: Full revocation lifecycle + CRL generation + OCSP responder
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | certificate_revocations           | certificate_id FK,                |
+  |                                   | reason_code (RFC 5280),           |
+  |                                   | revocation_time, revoked_by       |
+  +-----------------------------------+-----------------------------------+
+  | crl_entries                       | crl_number, this_update,          |
+  |                                   | next_update, crl_blob, is_delta   |
+  +-----------------------------------+-----------------------------------+
+
+  RFC 5280 Revocation Reasons:
+    0 = unspecified
+    1 = keyCompromise
+    2 = cACompromise
+    3 = affiliationChanged
+    4 = superseded
+    5 = cessationOfOperation
+    6 = certificateHold (suspension)
+
+  APIs:
+    POST /api/ra/certificates/{serial}/revoke    -- revoke with reason
+    POST /api/ra/certificates/{serial}/suspend   -- certificateHold
+    POST /api/ra/certificates/{serial}/unsuspend -- remove hold
+    GET  /api/ra/crl/current                     -- download CRL
+    POST /api/ra/ocsp                            -- OCSP responder (RFC 6960)
+
+  New Quartz Jobs:
+    - CrlGenerationJob            -- scheduled CRL generation
+    - ExpiredCertificateCleanupJob -- mark expired certs
+
+  Reuse:
+    - CaProperties (already has crlDistributionPoint, ocspUrl)
+    - BouncyCastle (already present for CRL/OCSP generation)
+
+
+================================================================================
+  PHASE 4: NOTIFICATION SYSTEM & EXPIRY TRACKING         [Size: M] [HIGH]
+================================================================================
+
+  Goal: Proactive alerts -- complete stubbed CertificateExpiryNotificationJob
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | notifications                     | user_id FK, type                  |
+  |                                   | (EMAIL/WEBHOOK/IN_APP),           |
+  |                                   | event_type, certificate_id FK,    |
+  |                                   | status (PENDING/SENT/FAILED),     |
+  |                                   | sent_at                           |
+  +-----------------------------------+-----------------------------------+
+  | notification_channels             | name, type, config_json           |
+  |                                   | (SMTP settings, webhook URL)      |
+  +-----------------------------------+-----------------------------------+
+  | notification_rules                | event_type, channel_id FK,        |
+  |                                   | days_before_expiry                |
+  +-----------------------------------+-----------------------------------+
+
+  Notification Thresholds:
+    90 days --> 60 days --> 30 days --> 14 days --> 7 days --> 1 day
+
+  Features:
+    - Email notifications (Spring Mail)
+    - Webhook notifications (POST to configured URLs)
+    - In-app notification inbox
+    - Configurable per-user preferences
+
+  Reuse:
+    - Existing CertificateExpiryNotificationJob stub in scheduler
+    - AppConfig for notification settings
+
+
+================================================================================
+  PHASE 5: ADVANCED APPROVAL WORKFLOWS                   [Size: L] [MEDIUM]
+================================================================================
+
+  Goal: Multi-level approvals, auto-approve, delegation, escalation
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | approval_policies                 | name, template_id FK,             |
+  |                                   | approval_chain_json,              |
+  |                                   | auto_approve_conditions,          |
+  |                                   | escalation_hours                  |
+  +-----------------------------------+-----------------------------------+
+  | approval_delegations              | delegator_user_id,                |
+  |                                   | delegate_user_id,                 |
+  |                                   | valid_from, valid_until           |
+  +-----------------------------------+-----------------------------------+
+  | approval_groups                   | name, description                 |
+  | approval_group_members            | group_id FK, user_id FK           |
+  +-----------------------------------+-----------------------------------+
+
+  Features:
+    - Multi-level approval chains (team lead -> security officer)
+    - Auto-approve by template, requester role, or DN pattern
+    - Delegation during absence (valid_from / valid_until)
+    - Escalation if not approved within N hours
+
+  New Quartz Job:
+    - ApprovalEscalationJob -- auto-escalate stale requests
+
+
+================================================================================
+  PHASE 6: REPORTING & DASHBOARD                         [Size: M] [MEDIUM]
+================================================================================
+
+  Goal: Operational visibility -- cert inventory, expiry forecast
+
+  APIs:
+    GET /api/ra/dashboard/summary          -- aggregate stats
+    GET /api/ra/dashboard/expiry-forecast  -- upcoming expirations
+    GET /api/ra/reports/inventory?format=  -- export CSV/PDF
+    GET /api/ra/reports/compliance         -- compliance findings
+
+  Dashboard Panels:
+    +---------------------+---------------------+---------------------+
+    | Total Certs: 2,340  | Active: 2,180       | Revoked: 98         |
+    +---------------------+---------------------+---------------------+
+    | Expired: 62         | Expiring 30d: 47    | Expiring 7d: 12     |
+    +---------------------+---------------------+---------------------+
+    | Pending Requests: 8 | Issued Today: 15    | Rejected Today: 2   |
+    +---------------------+---------------------+---------------------+
+
+  Reports:
+    - Certificate inventory (by template, requester, CA, status)
+    - Issuance/revocation trends over time
+    - Compliance report (weak keys, expired, policy violations)
+    - Expiry forecast (30/60/90 day windows)
+
+
+================================================================================
+  PHASE 7: PROTOCOL SUPPORT -- EST & SCEP                [Size: XL] [MEDIUM]
+================================================================================
+
+  Goal: Industry-standard enrollment for automated device provisioning
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | protocol_clients                  | client_id, protocol (EST/SCEP),   |
+  |                                   | auth_type, shared_secret_hash,    |
+  |                                   | is_active                         |
+  +-----------------------------------+-----------------------------------+
+  | protocol_transactions             | client_id FK, protocol,           |
+  |                                   | transaction_id, status,           |
+  |                                   | certificate_id FK                 |
+  +-----------------------------------+-----------------------------------+
+
+  EST (RFC 7030):
+    POST /.well-known/est/simpleenroll    -- simple enrollment
+    POST /.well-known/est/simplereenroll  -- re-enrollment
+    GET  /.well-known/est/cacerts         -- CA certificates
+    GET  /.well-known/est/csrattrs        -- CSR attributes
+
+  SCEP (draft-nourse-scep):
+    GET  /scep/pkiclient.exe?operation=GetCACert   -- CA cert
+    GET  /scep/pkiclient.exe?operation=GetCACaps   -- capabilities
+    POST /scep/pkiclient.exe?operation=PKIOperation -- enrollment
+
+
+================================================================================
+  PHASE 8: MULTI-CA BACKEND SUPPORT                      [Size: XL] [MEDIUM]
+================================================================================
+
+  Goal: Connect to external CAs alongside built-in CA
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | ca_connectors                     | name, type (BUILTIN / EJBCA /     |
+  |                                   | ADCS / VAULT / AWS),              |
+  |                                   | config_json (encrypted),          |
+  |                                   | priority, is_active               |
+  +-----------------------------------+-----------------------------------+
+  | ca_connector_health               | connector_id FK, last_check,      |
+  |                                   | status, response_time_ms          |
+  +-----------------------------------+-----------------------------------+
+
+  Strategy Pattern:
+
+    CaConnector (interface)
+    |
+    +-- BuiltinCaConnector    (wraps existing CertificateIssuanceService)
+    +-- EjbcaCaConnector      (EJBCA REST API)
+    +-- VaultPkiConnector     (HashiCorp Vault PKI secrets engine)
+    +-- AwsAcmConnector       (AWS ACM Private CA)
+    +-- AdcsCaConnector       (Microsoft AD CS / NDES)
+
+
+================================================================================
+  PHASE 9: KEY MANAGEMENT & HSM INTEGRATION              [Size: XL] [MEDIUM]
+================================================================================
+
+  Goal: Key escrow, recovery (dual-control), HSM support
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | key_escrow                        | certificate_id FK,                |
+  |                                   | encrypted_key_blob,               |
+  |                                   | encryption_key_id                 |
+  +-----------------------------------+-----------------------------------+
+  | key_recovery_requests             | escrow_id FK, requester,          |
+  |                                   | status, approver_1, approver_2    |
+  +-----------------------------------+-----------------------------------+
+  | hsm_slots                         | name, pkcs11_library_path,        |
+  |                                   | slot_id, is_active                |
+  +-----------------------------------+-----------------------------------+
+
+  Key Recovery -- Dual Control:
+    Agent A requests --> Agent B approves --> Agent C approves --> Key released
+
+  HSM Support:
+    - PKCS#11 interface (SafeNet, Thales, SoftHSM for dev)
+    - BouncyCastle PKCS#11 provider integration
+
+  New Roles:
+    - ROLE_KEY_RECOVERY_AGENT
+
+
+================================================================================
+  PHASE 10: LDAP/AD CERTIFICATE PUBLISHING               [Size: M] [MEDIUM]
+================================================================================
+
+  Goal: Auto-publish certs to AD userCertificate attribute
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | ldap_publish_targets              | name, ldap_url, base_dn,         |
+  |                                   | bind_dn, bind_password_encrypted, |
+  |                                   | attribute_name, is_active         |
+  +-----------------------------------+-----------------------------------+
+  | ldap_publish_log                  | certificate_id FK, target_id FK,  |
+  |                                   | status, error_message,            |
+  |                                   | published_at                      |
+  +-----------------------------------+-----------------------------------+
+
+  Features:
+    - Auto-publish to AD after issuance
+    - Bulk sync of existing certificates
+    - Certificate removal from AD on revocation
+    - Multiple LDAP directory support
+
+  Reuse:
+    - Existing AD/LDAP auth config from gui module
+
+
+================================================================================
+  PHASE 11: CMP & ACME PROTOCOL SUPPORT                  [Size: XL] [LOWER]
+================================================================================
+
+  Goal: RFC 4210 CMP + RFC 8555 ACME for advanced automation
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | acme_accounts                     | account_id, public_key_jwk,       |
+  |                                   | contact, status                   |
+  +-----------------------------------+-----------------------------------+
+  | acme_orders                       | order_id, account_id FK, status,  |
+  |                                   | identifiers_json,                 |
+  |                                   | certificate_id FK                 |
+  +-----------------------------------+-----------------------------------+
+  | acme_authorizations               | order_id FK, identifier, status,  |
+  |                                   | challenge_type, challenge_token   |
+  +-----------------------------------+-----------------------------------+
+
+  ACME Challenge Types:
+    - HTTP-01   (file-based validation)
+    - DNS-01    (DNS TXT record validation)
+    - TLS-ALPN-01 (TLS extension validation)
+
+
+================================================================================
+  PHASE 12: COMPLIANCE, CT & SIEM INTEGRATION            [Size: L] [LOWER]
+================================================================================
+
+  Goal: Policy enforcement, Certificate Transparency, SIEM forwarding
+
+  +-----------------------------------------------------------------------+
+  | NEW TABLES                                                            |
+  +-----------------------------------+-----------------------------------+
+  | compliance_policies               | name, type (KEY_SIZE / VALIDITY / |
+  |                                   | DN_PATTERN / EXTENSION),          |
+  |                                   | rule_json, severity, is_active    |
+  +-----------------------------------+-----------------------------------+
+  | compliance_violations             | certificate_id FK, policy_id FK,  |
+  |                                   | detail, detected_at               |
+  +-----------------------------------+-----------------------------------+
+  | ct_submissions                    | certificate_id FK, log_url, sct,  |
+  |                                   | submitted_at                      |
+  +-----------------------------------+-----------------------------------+
+  | siem_endpoints                    | name, type (SYSLOG / CEF /        |
+  |                                   | WEBHOOK), config_json, is_active  |
+  +-----------------------------------+-----------------------------------+
+
+
+================================================================================
+  CROSS-CUTTING CONCERNS (ALL PHASES)
+================================================================================
+
+  +---------------------+------------------------------------------------+
+  | Concern             | Approach                                       |
+  +---------------------+------------------------------------------------+
+  | Error codes         | Each phase adds 5-15 codes to ErrorCodeKey     |
+  |                     | enum + Flyway seed data                        |
+  +---------------------+------------------------------------------------+
+  | Audit logging       | Every state change via AuditLogService          |
+  |                     | (REQUIRES_NEW transaction isolation)            |
+  +---------------------+------------------------------------------------+
+  | Flyway migrations   | One migration file per table per phase         |
+  +---------------------+------------------------------------------------+
+  | Caching             | Reference data uses AbstractRefreshableCache   |
+  |                     | with hot-reload endpoints                      |
+  +---------------------+------------------------------------------------+
+  | API documentation   | @Operation, @ApiResponse per existing pattern  |
+  +---------------------+------------------------------------------------+
+  | Security            | Existing RBAC; new roles as needed:            |
+  |                     | ROLE_RA_OFFICER, ROLE_KEY_RECOVERY_AGENT       |
+  +---------------------+------------------------------------------------+
+  | Testing             | Unit + integration tests; H2 profile for dev   |
+  +---------------------+------------------------------------------------+
+
+
+================================================================================
+  PRIORITY SUMMARY
+================================================================================
+
+  +-------+----------------------------------+------+------------------------+
+  | Phase | Name                             | Size | Priority               |
+  +-------+----------------------------------+------+------------------------+
+  |   1   | Certificate Lifecycle Core       |  XL  | *** CRITICAL ***       |
+  |   2   | Certificate Templates            |   L  | ** HIGH **             |
+  |   3   | Revocation Management            |   L  | ** HIGH **             |
+  |   4   | Notifications & Expiry           |   M  | ** HIGH **             |
+  |   5   | Advanced Workflows               |   L  | MEDIUM                 |
+  |   6   | Reporting & Dashboard            |   M  | MEDIUM                 |
+  |   7   | EST & SCEP                       |  XL  | MEDIUM                 |
+  |   8   | Multi-CA Support                 |  XL  | MEDIUM                 |
+  |   9   | Key Management & HSM             |  XL  | MEDIUM                 |
+  |  10   | LDAP Publishing                  |   M  | MEDIUM                 |
+  |  11   | CMP & ACME                       |  XL  | LOWER                  |
+  |  12   | Compliance & CT & SIEM           |   L  | LOWER                  |
+  +-------+----------------------------------+------+------------------------+
+
+
+================================================================================
+  TOTAL NEW TABLES ACROSS ALL PHASES
+================================================================================
+
+  Phase  1:  certificate_requests, certificates, certificate_request_approvals
+  Phase  2:  certificate_templates, template_permissions
+  Phase  3:  certificate_revocations, crl_entries
+  Phase  4:  notifications, notification_channels, notification_rules
+  Phase  5:  approval_policies, approval_delegations, approval_groups,
+             approval_group_members
+  Phase  6:  (no new tables -- queries on existing)
+  Phase  7:  protocol_clients, protocol_transactions
+  Phase  8:  ca_connectors, ca_connector_health
+  Phase  9:  key_escrow, key_recovery_requests, hsm_slots
+  Phase 10:  ldap_publish_targets, ldap_publish_log
+  Phase 11:  acme_accounts, acme_orders, acme_authorizations
+  Phase 12:  compliance_policies, compliance_violations,
+             ct_submissions, siem_endpoints
+
+  TOTAL: ~30 new tables
+
+
+================================================================================
+  VERIFICATION PLAN (AFTER EACH PHASE)
+================================================================================
+
+  1. BUILD    : gradle clean build -- all modules compile
+  2. TESTS    : Unit tests for services, integration tests with H2
+  3. STARTUP  : ErrorCatalogStartupValidator verifies all new error codes
+  4. API TEST : Swagger UI at /swagger-ui.html -- test all endpoints
+  5. AUDIT    : Verify every operation creates audit log entries
+  6. SECURITY : Verify unauthorized users get 403 on protected endpoints
+  7. CACHE    : POST /refresh reloads new cached data without restart
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================

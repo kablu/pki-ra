@@ -1,6 +1,7 @@
 package com.pki.ra.raservice.controller;
 
 import com.pki.ra.common.user.UserManagementService;
+import com.pki.ra.common.user.service.UserLookupService;
 import com.pki.ra.common.util.AuditLogService;
 import com.pki.ra.common.web.AbstractUserController;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -35,7 +36,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class UserController extends AbstractUserController {
 
     public UserController(UserManagementService userManagementService,
-                          AuditLogService auditLogService) {
-        super(userManagementService, auditLogService);
+                          AuditLogService auditLogService,
+                          UserLookupService userLookupService) {
+        super(userManagementService, auditLogService, userLookupService);
     }
 }
