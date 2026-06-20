@@ -1,0 +1,1737 @@
+
+================================================================================
+     RA CSR ENTITY REFERENCE — COMPLETE DATABASE SCHEMA
+     Project  : pki-ra (Enterprise Registration Authority)
+     Database : MariaDB 10.6+ / PostgreSQL
+     Date     : 2026-06-20
+     Total    : 6 Existing + 30 New = 36 Tables
+================================================================================
+
+
+================================================================================
+  TABLE OF CONTENTS
+================================================================================
+
+  SECTION A — EXISTING FOUNDATION TABLES (Already Implemented)
+    A1.  users                          — User master registry
+    A2.  roles                          — Named permission sets
+    A3.  user_roles                     — Users <-> Roles junction
+    A4.  app_config                     — Runtime key-value config
+    A5.  error_catalog                  — Error codes & messages
+    A6.  audit_log                      — Immutable audit trail
+
+  SECTION B — PHASE 1: CERTIFICATE LIFECYCLE CORE
+    B1.  certificate_requests           — CSR submissions
+    B2.  certificates                   — Issued X.509 certificates
+    B3.  certificate_request_approvals  — Approval decisions
+
+  SECTION C — PHASE 2: CERTIFICATE TEMPLATES
+    C1.  certificate_templates          — Predefined cert profiles
+    C2.  template_permissions           — Role-based template access
+
+  SECTION D — PHASE 3: REVOCATION MANAGEMENT
+    D1.  certificate_revocations        — Revocation records
+    D2.  crl_entries                    — CRL snapshots
+
+  SECTION E — PHASE 4: NOTIFICATIONS & EXPIRY
+    E1.  notifications                  — Notification delivery log
+    E2.  notification_channels          — Delivery channels config
+    E3.  notification_rules             — Event-to-channel mapping
+
+  SECTION F — PHASE 5: ADVANCED APPROVAL WORKFLOWS
+    F1.  approval_policies              — Multi-level approval chains
+    F2.  approval_delegations           — Delegation of authority
+    F3.  approval_groups                — Approval group definitions
+    F4.  approval_group_members         — Group membership
+
+  SECTION G — PHASE 6: REPORTING & DASHBOARD
+    G1.  (no new tables — queries on existing tables)
+
+  SECTION H — PHASE 7: PROTOCOL SUPPORT (EST & SCEP)
+    H1.  protocol_clients               — Registered protocol clients
+    H2.  protocol_transactions          — Protocol transaction log
+    H3.  replay_protection              — Nonce replay prevention
+
+  SECTION I — PHASE 8: MULTI-CA BACKEND
+    I1.  ca_connectors                  — CA backend configurations
+    I2.  ca_connector_health            — CA health monitoring
+
+  SECTION J — PHASE 9: KEY MANAGEMENT & HSM
+    J1.  key_escrow                     — Escrowed private keys
+    J2.  key_recovery_requests          — Key recovery workflow
+    J3.  hsm_slots                      — HSM slot configuration
+
+  SECTION K — PHASE 10: LDAP/AD PUBLISHING
+    K1.  ldap_publish_targets           — LDAP directory targets
+    K2.  ldap_publish_log               — Publishing audit log
+
+  SECTION L — PHASE 11: CMP & ACME
+    L1.  acme_accounts                  — ACME account registry
+    L2.  acme_orders                    — ACME order tracking
+    L3.  acme_authorizations            — ACME challenge tracking
+
+  SECTION M — PHASE 12: COMPLIANCE & SIEM
+    M1.  compliance_policies            — Policy rule definitions
+    M2.  compliance_violations          — Detected violations
+    M3.  ct_submissions                 — CT log submissions
+    M4.  siem_endpoints                 — SIEM forwarding targets
+
+  SECTION N — SUPPORTING TABLES (Cross-Phase)
+    N1.  certificate_sans               — Denormalized SAN lookup
+    N2.  certificate_public_key_hashes  — Public key reuse detection
+
+
+================================================================================
+================================================================================
+  SECTION A — EXISTING FOUNDATION TABLES (Already Implemented)
+================================================================================
+================================================================================
+
+
+================================================================================
+  A1. users
+================================================================================
+
+  Purpose:
+    Master user registry. Stores AD/LDAP profile data and account status.
+    Authentication is handled externally by AD/LDAP — NO passwords stored.
+    Rows are auto-created on first AD login via UserManagementService.
+
+  Used By:
+    - certificate_requests.requester_id (who submitted the CSR)
+    - certificate_request_approvals.approver_id (who approved/rejected)
+    - audit_log.user_id (who performed the action)
+    - user_roles.user_id (role assignments)
+    - approval_delegations (delegation of authority)
+    - key_recovery_requests (who requested key recovery)
+    - All controllers via AbstractSecuredController (identity resolution)
+
+  +---------------------+---------------+------+-----+------------------------+
+  | Column              | Type          | Null | Key | Purpose                |
+  +---------------------+---------------+------+-----+------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID      |
+  | username            | VARCHAR(100)  | NO   | UQ  | AD sAMAccountName      |
+  | email               | VARCHAR(200)  | YES  |     | User's email address   |
+  | full_name           | VARCHAR(200)  | YES  |     | Full legal name        |
+  | display_name        | VARCHAR(200)  | YES  |     | Display/preferred name |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = soft-deleted   |
+  | last_login_at       | DATETIME(6)   | YES  |     | Last successful login  |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time   |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created this user  |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification time |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified      |
+  +---------------------+---------------+------+-----+------------------------+
+
+  Indexes:
+    idx_users_is_active      (is_active)
+    idx_users_last_login_at  (last_login_at)
+
+  Constraints:
+    uq_users_username        UNIQUE (username)
+
+  Seed Data:
+    system / System Scheduler
+    admin  / PKI RA Admin
+
+
+================================================================================
+  A2. roles
+================================================================================
+
+  Purpose:
+    Master list of all defined roles in the PKI-RA system.
+    Each role represents a named permission set.
+    Users are linked to roles via user_roles junction table.
+    Used by Spring Security for RBAC (role-based access control).
+
+  Used By:
+    - user_roles.role_id (assign roles to users)
+    - template_permissions.role_id (which roles can use which templates)
+    - RaSecurityConfig (endpoint protection rules)
+    - AdminSecurityConfig (admin endpoint protection)
+
+  +---------------------+---------------+------+-----+------------------------+
+  | Column              | Type          | Null | Key | Purpose                |
+  +---------------------+---------------+------+-----+------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID      |
+  | role_name           | VARCHAR(50)   | NO   | UQ  | Role identifier        |
+  |                     |               |      |     | e.g. ROLE_ADMIN        |
+  | description         | VARCHAR(500)  | YES  |     | Human-readable desc    |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = disabled       |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time   |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification      |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified      |
+  +---------------------+---------------+------+-----+------------------------+
+
+  Seed Data:
+    ROLE_ADMIN     — Full system access
+    ROLE_OPERATOR  — Certificate operations (request, approve, revoke)
+    ROLE_AUDITOR   — Read-only audit logs and reports
+    ROLE_VIEWER    — Read-only configs and status
+
+  Future Roles (added in later phases):
+    ROLE_RA_OFFICER         — Phase 5 (advanced approvals)
+    ROLE_KEY_RECOVERY_AGENT — Phase 9 (dual-control key recovery)
+
+
+================================================================================
+  A3. user_roles
+================================================================================
+
+  Purpose:
+    Many-to-many junction table linking users to roles.
+    One user can hold multiple roles; one role can be held by many users.
+    UNIQUE(user_id, role_id) prevents duplicate assignments.
+
+  Used By:
+    - UserManagementService (assign/remove roles)
+    - Spring Security (role resolution during authentication)
+    - Template permission checks (Phase 2)
+
+  +---------------------+---------------+------+-----+------------------------+
+  | Column              | Type          | Null | Key | Purpose                |
+  +---------------------+---------------+------+-----+------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID      |
+  | user_id             | BIGINT        | NO   | FK  | --> users.id           |
+  | role_id             | BIGINT        | NO   | FK  | --> roles.id           |
+  | assigned_at         | DATETIME(6)   | NO   |     | When role was assigned |
+  | assigned_by         | VARCHAR(100)  | NO   |     | Who assigned the role  |
+  +---------------------+---------------+------+-----+------------------------+
+
+  Constraints:
+    uq_user_roles        UNIQUE (user_id, role_id)
+    fk_user_roles_user   --> users.id  ON DELETE CASCADE
+    fk_user_roles_role   --> roles.id  ON DELETE CASCADE
+
+
+================================================================================
+  A4. app_config
+================================================================================
+
+  Purpose:
+    Stores runtime application configuration as flat key-value rows.
+    Each row holds one field value (plain string — no JSON).
+    Rows are grouped by config_type and assembled into a typed DTO
+    by ConfigBean on ApplicationReadyEvent.
+    Supports hot-reload via POST /api/admin/config/refresh.
+
+  Used By:
+    - ConfigBean (loads into in-memory cache at startup)
+    - AbstractRefreshController (hot-reload without restart)
+    - Notification settings (Phase 4)
+    - CA connector configs (Phase 8, supplementary)
+
+  +---------------------+---------------+------+-----+------------------------+
+  | Column              | Type          | Null | Key | Purpose                |
+  +---------------------+---------------+------+-----+------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID      |
+  | config_key          | VARCHAR(100)  | NO   |     | Field name (e.g. host) |
+  | config_type         | VARCHAR(50)   | NO   |     | Group (e.g. LDAP)      |
+  | config_value        | VARCHAR(500)  | NO   |     | Plain string value     |
+  | description         | VARCHAR(500)  | YES  |     | Human-readable label   |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = excluded       |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time   |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification      |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified      |
+  +---------------------+---------------+------+-----+------------------------+
+
+  Constraints:
+    uq_app_config_key_type  UNIQUE (config_key, config_type)
+
+  Config Types (Seed):
+    LDAP — host, port, baseDn, bindDn, bindPassword, useSsl, timeouts
+
+
+================================================================================
+  A5. error_catalog
+================================================================================
+
+  Purpose:
+    Stores all application error codes and messages in the database.
+    Enables error message changes without code deployment.
+    SECURITY: internal_code (logs only) vs external_code (API response).
+    Cached by ErrorCatalogBean at startup with hot-reload support.
+    Validated by ErrorCatalogStartupValidator against RaErrorCode enum.
+
+  Used By:
+    - ErrorCatalogBean (in-memory cache, indexed by internal + external code)
+    - ExceptionFactory (creates AppException from error code)
+    - AbstractGlobalExceptionHandler (8 exception handlers use fallback codes)
+    - ErrorCatalogStartupValidator (validates all enum codes exist at boot)
+
+  +---------------------+---------------+------+-----+------------------------+
+  | Column              | Type          | Null | Key | Purpose                |
+  +---------------------+---------------+------+-----+------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID      |
+  | internal_code       | VARCHAR(50)   | NO   | UQ  | App-internal code      |
+  |                     |               |      |     | e.g. PKI_CERT_001      |
+  | external_code       | VARCHAR(50)   | NO   | UQ  | User-facing code       |
+  |                     |               |      |     | e.g. ERR-001           |
+  | message             | VARCHAR(500)  | NO   |     | User-facing message    |
+  | description         | VARCHAR(1000) | YES  |     | Internal description   |
+  |                     |               |      |     | (logs only, never API) |
+  | category            | VARCHAR(50)   | NO   |     | CERTIFICATE, AUTH,     |
+  |                     |               |      |     | VALIDATION, NETWORK,   |
+  |                     |               |      |     | SYSTEM                 |
+  | severity            | VARCHAR(20)   | NO   |     | INFO/WARNING/ERROR/    |
+  |                     |               |      |     | CRITICAL               |
+  | http_status         | INT           | NO   |     | HTTP status code       |
+  | is_retryable        | BOOLEAN       | NO   |     | Client can retry?      |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = excluded       |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time   |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification      |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified      |
+  +---------------------+---------------+------+-----+------------------------+
+
+  Seed Data: 14 error codes across 5 categories
+    PKI_CERT_001..005  — Certificate errors (404, 400, 500, 409, 500)
+    PKI_AUTH_001..003  — Authentication errors (401, 403, 401)
+    PKI_VAL_001..002   — Validation errors (400, 400)
+    PKI_NET_001..002   — Network errors (503, 503)
+    PKI_SYS_001..002   — System errors (500, 503)
+
+
+================================================================================
+  A6. audit_log
+================================================================================
+
+  Purpose:
+    Immutable audit trail for every significant RA operation.
+    One row per action — NEVER updated or deleted.
+    Written by AuditLogService with REQUIRES_NEW propagation so
+    audit rows survive even if the calling transaction rolls back.
+
+  Used By:
+    - AuditLogService (write path — every controller action)
+    - AuditController (read path — filtered search, summaries)
+    - AuditLogSpecification (Specification pattern for composable queries)
+    - SIEM integration (Phase 12 — forward to external systems)
+    - Reporting dashboard (Phase 6)
+
+  +---------------------+---------------+------+-----+------------------------+
+  | Column              | Type          | Null | Key | Purpose                |
+  +---------------------+---------------+------+-----+------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID      |
+  | username            | VARCHAR(100)  | NO   | IDX | Who (AD sAMAccountName)|
+  | user_id             | BIGINT        | YES  | FK  | --> users.id (nullable |
+  |                     |               |      |     | for pre-user actions)  |
+  | action              | VARCHAR(100)  | NO   | IDX | What (CSR_SUBMIT,      |
+  |                     |               |      |     | CERT_APPROVE, etc.)    |
+  | resource_id         | VARCHAR(200)  | YES  | IDX | Which resource affected|
+  | description         | VARCHAR(1000) | YES  |     | Human-readable summary |
+  | ip_address          | VARCHAR(50)   | YES  |     | Client IP (X-Fwd-For) |
+  | outcome             | VARCHAR(20)   | NO   |     | SUCCESS or FAILURE     |
+  | created_at          | DATETIME(6)   | NO   | IDX | When (immutable)       |
+  +---------------------+---------------+------+-----+------------------------+
+
+  Constraints:
+    chk_audit_log_outcome  CHECK (outcome IN ('SUCCESS', 'FAILURE'))
+    fk_audit_log_user      --> users.id ON DELETE SET NULL
+
+  Key Design:
+    - NO updated_at / updated_by (immutable — insert only)
+    - REQUIRES_NEW transaction (survives caller rollback)
+    - user_id is nullable (for system/scheduler actions)
+
+
+================================================================================
+================================================================================
+  SECTION B — PHASE 1: CERTIFICATE LIFECYCLE CORE
+================================================================================
+================================================================================
+
+
+================================================================================
+  B1. certificate_requests
+================================================================================
+
+  Purpose:
+    Stores every CSR (Certificate Signing Request) submitted to the RA.
+    Tracks the complete lifecycle of each request from PENDING through
+    approval/rejection to issuance or failure. This is the central table
+    of the entire RA system — every certificate starts here.
+
+  Lifecycle:
+    PENDING --> APPROVED --> ISSUED     (happy path)
+    PENDING --> REJECTED                (denied by operator)
+    PENDING --> APPROVED --> FAILED     (CA signing error)
+
+  Used By:
+    - CertificateLifecycleService (submit, approve, reject, issue)
+    - CertificateRequestController (REST API endpoints)
+    - certificate_request_approvals (approval decisions reference this)
+    - certificates.request_id (issued cert links back here)
+    - Reporting dashboard (Phase 6 — request counts, trends)
+    - Approval workflow engine (Phase 5 — multi-level chains)
+    - Duplicate detection (Layer 7 validation — csr_hash lookup)
+
+  +-------------------------+---------------+------+-----+------------------------+
+  | Column                  | Type          | Null | Key | Purpose                |
+  +-------------------------+---------------+------+-----+------------------------+
+  | id                      | BIGINT        | NO   | PK  | Auto-increment ID      |
+  | csr_pem                 | TEXT          | NO   |     | Full PKCS#10 CSR in    |
+  |                         |               |      |     | PEM format (preserved  |
+  |                         |               |      |     | for re-signing, audit) |
+  | subject_dn              | VARCHAR(500)  | NO   | IDX | Parsed Subject DN from |
+  |                         |               |      |     | CSR, e.g. CN=api.      |
+  |                         |               |      |     | example.com,O=Acme,C=IN|
+  | key_algorithm           | VARCHAR(20)   | NO   |     | CSR public key algo    |
+  |                         |               |      |     | RSA, ECDSA, Ed25519    |
+  | key_size                | INT           | NO   |     | Key size in bits       |
+  |                         |               |      |     | e.g. 2048, 4096, 256   |
+  | subject_alt_names       | VARCHAR(2000) | YES  |     | Comma-separated SANs   |
+  |                         |               |      |     | extracted from CSR or  |
+  |                         |               |      |     | provided by requester  |
+  | requested_validity_days | INT           | YES  |     | Requested cert lifetime|
+  |                         |               |      |     | NULL = use default     |
+  | status                  | VARCHAR(20)   | NO   | IDX | Request lifecycle state|
+  |                         |               |      |     | PENDING / APPROVED /   |
+  |                         |               |      |     | REJECTED / ISSUED /    |
+  |                         |               |      |     | FAILED                 |
+  | status_reason           | VARCHAR(1000) | YES  |     | Rejection reason or    |
+  |                         |               |      |     | failure error message  |
+  | requester_id            | BIGINT        | NO   | FK  | --> users.id           |
+  |                         |               |      | IDX | Who submitted this CSR |
+  | certificate_id          | BIGINT        | YES  | FK  | --> certificates.id    |
+  |                         |               |      |     | Populated after issue  |
+  | created_at              | DATETIME(6)   | NO   | IDX | Submission timestamp   |
+  | created_by              | VARCHAR(100)  | NO   |     | Audit: who created     |
+  | updated_at              | DATETIME(6)   | NO   |     | Last status change     |
+  | updated_by              | VARCHAR(100)  | NO   |     | Audit: who modified    |
+  +-------------------------+---------------+------+-----+------------------------+
+
+  Indexes:
+    idx_cert_req_status     (status)          — filter by lifecycle state
+    idx_cert_req_requester  (requester_id)    — "my requests" queries
+    idx_cert_req_subject    (subject_dn(255)) — duplicate DN detection
+    idx_cert_req_created    (created_at)      — chronological ordering
+
+  Constraints:
+    fk_cert_req_requester    --> users.id ON DELETE RESTRICT
+    fk_cert_req_certificate  --> certificates.id ON DELETE SET NULL
+    chk_cert_req_status      CHECK (status IN ('PENDING','APPROVED',
+                                    'REJECTED','ISSUED','FAILED'))
+
+  Future Columns (planned):
+    csr_hash         VARCHAR(64)  — SHA-256 of CSR bytes (Phase 1 enhancement,
+                                    Layer 7 duplicate detection)
+    template_id      BIGINT FK    — --> certificate_templates.id (Phase 2)
+    protocol         VARCHAR(20)  — REST/EST/SCEP/CMP (Phase 7)
+    validation_warnings  JSON     — warnings from 7-layer validation
+    validation_flags     JSON     — flags requiring manual review
+
+
+================================================================================
+  B2. certificates
+================================================================================
+
+  Purpose:
+    Stores every X.509 certificate issued by the RA/CA system.
+    Acts as the serial number registry — every serial is globally unique.
+    Tracks certificate lifecycle from ACTIVE through revocation/expiry.
+    Contains the full PEM certificate and chain for download.
+
+  Lifecycle:
+    ACTIVE --> REVOKED     (revocation by admin/operator)
+    ACTIVE --> SUSPENDED   (temporary hold, can be unsuspended)
+    ACTIVE --> EXPIRED     (not_after passed, marked by cleanup job)
+    SUSPENDED --> ACTIVE   (unsuspended)
+    SUSPENDED --> REVOKED  (permanently revoked while held)
+
+  Used By:
+    - CertificateLifecycleService (issue, query, download)
+    - CertificateRequestController (GET /certificates/{serial})
+    - certificate_requests.certificate_id (links request to issued cert)
+    - certificate_revocations (Phase 3 — revocation records)
+    - certificate_sans (supporting table — SAN lookup)
+    - certificate_public_key_hashes (supporting — key reuse detection)
+    - CRL generation (Phase 3 — include revoked certs in CRL)
+    - OCSP responder (Phase 3 — certificate status lookup)
+    - Notification system (Phase 4 — expiry tracking)
+    - Reporting dashboard (Phase 6 — cert inventory)
+    - LDAP publishing (Phase 10 — publish to AD)
+    - Compliance checks (Phase 12 — policy violations)
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | serial_number       | VARCHAR(64)   | NO   | UQ  | Hex uppercase serial      |
+  |                     |               |      |     | e.g. 4F2A1B3C...          |
+  |                     |               |      |     | 128-bit random generated  |
+  | subject_dn          | VARCHAR(500)  | NO   | IDX | Certificate Subject DN    |
+  | issuer_dn           | VARCHAR(500)  | NO   |     | Issuing CA's DN           |
+  | not_before          | DATETIME(6)   | NO   |     | Validity start (UTC)      |
+  | not_after           | DATETIME(6)   | NO   | IDX | Validity end (UTC)        |
+  |                     |               |      |     | Used for expiry tracking  |
+  | certificate_pem     | TEXT          | NO   |     | Full PEM-encoded cert     |
+  | certificate_chain   | TEXT          | NO   |     | Full PEM chain:           |
+  |                     |               |      |     | end-entity + intermediate |
+  |                     |               |      |     | + root CA                 |
+  | key_algorithm       | VARCHAR(20)   | NO   |     | RSA, ECDSA, Ed25519       |
+  | key_size            | INT           | NO   |     | Key size in bits          |
+  | signature_algorithm | VARCHAR(50)   | NO   |     | e.g. SHA256withRSA        |
+  | status              | VARCHAR(20)   | NO   | IDX | ACTIVE / REVOKED /        |
+  |                     |               |      |     | EXPIRED / SUSPENDED       |
+  | fingerprint_sha256  | VARCHAR(64)   | NO   | UQ  | SHA-256 of DER cert bytes |
+  |                     |               |      |     | for quick identity lookup |
+  | request_id          | BIGINT        | YES  | FK  | --> certificate_requests  |
+  |                     |               |      | IDX | .id (source request)      |
+  | created_at          | DATETIME(6)   | NO   |     | Issuance timestamp        |
+  | created_by          | VARCHAR(100)  | NO   |     | Audit: who issued         |
+  | updated_at          | DATETIME(6)   | NO   |     | Last status change        |
+  | updated_by          | VARCHAR(100)  | NO   |     | Audit: who modified       |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Indexes:
+    idx_cert_status     (status)          — filter active/revoked/expired
+    idx_cert_subject    (subject_dn(255)) — search by subject
+    idx_cert_not_after  (not_after)       — expiry queries, cleanup job
+    idx_cert_request    (request_id)      — link back to source request
+
+  Constraints:
+    uq_cert_serial       UNIQUE (serial_number)
+    uq_cert_fingerprint  UNIQUE (fingerprint_sha256)
+    fk_cert_request      --> certificate_requests.id ON DELETE SET NULL
+    chk_cert_status      CHECK (status IN ('ACTIVE','REVOKED',
+                                'EXPIRED','SUSPENDED'))
+
+  Future Columns (planned):
+    public_key_hash    VARCHAR(64)  — SHA-256 of SubjectPublicKeyInfo DER
+                                      (key reuse detection, Layer 5)
+    ca_connector_id    BIGINT FK    — which CA backend issued it (Phase 8)
+    ct_precert_sct     TEXT         — Certificate Transparency SCT (Phase 12)
+
+
+================================================================================
+  B3. certificate_request_approvals
+================================================================================
+
+  Purpose:
+    Records every approval or rejection decision for certificate requests.
+    Each row represents one decision by one approver.
+    In Phase 1: single-level approval (one approver per request).
+    In Phase 5: multi-level approval chains (multiple rows per request).
+    Immutable once created — decisions cannot be changed after the fact.
+
+  Used By:
+    - CertificateLifecycleService (approve/reject flow)
+    - CertificateRequestController (approval endpoints)
+    - CertificateRequestDto (includes approval history)
+    - Advanced approval workflows (Phase 5 — chain validation)
+    - Reporting (Phase 6 — approval turnaround time)
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | request_id          | BIGINT        | NO   | FK  | --> certificate_requests   |
+  |                     |               |      | IDX | .id (which request)       |
+  | approver_id         | BIGINT        | NO   | FK  | --> users.id              |
+  |                     |               |      | IDX | (who decided)             |
+  | decision            | VARCHAR(20)   | NO   |     | APPROVED or REJECTED      |
+  | comment             | VARCHAR(1000) | YES  |     | Approver's note/reason    |
+  | created_at          | DATETIME(6)   | NO   | IDX | Decision timestamp        |
+  | created_by          | VARCHAR(100)  | NO   |     | Audit: who created        |
+  | updated_at          | DATETIME(6)   | NO   |     | (should never change)     |
+  | updated_by          | VARCHAR(100)  | NO   |     | (should never change)     |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    fk_approval_request   --> certificate_requests.id ON DELETE CASCADE
+    fk_approval_approver  --> users.id ON DELETE RESTRICT
+    chk_approval_decision CHECK (decision IN ('APPROVED', 'REJECTED'))
+
+  Future Columns (planned):
+    approval_level   INT          — which level in the chain (Phase 5)
+    delegated_from   BIGINT FK    — original approver if delegated (Phase 5)
+
+
+================================================================================
+================================================================================
+  SECTION C — PHASE 2: CERTIFICATE TEMPLATES
+================================================================================
+================================================================================
+
+
+================================================================================
+  C1. certificate_templates
+================================================================================
+
+  Purpose:
+    Predefined certificate profiles that enforce what kind of certificate
+    can be issued. Each template defines allowed key algorithms, key sizes,
+    validity periods, Subject DN patterns, SAN types, key usage, and
+    extended key usage. Eliminates manual per-request configuration and
+    ensures organizational policies are consistently applied.
+    Cached by TemplateCacheBean (extends AbstractRefreshableCache) with
+    hot-reload via POST /api/admin/templates/refresh.
+
+  Used By:
+    - certificate_requests.template_id (each request references a template)
+    - template_permissions (role-based access to templates)
+    - CertificateLifecycleService (policy enforcement during validation)
+    - Layer 6 validation (template matching and policy checks)
+    - TemplateCacheBean (in-memory cache at startup)
+
+  +-------------------------+---------------+------+-----+---------------------------+
+  | Column                  | Type          | Null | Key | Purpose                   |
+  +-------------------------+---------------+------+-----+---------------------------+
+  | id                      | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                    | VARCHAR(100)  | NO   | UQ  | Template name, e.g.       |
+  |                         |               |      |     | "TLS Server", "S/MIME"    |
+  | description             | VARCHAR(500)  | YES  |     | Human-readable purpose    |
+  | key_usages              | VARCHAR(500)  | NO   |     | Allowed KeyUsage bits     |
+  |                         |               |      |     | e.g. "digitalSignature,   |
+  |                         |               |      |     | keyEncipherment"          |
+  | ext_key_usages          | VARCHAR(500)  | NO   |     | Allowed EKU OIDs          |
+  |                         |               |      |     | e.g. "serverAuth" or      |
+  |                         |               |      |     | "1.3.6.1.5.5.7.3.1"      |
+  | max_validity_days       | INT           | NO   |     | Max cert lifetime in days |
+  | min_validity_days       | INT           | NO   |     | Min cert lifetime in days |
+  |                         |               |      |     | (prevent too-short certs) |
+  | default_validity_days   | INT           | NO   |     | Default if not specified  |
+  | min_key_size            | INT           | NO   |     | Minimum key size in bits  |
+  |                         |               |      |     | e.g. 2048 for RSA         |
+  | allowed_algorithms      | VARCHAR(200)  | NO   |     | Comma-separated: RSA,     |
+  |                         |               |      |     | ECDSA, Ed25519            |
+  | allowed_ec_curves       | VARCHAR(200)  | YES  |     | Comma-separated: P-256,   |
+  |                         |               |      |     | P-384, P-521              |
+  | allowed_san_types       | VARCHAR(200)  | YES  |     | Comma-separated: DNS,     |
+  |                         |               |      |     | EMAIL, IP, URI            |
+  | max_san_count           | INT           | NO   |     | Max SANs per cert         |
+  |                         |               |      |     | e.g. 100 for TLS Server   |
+  | subject_dn_pattern      | VARCHAR(500)  | YES  |     | Regex or required fields  |
+  |                         |               |      |     | e.g. "CN required,        |
+  |                         |               |      |     | O=Acme Corp, C=IN"       |
+  | wildcard_allowed        | BOOLEAN       | NO   |     | Can CN/SAN have wildcard? |
+  | auto_approve             | BOOLEAN       | NO   |     | Skip manual approval?     |
+  | is_active               | BOOLEAN       | NO   |     | FALSE = template disabled |
+  | created_at              | DATETIME(6)   | NO   |     | Record creation time      |
+  | created_by              | VARCHAR(100)  | NO   |     | Who created               |
+  | updated_at              | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by              | VARCHAR(100)  | NO   |     | Who last modified         |
+  +-------------------------+---------------+------+-----+---------------------------+
+
+  Seed Data (5 standard templates):
+    +-------------------+-------------------+-----------+-----+-----------+
+    | Name              | EKU               | Max Days  | Min | Wildcard  |
+    |                   |                   |           | Key |           |
+    +-------------------+-------------------+-----------+-----+-----------+
+    | TLS Server        | serverAuth        | 397       |2048 | YES       |
+    | TLS Client        | clientAuth        | 730       |2048 | NO        |
+    | Code Signing      | codeSigning       | 1095      |4096 | NO        |
+    | S/MIME Email       | emailProtection   | 730       |2048 | NO        |
+    | Document Signing  | nonRepudiation    | 1095      |2048 | NO        |
+    +-------------------+-------------------+-----------+-----+-----------+
+
+
+================================================================================
+  C2. template_permissions
+================================================================================
+
+  Purpose:
+    Controls which roles can use which certificate templates.
+    A user can only submit a CSR referencing a template if their
+    role is listed in this table for that template.
+    Enables fine-grained access: e.g., only ROLE_ADMIN can request
+    Code Signing certs, but any ROLE_OPERATOR can request TLS certs.
+
+  Used By:
+    - Layer 6 validation Step 6.1 (template authorization check)
+    - CertificateLifecycleService (permission check during CSR submit)
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | template_id         | BIGINT        | NO   | FK  | --> certificate_templates |
+  |                     |               |      |     | .id                       |
+  | role_id             | BIGINT        | NO   | FK  | --> roles.id              |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time      |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created               |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    uq_template_role       UNIQUE (template_id, role_id)
+    fk_tp_template         --> certificate_templates.id ON DELETE CASCADE
+    fk_tp_role             --> roles.id ON DELETE CASCADE
+
+
+================================================================================
+================================================================================
+  SECTION D — PHASE 3: REVOCATION MANAGEMENT
+================================================================================
+================================================================================
+
+
+================================================================================
+  D1. certificate_revocations
+================================================================================
+
+  Purpose:
+    Records every certificate revocation event with RFC 5280 reason code.
+    Each revoked/suspended certificate has exactly one row here.
+    Used by CRL generation job to build the revocation list.
+    Used by OCSP responder to answer certificate status queries.
+
+  RFC 5280 Reason Codes:
+    0 = unspecified
+    1 = keyCompromise
+    2 = cACompromise
+    3 = affiliationChanged
+    4 = superseded
+    5 = cessationOfOperation
+    6 = certificateHold (suspension — can be unsuspended)
+
+  Used By:
+    - CRL generation (Phase 3 — include in CRL)
+    - OCSP responder (Phase 3 — status lookup)
+    - Key reuse detection (Layer 5 — reason=keyCompromise blocks reuse)
+    - Compliance reporting (Phase 12)
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | certificate_id      | BIGINT        | NO   | FK  | --> certificates.id       |
+  |                     |               |      | UQ  | One revocation per cert   |
+  | reason_code         | INT           | NO   |     | RFC 5280 reason (0-6)     |
+  | reason_text         | VARCHAR(100)  | NO   |     | Human-readable reason     |
+  |                     |               |      |     | e.g. "keyCompromise"      |
+  | revocation_time     | DATETIME(6)   | NO   |     | When revocation occurred  |
+  | invalidity_date     | DATETIME(6)   | YES  |     | When key was actually     |
+  |                     |               |      |     | compromised (may differ   |
+  |                     |               |      |     | from revocation_time)     |
+  | revoked_by          | BIGINT        | NO   | FK  | --> users.id              |
+  |                     |               |      |     | Who performed revocation  |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time      |
+  | created_by          | VARCHAR(100)  | NO   |     | Audit: who created        |
+  | updated_at          | DATETIME(6)   | NO   |     | Last update (unsuspend)   |
+  | updated_by          | VARCHAR(100)  | NO   |     | Audit: who modified       |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    uq_revocation_cert    UNIQUE (certificate_id)
+    fk_rev_cert           --> certificates.id ON DELETE CASCADE
+    fk_rev_user           --> users.id ON DELETE RESTRICT
+    chk_reason_code       CHECK (reason_code BETWEEN 0 AND 6)
+
+
+================================================================================
+  D2. crl_entries
+================================================================================
+
+  Purpose:
+    Stores generated CRL (Certificate Revocation List) snapshots.
+    Each row is one CRL version, identified by crl_number.
+    CRLs are generated periodically by CrlGenerationJob (Quartz)
+    and on-demand via API. Served at GET /api/ra/crl/current.
+    Supports delta CRLs (only changes since last full CRL).
+
+  Used By:
+    - CrlGenerationJob (creates new CRL entries)
+    - CRL download endpoint (serves latest full CRL)
+    - Certificate extensions (CDP URL points to this endpoint)
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | crl_number          | BIGINT        | NO   | UQ  | Monotonically increasing  |
+  |                     |               |      |     | CRL version number        |
+  | this_update         | DATETIME(6)   | NO   |     | CRL generation time       |
+  | next_update         | DATETIME(6)   | NO   |     | Expected next CRL time    |
+  | crl_blob            | MEDIUMBLOB    | NO   |     | DER-encoded CRL bytes     |
+  | is_delta             | BOOLEAN       | NO   |     | TRUE = delta CRL          |
+  | base_crl_number     | BIGINT        | YES  |     | Base CRL number for delta |
+  | revoked_cert_count  | INT           | NO   |     | Number of entries in CRL  |
+  | signature_algorithm | VARCHAR(50)   | NO   |     | e.g. SHA256withRSA        |
+  | created_at          | DATETIME(6)   | NO   |     | Generation timestamp      |
+  | created_by          | VARCHAR(100)  | NO   |     | system / scheduler        |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+================================================================================
+  SECTION E — PHASE 4: NOTIFICATIONS & EXPIRY
+================================================================================
+================================================================================
+
+
+================================================================================
+  E1. notifications
+================================================================================
+
+  Purpose:
+    Tracks every notification sent to users — email, webhook, or in-app.
+    Each row is one delivery attempt for one event for one user.
+    Enables "notification inbox" for users and delivery audit trail.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | user_id             | BIGINT        | NO   | FK  | --> users.id (recipient)  |
+  | channel_id          | BIGINT        | NO   | FK  | --> notification_channels |
+  | event_type          | VARCHAR(50)   | NO   |     | CERT_EXPIRING_30D,        |
+  |                     |               |      |     | CERT_ISSUED, CSR_APPROVED,|
+  |                     |               |      |     | CSR_REJECTED, etc.        |
+  | certificate_id      | BIGINT        | YES  | FK  | --> certificates.id       |
+  | request_id          | BIGINT        | YES  | FK  | --> certificate_requests  |
+  | subject             | VARCHAR(500)  | NO   |     | Notification subject line |
+  | body                | TEXT          | NO   |     | Notification body text    |
+  | status              | VARCHAR(20)   | NO   |     | PENDING/SENT/FAILED/READ  |
+  | failure_reason      | VARCHAR(500)  | YES  |     | Error if delivery failed  |
+  | sent_at             | DATETIME(6)   | YES  |     | When actually delivered   |
+  | read_at             | DATETIME(6)   | YES  |     | When user read (in-app)   |
+  | created_at          | DATETIME(6)   | NO   |     | Creation timestamp        |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  E2. notification_channels
+================================================================================
+
+  Purpose:
+    Configures delivery channels — how notifications are sent.
+    Each channel is a named delivery mechanism (SMTP server, webhook URL,
+    in-app system). Multiple channels of the same type are supported
+    (e.g., separate SMTP for prod vs dev).
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                | VARCHAR(100)  | NO   | UQ  | Channel name, e.g.        |
+  |                     |               |      |     | "Prod SMTP", "Slack Hook" |
+  | type                | VARCHAR(20)   | NO   |     | EMAIL / WEBHOOK / IN_APP  |
+  | config_json         | TEXT          | NO   |     | Channel-specific config:  |
+  |                     |               |      |     | EMAIL: host, port, from   |
+  |                     |               |      |     | WEBHOOK: url, headers     |
+  |                     |               |      |     | IN_APP: (empty or prefs)  |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = channel disabled  |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time      |
+  | created_by          | VARCHAR(100)  | NO   |     | Who configured            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  E3. notification_rules
+================================================================================
+
+  Purpose:
+    Maps events to channels — "when X happens, send via channel Y."
+    Also defines expiry thresholds (e.g., notify 30 days before expiry).
+    Multiple rules per event type allowed (e.g., email + webhook for
+    CERT_EXPIRING_7D).
+
+  +-------------------------+---------------+------+-----+-----------------------+
+  | Column                  | Type          | Null | Key | Purpose               |
+  +-------------------------+---------------+------+-----+-----------------------+
+  | id                      | BIGINT        | NO   | PK  | Auto-increment ID     |
+  | event_type              | VARCHAR(50)   | NO   |     | Which event triggers  |
+  | channel_id              | BIGINT        | NO   | FK  | --> notification_     |
+  |                         |               |      |     | channels.id           |
+  | days_before_expiry      | INT           | YES  |     | For expiry events:    |
+  |                         |               |      |     | 90, 60, 30, 14, 7, 1 |
+  | template_id             | BIGINT        | YES  | FK  | Filter by template    |
+  |                         |               |      |     | (NULL = all templates)|
+  | is_active               | BOOLEAN       | NO   |     | FALSE = rule disabled |
+  | created_at              | DATETIME(6)   | NO   |     | Record creation time  |
+  | created_by              | VARCHAR(100)  | NO   |     | Who configured        |
+  +-------------------------+---------------+------+-----+-----------------------+
+
+
+================================================================================
+================================================================================
+  SECTION F — PHASE 5: ADVANCED APPROVAL WORKFLOWS
+================================================================================
+================================================================================
+
+
+================================================================================
+  F1. approval_policies
+================================================================================
+
+  Purpose:
+    Defines multi-level approval chains per template. Specifies how many
+    approvals are needed, in what order, with what escalation rules.
+    Enables auto-approve for low-risk templates and multi-level chains
+    for high-security templates (e.g., Code Signing needs team lead
+    then security officer).
+
+  +-------------------------+---------------+------+-----+-----------------------+
+  | Column                  | Type          | Null | Key | Purpose               |
+  +-------------------------+---------------+------+-----+-----------------------+
+  | id                      | BIGINT        | NO   | PK  | Auto-increment ID     |
+  | name                    | VARCHAR(100)  | NO   | UQ  | Policy name           |
+  | template_id             | BIGINT        | YES  | FK  | --> certificate_      |
+  |                         |               |      |     | templates.id          |
+  |                         |               |      |     | NULL = default policy |
+  | approval_chain_json     | TEXT          | NO   |     | JSON array of levels: |
+  |                         |               |      |     | [{"level":1,          |
+  |                         |               |      |     |   "role":"OPERATOR",  |
+  |                         |               |      |     |   "count":1},         |
+  |                         |               |      |     |  {"level":2,          |
+  |                         |               |      |     |   "group":"security", |
+  |                         |               |      |     |   "count":1}]         |
+  | auto_approve_conditions | TEXT          | YES  |     | JSON rules for auto-  |
+  |                         |               |      |     | approve (role, DN     |
+  |                         |               |      |     | pattern, key type)    |
+  | escalation_hours        | INT           | YES  |     | Auto-escalate if not  |
+  |                         |               |      |     | approved within N hrs |
+  | is_active               | BOOLEAN       | NO   |     | FALSE = disabled      |
+  | created_at              | DATETIME(6)   | NO   |     | Record creation time  |
+  | created_by              | VARCHAR(100)  | NO   |     | Who created           |
+  | updated_at              | DATETIME(6)   | NO   |     | Last modification     |
+  | updated_by              | VARCHAR(100)  | NO   |     | Who last modified     |
+  +-------------------------+---------------+------+-----+-----------------------+
+
+
+================================================================================
+  F2. approval_delegations
+================================================================================
+
+  Purpose:
+    Enables an approver to delegate approval authority to another user
+    during absence (vacation, leave). Delegation has a validity window
+    (valid_from to valid_until). Expired delegations are ignored.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | delegator_user_id   | BIGINT        | NO   | FK  | --> users.id (original)   |
+  | delegate_user_id    | BIGINT        | NO   | FK  | --> users.id (acting)     |
+  | valid_from          | DATETIME(6)   | NO   |     | Delegation start          |
+  | valid_until         | DATETIME(6)   | NO   |     | Delegation end            |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = manually revoked  |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time      |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created               |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    fk_deleg_delegator  --> users.id ON DELETE CASCADE
+    fk_deleg_delegate   --> users.id ON DELETE CASCADE
+    chk_valid_range     CHECK (valid_until > valid_from)
+
+
+================================================================================
+  F3. approval_groups
+================================================================================
+
+  Purpose:
+    Named groups of approvers. Any member of the group can approve a
+    request that requires group-level approval. Enables "any one from
+    security team can approve" without naming individuals in policies.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                | VARCHAR(100)  | NO   | UQ  | Group name, e.g.          |
+  |                     |               |      |     | "Security Team"           |
+  | description         | VARCHAR(500)  | YES  |     | Group purpose             |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = disabled          |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time      |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created               |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  F4. approval_group_members
+================================================================================
+
+  Purpose:
+    Junction table — which users belong to which approval groups.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | group_id            | BIGINT        | NO   | FK  | --> approval_groups.id    |
+  | user_id             | BIGINT        | NO   | FK  | --> users.id              |
+  | created_at          | DATETIME(6)   | NO   |     | When added                |
+  | created_by          | VARCHAR(100)  | NO   |     | Who added                 |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    uq_group_member       UNIQUE (group_id, user_id)
+    fk_gm_group           --> approval_groups.id ON DELETE CASCADE
+    fk_gm_user            --> users.id ON DELETE CASCADE
+
+
+================================================================================
+================================================================================
+  SECTION G — PHASE 6: REPORTING & DASHBOARD
+================================================================================
+================================================================================
+
+  No new tables. Phase 6 uses aggregate queries on existing tables:
+    - certificates       (inventory, status counts, expiry forecast)
+    - certificate_requests (request volume, approval turnaround)
+    - audit_log           (action trends, user activity)
+    - certificate_revocations (revocation trends)
+
+  New JPA projections and @Query methods on existing repositories.
+
+
+================================================================================
+================================================================================
+  SECTION H — PHASE 7: PROTOCOL SUPPORT (EST & SCEP)
+================================================================================
+================================================================================
+
+
+================================================================================
+  H1. protocol_clients
+================================================================================
+
+  Purpose:
+    Registry of external clients authorized to use enrollment protocols
+    (EST, SCEP, CMP). Each client has a unique ID, authentication method,
+    and shared secret. Used by Layer 2 validation to authenticate
+    protocol-based requests that don't use HTTP Basic / JWT.
+
+  Used By:
+    - Layer 2 validation Step 2.2 (SCEP challenge password verification)
+    - Layer 2 validation Step 2.3 (map protocol client to internal user)
+    - EST authentication (client ID lookup)
+    - CMP MAC-based authentication (shared secret lookup)
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | client_id           | VARCHAR(100)  | NO   | UQ  | Unique client identifier  |
+  | protocol            | VARCHAR(10)   | NO   |     | EST / SCEP / CMP          |
+  | auth_type           | VARCHAR(30)   | NO   |     | CHALLENGE_PASSWORD /      |
+  |                     |               |      |     | CLIENT_CERT / MAC_BASED   |
+  | shared_secret_hash  | VARCHAR(128)  | YES  |     | BCrypt hash of shared     |
+  |                     |               |      |     | secret (never plaintext)  |
+  | linked_user_id      | BIGINT        | YES  | FK  | --> users.id              |
+  |                     |               |      |     | Internal user mapping     |
+  | allowed_templates   | VARCHAR(500)  | YES  |     | Comma-separated template  |
+  |                     |               |      |     | IDs this client can use   |
+  | max_requests_per_day| INT           | NO   |     | Rate limit per client     |
+  | is_one_time         | BOOLEAN       | NO   |     | TRUE = secret expires     |
+  |                     |               |      |     | after first use (SCEP)    |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = disabled          |
+  | last_used_at        | DATETIME(6)   | YES  |     | Last successful request   |
+  | created_at          | DATETIME(6)   | NO   |     | Registration time         |
+  | created_by          | VARCHAR(100)  | NO   |     | Who registered            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    chk_protocol  CHECK (protocol IN ('EST', 'SCEP', 'CMP'))
+
+
+================================================================================
+  H2. protocol_transactions
+================================================================================
+
+  Purpose:
+    Tracks each protocol enrollment transaction end-to-end.
+    Maps protocol-level transaction IDs to internal request/certificate IDs.
+    Enables correlation between protocol logs and RA operations.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | client_id           | BIGINT        | NO   | FK  | --> protocol_clients.id   |
+  | protocol            | VARCHAR(10)   | NO   |     | EST / SCEP / CMP          |
+  | transaction_id      | VARCHAR(128)  | NO   | IDX | Protocol-level txn ID     |
+  |                     |               |      |     | (CMP transactionID,       |
+  |                     |               |      |     | SCEP transactionID)       |
+  | request_id          | BIGINT        | YES  | FK  | --> certificate_requests  |
+  | certificate_id      | BIGINT        | YES  | FK  | --> certificates.id       |
+  | status              | VARCHAR(20)   | NO   |     | RECEIVED / PROCESSING /   |
+  |                     |               |      |     | COMPLETED / FAILED        |
+  | error_message       | VARCHAR(500)  | YES  |     | Failure detail            |
+  | created_at          | DATETIME(6)   | NO   |     | Transaction start         |
+  | completed_at        | DATETIME(6)   | YES  |     | Transaction end           |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  H3. replay_protection
+================================================================================
+
+  Purpose:
+    Stores nonces from protocol messages to prevent replay attacks.
+    Each nonce is unique per protocol. If a nonce is seen again within
+    the expiry window, the request is rejected (Layer 3, Step 3.6).
+    Expired entries are purged by a daily Quartz job.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | protocol            | VARCHAR(10)   | NO   |     | EST / SCEP / CMP          |
+  | nonce               | VARCHAR(128)  | NO   |     | Sender nonce value        |
+  | transaction_id      | VARCHAR(128)  | YES  |     | Associated transaction    |
+  | received_at         | DATETIME(6)   | NO   |     | When nonce was received   |
+  | expires_at          | DATETIME(6)   | NO   |     | When nonce can be purged  |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    uq_replay_nonce  UNIQUE (protocol, nonce)
+
+  Index:
+    idx_replay_expires  (expires_at)  — for cleanup job
+
+
+================================================================================
+================================================================================
+  SECTION I — PHASE 8: MULTI-CA BACKEND
+================================================================================
+================================================================================
+
+
+================================================================================
+  I1. ca_connectors
+================================================================================
+
+  Purpose:
+    Registers external CA backends alongside the built-in CA.
+    Each connector defines a CA type, connection config, and priority.
+    Strategy pattern: CaClient interface with multiple implementations.
+    Templates can be bound to specific connectors.
+
+  Supported Types:
+    BUILTIN — wraps existing CertificateIssuanceService (default)
+    EJBCA   — EJBCA REST API (https://ejbca-host/ejbca/ejbca-rest-api)
+    VAULT   — HashiCorp Vault PKI secrets engine
+    AWS     — AWS ACM Private CA
+    ADCS    — Microsoft AD CS / NDES
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                | VARCHAR(100)  | NO   | UQ  | Connector display name    |
+  | type                | VARCHAR(20)   | NO   |     | BUILTIN/EJBCA/VAULT/      |
+  |                     |               |      |     | AWS/ADCS                  |
+  | config_json         | TEXT          | NO   |     | Connection config (JSON)  |
+  |                     |               |      |     | Encrypted at rest:        |
+  |                     |               |      |     | {url, auth, keystore...}  |
+  | priority            | INT           | NO   |     | Lower = preferred         |
+  |                     |               |      |     | (failover ordering)       |
+  | is_default          | BOOLEAN       | NO   |     | Default connector if no   |
+  |                     |               |      |     | template binding exists   |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = disabled          |
+  | created_at          | DATETIME(6)   | NO   |     | Registration time         |
+  | created_by          | VARCHAR(100)  | NO   |     | Who configured            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  I2. ca_connector_health
+================================================================================
+
+  Purpose:
+    Tracks health status of each CA connector. Updated periodically by
+    a Quartz health-check job. Used by failover logic — if primary CA
+    is down, route to next-priority healthy connector.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | connector_id        | BIGINT        | NO   | FK  | --> ca_connectors.id      |
+  | status              | VARCHAR(20)   | NO   |     | HEALTHY / DEGRADED / DOWN |
+  | response_time_ms    | INT           | YES  |     | Last check response time  |
+  | last_check_at       | DATETIME(6)   | NO   |     | When last checked         |
+  | last_success_at     | DATETIME(6)   | YES  |     | When last healthy         |
+  | error_message       | VARCHAR(500)  | YES  |     | Error if not healthy      |
+  | consecutive_failures| INT           | NO   |     | Failures in a row         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+================================================================================
+  SECTION J — PHASE 9: KEY MANAGEMENT & HSM
+================================================================================
+================================================================================
+
+
+================================================================================
+  J1. key_escrow
+================================================================================
+
+  Purpose:
+    Stores encrypted copies of private keys for recovery-eligible
+    certificates. Only templates with key_escrow_enabled=true generate
+    escrow entries. Private keys are encrypted with a key-encryption-key
+    (KEK) before storage — never stored in plaintext.
+    Recovery requires dual-control approval (two agents must approve).
+
+  Security:
+    - Private key encrypted with AES-256-GCM before storage
+    - KEK stored in HSM or separate key management system
+    - Access requires ROLE_KEY_RECOVERY_AGENT
+    - Every access logged to audit_log
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | certificate_id      | BIGINT        | NO   | FK  | --> certificates.id       |
+  |                     |               |      | UQ  | One escrow per cert       |
+  | encrypted_key_blob  | MEDIUMBLOB    | NO   |     | AES-256-GCM encrypted     |
+  |                     |               |      |     | PKCS#8 private key        |
+  | encryption_key_id   | VARCHAR(100)  | NO   |     | Identifier of the KEK     |
+  |                     |               |      |     | used for encryption       |
+  | key_algorithm       | VARCHAR(20)   | NO   |     | RSA / ECDSA (of the       |
+  |                     |               |      |     | escrowed key)             |
+  | iv                  | VARCHAR(64)   | NO   |     | AES-GCM initialization    |
+  |                     |               |      |     | vector (hex)              |
+  | escrowed_at         | DATETIME(6)   | NO   |     | When key was escrowed     |
+  | escrowed_by         | VARCHAR(100)  | NO   |     | system (automatic)        |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time      |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    uq_escrow_cert   UNIQUE (certificate_id)
+    fk_escrow_cert   --> certificates.id ON DELETE RESTRICT
+                         (cannot delete cert if key escrowed)
+
+
+================================================================================
+  J2. key_recovery_requests
+================================================================================
+
+  Purpose:
+    Workflow table for key recovery — dual-control approval required.
+    Requester submits recovery request, two different agents must approve
+    before the encrypted key is released. Prevents single-person access
+    to escrowed private keys.
+
+  Workflow:
+    REQUESTED --> APPROVED_1 (first agent approves)
+              --> APPROVED_2 (second agent approves) --> RELEASED
+              --> REJECTED (any agent rejects)
+              --> EXPIRED (not approved within 24 hours)
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | escrow_id           | BIGINT        | NO   | FK  | --> key_escrow.id         |
+  | requester_id        | BIGINT        | NO   | FK  | --> users.id (who asked)  |
+  | reason              | VARCHAR(500)  | NO   |     | Why recovery is needed    |
+  | status              | VARCHAR(20)   | NO   |     | REQUESTED / APPROVED_1 /  |
+  |                     |               |      |     | APPROVED_2 / RELEASED /   |
+  |                     |               |      |     | REJECTED / EXPIRED        |
+  | approver_1_id       | BIGINT        | YES  | FK  | --> users.id (1st agent)  |
+  | approver_1_at       | DATETIME(6)   | YES  |     | When 1st agent decided    |
+  | approver_2_id       | BIGINT        | YES  | FK  | --> users.id (2nd agent)  |
+  | approver_2_at       | DATETIME(6)   | YES  |     | When 2nd agent decided    |
+  | released_at         | DATETIME(6)   | YES  |     | When key was released     |
+  | expires_at          | DATETIME(6)   | NO   |     | Auto-expire if not done   |
+  | created_at          | DATETIME(6)   | NO   |     | Request creation time     |
+  | created_by          | VARCHAR(100)  | NO   |     | Who requested             |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    fk_kr_escrow      --> key_escrow.id ON DELETE RESTRICT
+    fk_kr_requester   --> users.id ON DELETE RESTRICT
+    fk_kr_approver1   --> users.id ON DELETE RESTRICT
+    fk_kr_approver2   --> users.id ON DELETE RESTRICT
+    chk_diff_agents   approver_1_id != approver_2_id (enforced in code)
+    chk_not_self      requester_id != approver_1_id AND
+                      requester_id != approver_2_id (enforced in code)
+
+
+================================================================================
+  J3. hsm_slots
+================================================================================
+
+  Purpose:
+    Configuration table for HSM (Hardware Security Module) slots.
+    Each row represents one PKCS#11 slot on an HSM device.
+    Used by HsmKeyStoreProvider (optional pluggable layer).
+    HSM is NOT mandatory — this table may be empty when using
+    software keystore (PKCS#12).
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                | VARCHAR(100)  | NO   | UQ  | Slot display name         |
+  |                     |               |      |     | e.g. "SafeNet Slot 0"    |
+  | hsm_vendor          | VARCHAR(50)   | NO   |     | SafeNet / Thales /        |
+  |                     |               |      |     | Utimaco / SoftHSM         |
+  | pkcs11_library_path | VARCHAR(500)  | NO   |     | Path to PKCS#11 .so/.dll  |
+  |                     |               |      |     | e.g. /opt/safenet/lib/    |
+  |                     |               |      |     | libCryptoki2_64.so        |
+  | slot_id             | INT           | NO   |     | PKCS#11 slot number       |
+  | token_label         | VARCHAR(100)  | YES  |     | Token label in HSM        |
+  | pin_encrypted       | VARCHAR(256)  | YES  |     | Encrypted HSM PIN         |
+  |                     |               |      |     | (decrypted at runtime)    |
+  | key_alias           | VARCHAR(100)  | YES  |     | Alias of CA key in HSM    |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = slot disabled     |
+  | created_at          | DATETIME(6)   | NO   |     | Registration time         |
+  | created_by          | VARCHAR(100)  | NO   |     | Who configured            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+================================================================================
+  SECTION K — PHASE 10: LDAP/AD PUBLISHING
+================================================================================
+================================================================================
+
+
+================================================================================
+  K1. ldap_publish_targets
+================================================================================
+
+  Purpose:
+    Configures LDAP/AD directories where issued certificates should be
+    auto-published. After a certificate is issued, the system writes
+    the cert to the user's AD userCertificate attribute. Multiple
+    targets supported (e.g., primary AD + backup directory).
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                | VARCHAR(100)  | NO   | UQ  | Target display name       |
+  | ldap_url            | VARCHAR(500)  | NO   |     | ldaps://ad.corp.com:636   |
+  | base_dn             | VARCHAR(500)  | NO   |     | DC=corp,DC=com            |
+  | bind_dn             | VARCHAR(500)  | NO   |     | Service account DN        |
+  | bind_password_enc   | VARCHAR(500)  | NO   |     | Encrypted bind password   |
+  | user_search_filter  | VARCHAR(500)  | NO   |     | (&(objectClass=user)      |
+  |                     |               |      |     |  (mail={email}))          |
+  | cert_attribute      | VARCHAR(100)  | NO   |     | userCertificate (default) |
+  | use_ssl             | BOOLEAN       | NO   |     | TRUE = LDAPS              |
+  | connection_timeout  | INT           | NO   |     | Timeout in ms             |
+  | auto_publish        | BOOLEAN       | NO   |     | TRUE = publish on issue   |
+  | auto_remove         | BOOLEAN       | NO   |     | TRUE = remove on revoke   |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = disabled          |
+  | created_at          | DATETIME(6)   | NO   |     | Registration time         |
+  | created_by          | VARCHAR(100)  | NO   |     | Who configured            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  K2. ldap_publish_log
+================================================================================
+
+  Purpose:
+    Audit trail of every LDAP publish/remove operation. Tracks success
+    and failure for each certificate-to-directory publish attempt.
+    Used for troubleshooting and compliance reporting.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | certificate_id      | BIGINT        | NO   | FK  | --> certificates.id       |
+  | target_id           | BIGINT        | NO   | FK  | --> ldap_publish_targets  |
+  | operation           | VARCHAR(20)   | NO   |     | PUBLISH / REMOVE          |
+  | ldap_dn             | VARCHAR(500)  | YES  |     | Target user DN in LDAP    |
+  | status              | VARCHAR(20)   | NO   |     | SUCCESS / FAILED          |
+  | error_message       | VARCHAR(500)  | YES  |     | Error detail if failed    |
+  | published_at        | DATETIME(6)   | NO   |     | Operation timestamp       |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+================================================================================
+  SECTION L — PHASE 11: CMP & ACME
+================================================================================
+================================================================================
+
+
+================================================================================
+  L1. acme_accounts
+================================================================================
+
+  Purpose:
+    Stores ACME (RFC 8555) client accounts. Each account has a public
+    key (JWK) used to verify signed requests. ACME clients (certbot,
+    lego, etc.) register accounts before requesting certificates.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | account_id          | VARCHAR(128)  | NO   | UQ  | ACME account URL/ID       |
+  | public_key_jwk      | TEXT          | NO   |     | Account public key (JWK)  |
+  | contact              | VARCHAR(500)  | YES  |     | mailto: contact emails    |
+  | status              | VARCHAR(20)   | NO   |     | VALID / DEACTIVATED /     |
+  |                     |               |      |     | REVOKED                   |
+  | terms_agreed        | BOOLEAN       | NO   |     | Accepted terms of service |
+  | linked_user_id      | BIGINT        | YES  | FK  | --> users.id (optional)   |
+  | created_at          | DATETIME(6)   | NO   |     | Registration time         |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  L2. acme_orders
+================================================================================
+
+  Purpose:
+    Tracks ACME certificate orders. Each order contains one or more
+    identifiers (domains) and progresses through: pending -> ready ->
+    processing -> valid/invalid.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | order_id            | VARCHAR(128)  | NO   | UQ  | ACME order URL/ID         |
+  | account_id          | BIGINT        | NO   | FK  | --> acme_accounts.id      |
+  | status              | VARCHAR(20)   | NO   |     | PENDING / READY /         |
+  |                     |               |      |     | PROCESSING / VALID /      |
+  |                     |               |      |     | INVALID                   |
+  | identifiers_json    | TEXT          | NO   |     | JSON array of domains:    |
+  |                     |               |      |     | [{"type":"dns",           |
+  |                     |               |      |     |   "value":"example.com"}] |
+  | not_before          | DATETIME(6)   | YES  |     | Requested validity start  |
+  | not_after           | DATETIME(6)   | YES  |     | Requested validity end    |
+  | certificate_id      | BIGINT        | YES  | FK  | --> certificates.id       |
+  | finalize_url        | VARCHAR(500)  | YES  |     | ACME finalize endpoint    |
+  | expires_at          | DATETIME(6)   | NO   |     | Order expiry              |
+  | created_at          | DATETIME(6)   | NO   |     | Order creation time       |
+  | updated_at          | DATETIME(6)   | NO   |     | Last status change        |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  L3. acme_authorizations
+================================================================================
+
+  Purpose:
+    Tracks ACME authorization challenges per identifier per order.
+    Each domain in an order requires an authorization. Each authorization
+    has a challenge (HTTP-01, DNS-01, or TLS-ALPN-01) that the client
+    must complete to prove domain control.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | order_id            | BIGINT        | NO   | FK  | --> acme_orders.id        |
+  | identifier_type     | VARCHAR(10)   | NO   |     | dns (currently only)      |
+  | identifier_value    | VARCHAR(253)  | NO   |     | Domain name               |
+  | status              | VARCHAR(20)   | NO   |     | PENDING / VALID / INVALID |
+  |                     |               |      |     | / DEACTIVATED / EXPIRED   |
+  | challenge_type      | VARCHAR(20)   | NO   |     | HTTP-01 / DNS-01 /        |
+  |                     |               |      |     | TLS-ALPN-01               |
+  | challenge_token     | VARCHAR(256)  | NO   |     | Random token for challenge|
+  | key_authorization   | VARCHAR(512)  | YES  |     | token.thumbprint value    |
+  | validated_at        | DATETIME(6)   | YES  |     | When challenge passed     |
+  | expires_at          | DATETIME(6)   | NO   |     | Challenge expiry          |
+  | created_at          | DATETIME(6)   | NO   |     | Authorization created     |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+================================================================================
+  SECTION M — PHASE 12: COMPLIANCE & SIEM
+================================================================================
+================================================================================
+
+
+================================================================================
+  M1. compliance_policies
+================================================================================
+
+  Purpose:
+    Defines organizational certificate compliance rules. Each policy
+    specifies a rule type (key size, validity, DN pattern, extension)
+    and a JSON rule definition. Certificates are checked against active
+    policies during issuance (Layer 6) and periodically by a compliance
+    scan job.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                | VARCHAR(100)  | NO   | UQ  | Policy name               |
+  | type                | VARCHAR(30)   | NO   |     | KEY_SIZE / VALIDITY /     |
+  |                     |               |      |     | DN_PATTERN / EXTENSION /  |
+  |                     |               |      |     | ALGORITHM / SAN           |
+  | rule_json           | TEXT          | NO   |     | Policy rule definition:   |
+  |                     |               |      |     | {"min_rsa_size": 2048,    |
+  |                     |               |      |     |  "forbidden_algos":       |
+  |                     |               |      |     |  ["SHA1withRSA"]}         |
+  | severity            | VARCHAR(20)   | NO   |     | INFO / WARNING / ERROR /  |
+  |                     |               |      |     | CRITICAL                  |
+  | action_on_violation | VARCHAR(20)   | NO   |     | BLOCK / WARN / LOG        |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = disabled          |
+  | created_at          | DATETIME(6)   | NO   |     | Record creation time      |
+  | created_by          | VARCHAR(100)  | NO   |     | Who created               |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  M2. compliance_violations
+================================================================================
+
+  Purpose:
+    Records detected policy violations for certificates. Created during
+    issuance-time checks or periodic compliance scans. Each row links
+    a certificate to a violated policy with detail.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | certificate_id      | BIGINT        | NO   | FK  | --> certificates.id       |
+  | policy_id           | BIGINT        | NO   | FK  | --> compliance_policies   |
+  | detail              | VARCHAR(1000) | NO   |     | What violated and why     |
+  |                     |               |      |     | e.g. "RSA-1024 < min 2048"|
+  | severity            | VARCHAR(20)   | NO   |     | Inherited from policy     |
+  | detected_at         | DATETIME(6)   | NO   |     | When violation found      |
+  | resolved_at         | DATETIME(6)   | YES  |     | When fixed (if ever)      |
+  | resolved_by         | VARCHAR(100)  | YES  |     | Who resolved              |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  M3. ct_submissions
+================================================================================
+
+  Purpose:
+    Tracks Certificate Transparency (RFC 6962) log submissions.
+    After a certificate is issued, it is submitted to one or more CT
+    logs. The returned SCT (Signed Certificate Timestamp) is stored
+    here and can be embedded in the certificate or delivered via TLS.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | certificate_id      | BIGINT        | NO   | FK  | --> certificates.id       |
+  | log_url             | VARCHAR(500)  | NO   |     | CT log endpoint URL       |
+  | log_id              | VARCHAR(128)  | NO   |     | CT log operator ID        |
+  | sct                 | TEXT          | NO   |     | Signed Certificate        |
+  |                     |               |      |     | Timestamp (Base64)        |
+  | sct_version         | INT           | NO   |     | SCT version (1 = v1)     |
+  | sct_timestamp       | DATETIME(6)   | NO   |     | When CT log signed        |
+  | status              | VARCHAR(20)   | NO   |     | SUBMITTED / ACCEPTED /    |
+  |                     |               |      |     | FAILED                    |
+  | submitted_at        | DATETIME(6)   | NO   |     | When submitted            |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+  M4. siem_endpoints
+================================================================================
+
+  Purpose:
+    Configures external SIEM (Security Information and Event Management)
+    endpoints where audit events are forwarded. Supports syslog (RFC 5424),
+    CEF (ArcSight format), and webhook (generic HTTP POST).
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | name                | VARCHAR(100)  | NO   | UQ  | Endpoint display name     |
+  | type                | VARCHAR(20)   | NO   |     | SYSLOG / CEF / WEBHOOK    |
+  | config_json         | TEXT          | NO   |     | Connection config:        |
+  |                     |               |      |     | SYSLOG: host, port, proto |
+  |                     |               |      |     | CEF: host, port, facility |
+  |                     |               |      |     | WEBHOOK: url, headers     |
+  | event_filter        | VARCHAR(500)  | YES  |     | Which events to forward   |
+  |                     |               |      |     | e.g. "CERT_*,AUTH_FAILED" |
+  | is_active           | BOOLEAN       | NO   |     | FALSE = disabled          |
+  | created_at          | DATETIME(6)   | NO   |     | Registration time         |
+  | created_by          | VARCHAR(100)  | NO   |     | Who configured            |
+  | updated_at          | DATETIME(6)   | NO   |     | Last modification         |
+  | updated_by          | VARCHAR(100)  | NO   |     | Who last modified         |
+  +---------------------+---------------+------+-----+---------------------------+
+
+
+================================================================================
+================================================================================
+  SECTION N — SUPPORTING TABLES (Cross-Phase)
+================================================================================
+================================================================================
+
+
+================================================================================
+  N1. certificate_sans
+================================================================================
+
+  Purpose:
+    Denormalized table for fast SAN (Subject Alternative Name) lookup.
+    When a certificate is issued, its SANs are exploded into individual
+    rows here. Enables Layer 7 validation Step 7.3 (SAN overlap detection)
+    without parsing PEM certificates at query time.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | certificate_id      | BIGINT        | NO   | FK  | --> certificates.id       |
+  | san_type            | VARCHAR(20)   | NO   |     | DNS / EMAIL / IP / URI    |
+  | san_value           | VARCHAR(500)  | NO   | IDX | The actual SAN value      |
+  |                     |               |      |     | e.g. api.example.com      |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Indexes:
+    idx_cert_san_value     (san_value, san_type)  — overlap detection
+    idx_cert_san_cert_id   (certificate_id)       — all SANs for a cert
+
+  Constraints:
+    fk_san_cert  --> certificates.id ON DELETE CASCADE
+
+
+================================================================================
+  N2. certificate_public_key_hashes
+================================================================================
+
+  Purpose:
+    Stores SHA-256 hash of each certificate's SubjectPublicKeyInfo (DER).
+    Enables Layer 5 Step 5.6 (key reuse detection) and Layer 7 Step 7.4
+    (public key conflict detection) via fast index lookup instead of
+    parsing every certificate's PEM at query time.
+
+  +---------------------+---------------+------+-----+---------------------------+
+  | Column              | Type          | Null | Key | Purpose                   |
+  +---------------------+---------------+------+-----+---------------------------+
+  | id                  | BIGINT        | NO   | PK  | Auto-increment ID         |
+  | certificate_id      | BIGINT        | NO   | FK  | --> certificates.id       |
+  |                     |               |      | UQ  | One hash per cert         |
+  | public_key_hash     | VARCHAR(64)   | NO   | IDX | SHA-256 of SPKI DER      |
+  |                     |               |      |     | (hex uppercase)           |
+  +---------------------+---------------+------+-----+---------------------------+
+
+  Constraints:
+    uq_pkh_cert     UNIQUE (certificate_id)
+    fk_pkh_cert     --> certificates.id ON DELETE CASCADE
+
+  Index:
+    idx_pkh_hash    (public_key_hash)  — key reuse lookup
+
+
+================================================================================
+================================================================================
+  ENTITY RELATIONSHIP SUMMARY
+================================================================================
+================================================================================
+
+  Core Chain:
+    users --> certificate_requests --> certificates
+                    |                       |
+                    v                       v
+           certificate_request     certificate_revocations
+           _approvals              certificate_sans
+                                   certificate_public_key_hashes
+                                   key_escrow
+                                   ldap_publish_log
+                                   compliance_violations
+                                   ct_submissions
+
+  Supporting:
+    roles --> user_roles --> users
+    roles --> template_permissions --> certificate_templates
+    certificate_templates --> certificate_requests (template_id FK)
+    certificate_templates --> approval_policies
+    certificate_templates --> notification_rules
+
+  Protocol:
+    protocol_clients --> protocol_transactions --> certificate_requests
+    acme_accounts --> acme_orders --> acme_authorizations
+
+  Infrastructure:
+    ca_connectors --> ca_connector_health
+    hsm_slots (standalone, referenced by config)
+    notification_channels --> notification_rules --> notifications
+    approval_groups --> approval_group_members
+    approval_delegations (users --> users)
+    replay_protection (standalone nonce store)
+    siem_endpoints (standalone, event forwarding)
+
+
+================================================================================
+  TABLE COUNT SUMMARY
+================================================================================
+
+  +-----------------------------+-------+----------------------------+
+  | Section                     | Count | Tables                     |
+  +-----------------------------+-------+----------------------------+
+  | A. Foundation (existing)    |   6   | users, roles, user_roles,  |
+  |                             |       | app_config, error_catalog, |
+  |                             |       | audit_log                  |
+  +-----------------------------+-------+----------------------------+
+  | B. Phase 1 (Lifecycle)      |   3   | certificate_requests,      |
+  |                             |       | certificates,              |
+  |                             |       | cert_request_approvals     |
+  +-----------------------------+-------+----------------------------+
+  | C. Phase 2 (Templates)      |   2   | certificate_templates,     |
+  |                             |       | template_permissions       |
+  +-----------------------------+-------+----------------------------+
+  | D. Phase 3 (Revocation)     |   2   | certificate_revocations,   |
+  |                             |       | crl_entries                |
+  +-----------------------------+-------+----------------------------+
+  | E. Phase 4 (Notifications)  |   3   | notifications,             |
+  |                             |       | notification_channels,     |
+  |                             |       | notification_rules         |
+  +-----------------------------+-------+----------------------------+
+  | F. Phase 5 (Workflows)      |   4   | approval_policies,         |
+  |                             |       | approval_delegations,      |
+  |                             |       | approval_groups,           |
+  |                             |       | approval_group_members     |
+  +-----------------------------+-------+----------------------------+
+  | G. Phase 6 (Reporting)      |   0   | (queries on existing)      |
+  +-----------------------------+-------+----------------------------+
+  | H. Phase 7 (EST/SCEP)       |   3   | protocol_clients,          |
+  |                             |       | protocol_transactions,     |
+  |                             |       | replay_protection          |
+  +-----------------------------+-------+----------------------------+
+  | I. Phase 8 (Multi-CA)       |   2   | ca_connectors,             |
+  |                             |       | ca_connector_health        |
+  +-----------------------------+-------+----------------------------+
+  | J. Phase 9 (Key/HSM)        |   3   | key_escrow,                |
+  |                             |       | key_recovery_requests,     |
+  |                             |       | hsm_slots                  |
+  +-----------------------------+-------+----------------------------+
+  | K. Phase 10 (LDAP)          |   2   | ldap_publish_targets,      |
+  |                             |       | ldap_publish_log           |
+  +-----------------------------+-------+----------------------------+
+  | L. Phase 11 (CMP/ACME)      |   3   | acme_accounts,             |
+  |                             |       | acme_orders,               |
+  |                             |       | acme_authorizations        |
+  +-----------------------------+-------+----------------------------+
+  | M. Phase 12 (Compliance)    |   4   | compliance_policies,       |
+  |                             |       | compliance_violations,     |
+  |                             |       | ct_submissions,            |
+  |                             |       | siem_endpoints             |
+  +-----------------------------+-------+----------------------------+
+  | N. Supporting (Cross-Phase) |   2   | certificate_sans,          |
+  |                             |       | cert_public_key_hashes     |
+  +-----------------------------+-------+----------------------------+
+  | TOTAL                       |  39   |                            |
+  +-----------------------------+-------+----------------------------+
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================
