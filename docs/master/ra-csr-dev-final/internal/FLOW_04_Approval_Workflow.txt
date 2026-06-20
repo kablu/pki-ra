@@ -1,0 +1,289 @@
+
+================================================================================
+  FLOW-04: APPROVAL WORKFLOW (Steps 20-27)
+  Master Flow Reference: MASTER_FLOW_CSR_To_Certificate.txt
+  Previous: FLOW-03 (Validation Engine)
+  Next: FLOW-05 (CA Submission)
+  Deep Dive: RA_Approval_Workflow_Architecture.txt (1,661 lines)
+================================================================================
+
+  This flow determines HOW the validated CSR gets approved.
+  Entry point: certificate_requests.status = 'PENDING'
+  Exit point:  status = 'APPROVED' (→ FLOW-05) or 'REJECTED' (→ end)
+
+
+  STEP 1 (Master Step 20): DETERMINE APPROVAL MODEL
+  ===================================================================
+  What:   System decides which approval model applies to this request
+  When:   Immediately after FLOW-03 saves to DB
+  How:    Based on template's approval_policy
+
+  Decision Logic:
+    a. Load template for this request (template_id or auto-detected)
+    b. Load approval_policy for this template
+    c. Decide:
+
+         approval_policy NOT found?
+           → DEFAULT: Model A (single approval)
+
+         approval_policy.auto_approve_conditions NOT null?
+           → Check conditions → if ALL match → Model B (auto-approve)
+                               → if ANY fails → continue to d.
+
+         approval_policy.approval_chain has 1 level?
+           → Model A (single approval)
+
+         approval_policy.approval_chain has 2+ levels?
+           → Model C (multi-level)
+
+         Delegation active for any approver in the chain?
+           → Model D overlays on top of A or C
+
+    Flow:
+      +-----------------------+
+      | Load approval_policy  |
+      | for template          |
+      +-----------+-----------+
+                  |
+          +-------v--------+
+          | Policy exists? |
+          +---+--------+---+
+              |        |
+             NO       YES
+              |        |
+              v        v
+          Model A   +-------v--------+
+          (default) | Auto-approve   |
+                    | conditions set?|
+                    +---+--------+---+
+                        |        |
+                       NO       YES
+                        |        |
+                        v        v
+                    +---v----+  Check all
+                    | Chain  |  conditions
+                    | levels?|     |
+                    +--+--+--+  +--v--+
+                       |  |     |Match?|
+                       1  2+    +-+-+--+
+                       |  |      | |
+                       v  v     YES NO
+                    A    C      |   |
+                                v   v
+                               B   A or C
+
+
+  STEP 2 (Master Step 21): AUTO-APPROVE CHECK (Model B)
+  ===================================================================
+  What:   If template allows, system auto-approves without human
+  When:   Before notifying any approver
+
+  Conditions checked (all must match if match_mode=ALL):
+    +-----------------------+----------------------------+
+    | Condition Type        | Example                    |
+    +-----------------------+----------------------------+
+    | role                  | requester has ROLE_OPERATOR |
+    | dn_pattern            | CN matches *.dev.acme.*    |
+    | max_validity_days     | requested <= 90 days       |
+    | renewal               | this is a reenroll (not new)|
+    | key_algorithm         | only ECDSA auto-approved   |
+    +-----------------------+----------------------------+
+
+  If ALL conditions pass:
+    a. Create approval record:
+         approver_id = NULL
+         decision = APPROVED
+         comment = "Auto-approved: template policy [name]"
+    b. Update request: status = APPROVED
+    c. Audit log: action = CSR_AUTO_APPROVE
+    d. SKIP all manual steps → go directly to FLOW-05
+    e. Total time: < 2 seconds (no human wait)
+
+  If ANY condition fails:
+    → Fall through to Model A or C (manual approval)
+
+
+  STEP 3 (Master Step 22): NOTIFY APPROVERS
+  ===================================================================
+  What:   Alert the right people that a request needs their review
+  When:   After auto-approve check fails (manual approval needed)
+
+  Who gets notified (depends on model and current level):
+
+    Model A (single): all users with ROLE_OPERATOR + ROLE_ADMIN
+    Model C Level 1:  all users with the Level 1 required role
+    Model C Level 2:  all members of the Level 2 approval group
+    Model D:          include delegates of absent approvers
+
+  Notification channels:
+    - Email: subject = "CSR Pending Approval: CN=api.example.com (#101)"
+    - In-App: notification row in notifications table
+    - Webhook: POST to configured URL (optional)
+
+  Notification content:
+    - Request ID
+    - Subject DN
+    - Key algorithm + size
+    - SANs
+    - Requester name
+    - Template name
+    - Validation warnings (if any)
+    - Direct link to approval page
+
+
+  STEP 4 (Master Step 23): APPROVER REVIEWS
+  ===================================================================
+  What:   Approver examines the request before deciding
+  When:   After receiving notification
+  APIs used:
+
+    a. GET /api/ra/requests/my-pending
+       → List of requests waiting for MY approval
+       → Includes delegated requests
+
+    b. GET /api/ra/requests/{id}
+       → Full request details:
+         - CSR subject DN, SANs, key info
+         - Requester identity
+         - Validation warnings / flags
+         - Previous approval levels (for multi-level)
+         - Template name and policy
+
+    c. Approver evaluates:
+       - Is the requester authorized for this domain?
+       - Is the subject DN correct and expected?
+       - Are the SANs appropriate?
+       - Are there any validation warnings to consider?
+       - Does the template match the intended use case?
+
+
+  STEP 5 (Master Step 24): APPROVE OR REJECT
+  ===================================================================
+  What:   Approver makes their decision
+  When:   After reviewing request details
+
+  APPROVE:
+    API: POST /api/ra/requests/{id}/approve
+    Body: { "comment": "Verified: domain belongs to payment team" }
+
+    System validates:
+      a. Request status is PENDING (or PENDING_LN)? → must be YES
+      b. Approver != Requester? → must be different person
+      c. Approver has required role/group for current level? → YES
+      d. Approver hasn't already approved this request? → must be NO
+      e. If multi-level: approver didn't approve a previous level? → NO
+
+    If all checks pass:
+      → Save approval record to certificate_request_approvals
+      → Audit log: CSR_APPROVE (or CSR_APPROVE_LN)
+      → Proceed to Step 6
+
+  REJECT:
+    API: POST /api/ra/requests/{id}/reject
+    Body: { "comment": "Domain not registered in CMDB" }
+
+    System validates:
+      a. Request status is PENDING? → must be YES
+      b. Approver has required role? → YES
+
+    If valid:
+      → Save rejection record
+      → Update request: status = REJECTED, status_reason = comment
+      → Audit log: CSR_REJECT
+      → Notify requester: "Your request was rejected: [reason]"
+      → FLOW ENDS HERE (no FLOW-05)
+
+
+  STEP 6 (Master Step 25): MULTI-LEVEL ADVANCEMENT
+  ===================================================================
+  What:   After an approval, check if more levels are needed
+  When:   After approval is saved (Model C only)
+  Skip:   If Model A (single approval) → go directly to FLOW-05
+
+  Logic:
+    a. How many approvals does current level need?
+       (approval_chain[current_level].count)
+    b. How many approvals has current level received?
+       (COUNT from certificate_request_approvals WHERE level = N)
+    c. If received >= required:
+         → current level is COMPLETE
+         → Is there a next level?
+           YES → advance: status = PENDING_L(N+1)
+                 Reset escalation_deadline
+                 Notify next level approvers
+                 WAIT for next level (back to Step 3)
+           NO  → ALL LEVELS DONE: status = FULLY_APPROVED
+                 → Proceed to FLOW-05
+    d. If received < required:
+         → WAIT for more approvals at this level
+         → (e.g., need 2 from security team, only got 1 so far)
+
+
+  STEP 7 (Master Step 26): ESCALATION CHECK
+  ===================================================================
+  What:   If nobody approves within timeout, auto-escalate
+  When:   Continuously checked by ApprovalEscalationJob (Quartz)
+  Runs:   Every 15 minutes
+
+  Quartz job logic:
+    a. Query: SELECT * FROM certificate_requests
+              WHERE status LIKE 'PENDING%'
+              AND escalation_deadline < NOW()
+
+    b. For each timed-out request:
+         Check approval_policy → is there a next level?
+
+         YES (next level exists):
+           → Advance to next level (skip current)
+           → Notify next level approvers
+           → Audit log: CSR_ESCALATE
+           → Set new escalation_deadline
+
+         NO (no more levels):
+           → status = EXPIRED_REQUEST
+           → Notify requester + all admins
+           → Audit log: CSR_EXPIRE
+           → Requester must re-submit
+
+    c. Warning at 75% of timeout:
+         Check: escalation_deadline - now < 25% of escalation_hours
+         → Send warning notification to current level approvers
+         → "Request #X needs approval — escalation in Y hours"
+
+
+  STEP 8 (Master Step 27): FINAL DECISION
+  ===================================================================
+  What:   Request reaches terminal approval state
+  When:   After all required levels are approved
+
+  Outcomes:
+
+    APPROVED (any model):
+      → certificate_requests.status = APPROVED (or FULLY_APPROVED)
+      → Audit log: CSR_APPROVE (final)
+      → HANDOFF TO FLOW-05 (CA Submission)
+
+    REJECTED (any level):
+      → certificate_requests.status = REJECTED
+      → certificate_requests.status_reason = [approver's comment]
+      → Audit log: CSR_REJECT
+      → Notification to requester
+      → FLOW ENDS (no FLOW-05)
+
+    EXPIRED (timeout):
+      → certificate_requests.status = EXPIRED_REQUEST
+      → Audit log: CSR_EXPIRE
+      → Notification to requester + admins
+      → FLOW ENDS (requester must re-submit)
+
+  HANDOFF TO FLOW-05:
+    Trigger: status changes to APPROVED / FULLY_APPROVED / AUTO_APPROVED
+    Action:  CertificateLifecycleService.issueCertificate(request)
+    This is called AUTOMATICALLY after approval — no separate API call.
+
+
+================================================================================
+  END OF FLOW-04
+  Next: FLOW-05 (CA Submission) → docs/internal/FLOW_05_...
+  Detail: RA_Approval_Workflow_Architecture.txt (4 models, 30+ tests)
+================================================================================

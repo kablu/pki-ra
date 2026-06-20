@@ -1,0 +1,1661 @@
+
+================================================================================
+     RA APPROVAL WORKFLOW — DETAILED ARCHITECTURE PLAN
+     Project  : pki-ra (Enterprise Registration Authority)
+     Module   : raservice (Phase 1 + Phase 5)
+     Date     : 2026-06-20
+     Status   : Phase 1 (Single Approval) implemented
+                Phase 5 (Advanced Workflows) planned
+================================================================================
+
+
+================================================================================
+  TABLE OF CONTENTS
+================================================================================
+
+  1.  PURPOSE & BUSINESS NEED
+  2.  APPROVAL WORKFLOW MODELS (A, B, C, D)
+  3.  STATE MACHINE — REQUEST LIFECYCLE
+  4.  DATABASE TABLES
+  5.  COMPLETE FLOW — STEP BY STEP (EACH MODEL)
+  6.  REST API ENDPOINTS
+  7.  REQUEST / RESPONSE FORMATS
+  8.  ROLE & PERMISSION MATRIX
+  9.  NOTIFICATION TRIGGERS
+  10. ERROR CODES
+  11. AUDIT LOG ENTRIES
+  12. ESCALATION & TIMEOUT RULES
+  13. TESTING PLAN — EVERY SCENARIO
+  14. EDGE CASES & SECURITY CONSIDERATIONS
+
+
+================================================================================
+  1. PURPOSE & BUSINESS NEED
+================================================================================
+
+  Why Approval Workflow Exists:
+  -----------------------------------------------------------------------
+  A certificate is a TRUST document. Once issued, it represents the
+  identity of a server, device, or person. A wrong certificate in the
+  wrong hands = security breach.
+
+  The approval workflow ensures:
+    - NO certificate is issued without authorized human/policy review
+    - HIGH-RISK certificates get MULTIPLE levels of approval
+    - LOW-RISK certificates get FAST automated approval
+    - Every decision is AUDITED with who, when, why
+    - ABSENT approvers don't block the pipeline (delegation)
+    - STALE requests don't rot forever (escalation/timeout)
+
+  Business Impact:
+    Without workflow:
+      Any employee submits CSR → certificate issued immediately
+      → No oversight → wildcard cert for *.production.com issued
+      → Key compromise → $2M incident
+
+    With workflow:
+      Employee submits CSR → policy check → operator reviews →
+      security officer approves (for wildcard) → certificate issued
+      → Full audit trail → zero unauthorized certificates
+
+
+================================================================================
+  2. APPROVAL WORKFLOW MODELS
+================================================================================
+
+  The RA supports 4 approval models. Each is used based on the
+  certificate template's risk level and organizational policy.
+
+
+  MODEL A — SINGLE APPROVAL (Phase 1, Currently Implemented)
+  -----------------------------------------------------------------------
+
+    Flow:
+      Requester --> CSR --> [7-Layer Validation] --> PENDING
+                                                      |
+                                          Operator/Admin reviews
+                                                      |
+                                          +-----------+-----------+
+                                          |                       |
+                                       APPROVE                 REJECT
+                                          |                       |
+                                          v                       v
+                                     Send to CA             REJECTED
+                                          |              (with reason)
+                                          v
+                                       ISSUED
+
+    When to use:
+      - Standard TLS Server certificates
+      - Internal client certificates
+      - Default for most templates
+
+    Who can approve:
+      - ROLE_OPERATOR
+      - ROLE_ADMIN
+
+    Rules:
+      - Requester CANNOT approve their own request
+      - One approval is sufficient
+      - Decision is final and immutable
+
+
+  MODEL B — AUTO-APPROVE (Phase 2, Template-Based)
+  -----------------------------------------------------------------------
+
+    Flow:
+      Requester --> CSR --> [7-Layer Validation] --> Template check
+                                                      |
+                                          Template.auto_approve = true?
+                                                      |
+                                          +-----------+-----------+
+                                          |                       |
+                                         YES                     NO
+                                          |                       |
+                                          v                       v
+                                    System auto-approves    → MODEL A/C
+                                    (approver = "system")   (manual flow)
+                                          |
+                                          v
+                                     Send to CA
+                                          |
+                                          v
+                                       ISSUED
+
+    When to use:
+      - Dev/test environment certificates
+      - Short-lived certificates (<30 days)
+      - Internal mTLS between microservices
+      - Renewal of existing certificates (simplereenroll)
+
+    Conditions for auto-approve (configurable per template):
+      - Template.auto_approve = true
+      - Requester has specific role (e.g., ROLE_OPERATOR)
+      - CSR matches a pre-approved DN pattern
+      - Certificate type is low-risk
+      - Renewal (not first-time issuance)
+
+    Audit:
+      - Auto-approval logged with approver = "system"
+      - reason = "Auto-approved: template policy"
+
+
+  MODEL C — MULTI-LEVEL APPROVAL (Phase 5, Enterprise)
+  -----------------------------------------------------------------------
+
+    Flow:
+      Requester --> CSR --> [7-Layer Validation] --> PENDING
+                                                      |
+                                          Level 1: Team Lead / Operator
+                                          reviews and approves
+                                                      |
+                                                      v
+                                                 PENDING_L2
+                                                      |
+                                          Level 2: Security Officer
+                                          reviews and approves
+                                                      |
+                                                      v
+                                                 PENDING_L3
+                                                      |
+                                          Level 3: (if configured)
+                                          CA Manager / CISO approves
+                                                      |
+                                                      v
+                                              FULLY_APPROVED
+                                                      |
+                                                      v
+                                                 Send to CA
+                                                      |
+                                                      v
+                                                   ISSUED
+
+    At ANY level, if REJECTED:
+      --> Request status = REJECTED
+      --> All subsequent levels skipped
+      --> Requester notified with reason
+
+    When to use:
+      - Code Signing certificates (high-risk)
+      - Wildcard certificates (*.production.com)
+      - External-facing certificates
+      - CA cross-certification requests
+      - High-value certificates (long validity, wide scope)
+
+    Approval chain defined in approval_policies table:
+      [
+        {"level": 1, "role": "ROLE_OPERATOR", "count": 1},
+        {"level": 2, "group": "security-team", "count": 1},
+        {"level": 3, "role": "ROLE_ADMIN", "count": 1}
+      ]
+
+    Rules:
+      - Each level must be completed before next level begins
+      - Same person cannot approve at multiple levels
+      - Requester cannot approve at any level
+      - If a level requires count=2, TWO different people must approve
+
+
+  MODEL D — DELEGATION (Phase 5, Absence Management)
+  -----------------------------------------------------------------------
+
+    Flow:
+      Operator A is on leave (2026-07-01 to 2026-07-15)
+      Operator A creates delegation to Operator B
+
+      During delegation period:
+        Requester --> CSR --> PENDING
+                                |
+                    Operator A is original approver
+                    but Operator A is absent
+                                |
+                    System checks: delegation exists?
+                    Operator A delegated to Operator B? YES
+                    Delegation still valid (within date range)? YES
+                                |
+                    Operator B sees the request in "My Pending" queue
+                    Operator B approves on behalf of Operator A
+                                |
+                    Audit log: "Approved by Operator B
+                               (delegated from Operator A)"
+                                |
+                             APPROVED --> CA --> ISSUED
+
+    When to use:
+      - Vacation / leave coverage
+      - Temporary role transfer
+      - Business continuity
+
+    Rules:
+      - Delegation has valid_from and valid_until (date range)
+      - Delegate must have same or higher role
+      - Delegate cannot re-delegate (no chain delegation)
+      - Delegation can be revoked early by delegator or admin
+      - Expired delegations are automatically ignored
+
+
+================================================================================
+  3. STATE MACHINE — REQUEST LIFECYCLE
+================================================================================
+
+  COMPLETE STATE DIAGRAM:
+
+                                     CSR Submitted
+                                          |
+                                          v
+                  +--- Auto-approve? --[PENDING]-- Manual? ---+
+                  |        YES                       NO       |
+                  v                                           v
+          [AUTO_APPROVED]                             [PENDING_L1]
+                  |                                           |
+                  |                              L1 approves  |  L1 rejects
+                  |                                  |        |      |
+                  |                                  v        |      v
+                  |                           [PENDING_L2]    |  [REJECTED]
+                  |                                  |        |
+                  |                     L2 approves  |  L2 rejects
+                  |                         |        |      |
+                  |                         v        |      v
+                  |                  [PENDING_L3]    |  [REJECTED]
+                  |                         |        |
+                  |            L3 approves  |  L3 rejects
+                  |                |        |      |
+                  |                v        |      v
+                  |         [FULLY_APPROVED] |  [REJECTED]
+                  |                |         |
+                  +-------+-------+---------+
+                          |
+                          v
+                    [SEND_TO_CA]
+                          |
+                +---------+---------+
+                |                   |
+                v                   v
+            [ISSUED]            [FAILED]
+                |                   |
+                v                   v
+            [ACTIVE]          (Can retry)
+                |
+        +-------+-------+
+        |       |       |
+        v       v       v
+   [REVOKED] [SUSPENDED] [EXPIRED]
+                |
+                v
+            [ACTIVE]
+          (unsuspend)
+
+
+  STATE DEFINITIONS:
+
+  +-----------------------+-------+----------------------------------------+
+  | State                 | Phase | Description                            |
+  +-----------------------+-------+----------------------------------------+
+  | PENDING               |   1   | Submitted, awaiting first approval     |
+  | PENDING_L1            |   5   | Alias for PENDING in multi-level       |
+  | PENDING_L2            |   5   | Level 1 approved, awaiting Level 2     |
+  | PENDING_L3            |   5   | Level 2 approved, awaiting Level 3     |
+  | AUTO_APPROVED         |   2   | System auto-approved per template      |
+  | FULLY_APPROVED        |   5   | All required levels approved           |
+  | APPROVED              |   1   | Approved (single-level), sending to CA |
+  | REJECTED              |   1   | Denied at any level (with reason)      |
+  | ISSUED                |   1   | CA signed, certificate stored          |
+  | FAILED                |   1   | CA signing failed (can retry)          |
+  | EXPIRED_REQUEST       |   5   | Not approved within timeout period     |
+  +-----------------------+-------+----------------------------------------+
+
+  CERTIFICATE STATES (after issuance):
+
+  +-----------------------+-------+----------------------------------------+
+  | State                 | Phase | Description                            |
+  +-----------------------+-------+----------------------------------------+
+  | ACTIVE                |   1   | Certificate in use, valid              |
+  | REVOKED               |   3   | Permanently revoked (with reason)      |
+  | SUSPENDED             |   3   | Temporary hold (can be unsuspended)    |
+  | EXPIRED               |   3   | Validity period ended                  |
+  +-----------------------+-------+----------------------------------------+
+
+  VALID STATE TRANSITIONS:
+
+  +-------------------+---> +-------------------+--- Trigger ----------+
+  | From              |     | To                |                      |
+  +-------------------+     +-------------------+----------------------+
+  | PENDING           | --> | APPROVED          | Single-level approve |
+  | PENDING           | --> | PENDING_L2        | Multi-level L1 done  |
+  | PENDING           | --> | AUTO_APPROVED     | Template auto-approve|
+  | PENDING           | --> | REJECTED          | Operator rejects     |
+  | PENDING           | --> | EXPIRED_REQUEST   | Timeout exceeded     |
+  | PENDING_L2        | --> | PENDING_L3        | L2 approved          |
+  | PENDING_L2        | --> | REJECTED          | L2 rejects           |
+  | PENDING_L3        | --> | FULLY_APPROVED    | L3 approved          |
+  | PENDING_L3        | --> | REJECTED          | L3 rejects           |
+  | APPROVED          | --> | ISSUED            | CA signed OK         |
+  | APPROVED          | --> | FAILED            | CA signing error     |
+  | AUTO_APPROVED     | --> | ISSUED            | CA signed OK         |
+  | FULLY_APPROVED    | --> | ISSUED            | CA signed OK         |
+  | FAILED            | --> | APPROVED          | Retry after fix      |
+  | ISSUED/ACTIVE     | --> | REVOKED           | Admin revokes        |
+  | ISSUED/ACTIVE     | --> | SUSPENDED         | Admin suspends       |
+  | ISSUED/ACTIVE     | --> | EXPIRED           | Time passed          |
+  | SUSPENDED         | --> | ACTIVE            | Admin unsuspends     |
+  | SUSPENDED         | --> | REVOKED           | Admin revokes        |
+  +-------------------+     +-------------------+----------------------+
+
+  INVALID TRANSITIONS (must be blocked in code):
+
+  +-------------------+-/-> +-------------------+--- Why blocked ------+
+  | REJECTED          | --> | APPROVED          | Final state, resubmit|
+  | ISSUED            | --> | PENDING           | Cannot un-issue      |
+  | REVOKED           | --> | ACTIVE            | Revocation is final  |
+  | EXPIRED           | --> | ACTIVE            | Cannot un-expire     |
+  | PENDING_L2        | --> | PENDING           | Cannot go backwards  |
+  +-------------------+     +-------------------+----------------------+
+
+
+================================================================================
+  4. DATABASE TABLES
+================================================================================
+
+  EXISTING (Phase 1 — already implemented):
+
+  +---------------------------------------+--------------------------------+
+  | Table                                 | Role in Workflow               |
+  +---------------------------------------+--------------------------------+
+  | certificate_requests                  | Stores the CSR + current status|
+  |   .status (PENDING/APPROVED/...)      | State machine state lives here |
+  |   .requester_id --> users.id          | Who submitted                  |
+  |   .status_reason                      | Rejection/failure reason       |
+  +---------------------------------------+--------------------------------+
+  | certificate_request_approvals         | One row per approval decision  |
+  |   .request_id --> certificate_requests| Which request                  |
+  |   .approver_id --> users.id           | Who decided                    |
+  |   .decision (APPROVED/REJECTED)       | What they decided              |
+  |   .comment                            | Why (free text)                |
+  +---------------------------------------+--------------------------------+
+  | certificates                          | Issued cert after approval     |
+  |   .request_id --> certificate_requests| Links back to source request   |
+  +---------------------------------------+--------------------------------+
+  | users                                 | Requester + approver identity  |
+  | roles + user_roles                    | Permission checks              |
+  | audit_log                             | Every action logged            |
+  +---------------------------------------+--------------------------------+
+
+  NEW (Phase 5 — advanced workflows):
+
+  +---------------------------------------+--------------------------------+
+  | Table                                 | Role in Workflow               |
+  +---------------------------------------+--------------------------------+
+  | approval_policies                     | Defines approval chain per     |
+  |   .template_id --> certificate_       | template: how many levels,     |
+  |    templates.id                       | which roles/groups at each     |
+  |   .approval_chain_json               | level, escalation rules        |
+  |   .auto_approve_conditions           | When to skip manual approval   |
+  |   .escalation_hours                  | Auto-escalate timeout          |
+  +---------------------------------------+--------------------------------+
+  | approval_delegations                  | "I'm on leave, Operator B     |
+  |   .delegator_user_id --> users.id     | can approve on my behalf      |
+  |   .delegate_user_id --> users.id      | from July 1 to July 15"      |
+  |   .valid_from / valid_until           |                               |
+  +---------------------------------------+--------------------------------+
+  | approval_groups                       | Named groups: "Security Team" |
+  |   .name                               | Any member can approve for    |
+  |   .description                        | the group                     |
+  +---------------------------------------+--------------------------------+
+  | approval_group_members                | Who is in which group         |
+  |   .group_id --> approval_groups.id    |                               |
+  |   .user_id --> users.id               |                               |
+  +---------------------------------------+--------------------------------+
+
+  NEW COLUMNS on existing tables (Phase 5):
+
+  certificate_requests:
+    + current_approval_level   INT          — which level we're at (1,2,3)
+    + approval_policy_id       BIGINT FK    — which policy applies
+    + escalation_deadline      DATETIME(6)  — when to auto-escalate
+    + pending_since            DATETIME(6)  — when current level started
+
+  certificate_request_approvals:
+    + approval_level           INT          — which level (1, 2, 3)
+    + delegated_from_user_id   BIGINT FK    — if approved via delegation
+
+
+================================================================================
+  5. COMPLETE FLOW — STEP BY STEP (EACH MODEL)
+================================================================================
+
+
+  MODEL A — SINGLE APPROVAL (Detailed Steps)
+  =======================================================================
+
+  Actors:
+    Requester: rahul.sharma (ROLE_OPERATOR)
+    Approver:  priya.patel (ROLE_ADMIN)
+
+  Step 1: REQUESTER SUBMITS CSR
+  -------------------------------------------------------------------
+    API:    POST /api/ra/requests
+    Auth:   HTTP Basic (rahul.sharma)
+    Body:   { "pkcs10": "-----BEGIN CERTIFICATE REQUEST-----...",
+              "validityDays": 365 }
+
+    System actions:
+      a. Resolve identity: rahul.sharma --> users.id = 1
+      b. Run 7-layer validation (L1-L7)
+      c. All pass --> save to DB:
+           certificate_requests (
+             id=101, csr_pem=..., subject_dn="CN=api.acme.com",
+             key_algorithm="RSA", key_size=4096,
+             status="PENDING", requester_id=1
+           )
+      d. Audit log:
+           username=rahul.sharma, action=CSR_SUBMIT,
+           resource_id=101, outcome=SUCCESS
+      e. Notify approvers:
+           "New CSR pending: CN=api.acme.com (request #101)"
+
+    Response: 201 Created
+      { "id": 101, "status": "PENDING",
+        "subjectDn": "CN=api.acme.com", ... }
+
+  Step 2: APPROVER VIEWS PENDING REQUESTS
+  -------------------------------------------------------------------
+    API:    GET /api/ra/requests?status=PENDING
+    Auth:   HTTP Basic (priya.patel)
+
+    Response: 200 OK
+      { "content": [
+          { "id": 101, "subjectDn": "CN=api.acme.com",
+            "keyAlgorithm": "RSA", "keySize": 4096,
+            "requesterUsername": "rahul.sharma",
+            "status": "PENDING", "createdAt": "2026-06-20T10:00:00Z" }
+        ], "totalElements": 1 }
+
+  Step 3: APPROVER REVIEWS REQUEST DETAILS
+  -------------------------------------------------------------------
+    API:    GET /api/ra/requests/101
+    Auth:   HTTP Basic (priya.patel)
+
+    Response: 200 OK
+      { "id": 101, "subjectDn": "CN=api.acme.com,O=Acme,C=IN",
+        "keyAlgorithm": "RSA", "keySize": 4096,
+        "subjectAltNames": "dns:api.acme.com,dns:api2.acme.com",
+        "requestedValidityDays": 365, "status": "PENDING",
+        "requesterUsername": "rahul.sharma",
+        "createdAt": "2026-06-20T10:00:00Z",
+        "approvals": [] }
+
+  Step 4A: APPROVER APPROVES
+  -------------------------------------------------------------------
+    API:    POST /api/ra/requests/101/approve
+    Auth:   HTTP Basic (priya.patel)
+    Body:   { "comment": "Verified: api.acme.com belongs to payment team" }
+
+    System actions:
+      a. Validate: request status == PENDING? YES
+      b. Validate: approver != requester? YES (priya != rahul)
+      c. Validate: approver has ROLE_ADMIN or ROLE_OPERATOR? YES
+      d. Save approval decision:
+           certificate_request_approvals (
+             request_id=101, approver_id=2,
+             decision="APPROVED",
+             comment="Verified: api.acme.com belongs to payment team"
+           )
+      e. Update request: status = APPROVED
+      f. Audit log:
+           username=priya.patel, action=CSR_APPROVE,
+           resource_id=101, outcome=SUCCESS
+      g. AUTO-ISSUE: send CSR to CA
+           --> CaClient.sign(csrPem, validityDays, sans)
+           --> CA returns signed certificate
+      h. Save certificate:
+           certificates (
+             serial_number="4F2A1B3C...",
+             subject_dn="CN=api.acme.com",
+             status="ACTIVE", request_id=101
+           )
+      i. Update request: status = ISSUED, certificate_id = (new cert id)
+      j. Audit log:
+           username=priya.patel, action=CERT_ISSUE,
+           resource_id="4F2A1B3C...", outcome=SUCCESS
+      k. Notify requester:
+           "Your certificate has been issued: CN=api.acme.com"
+
+    Response: 200 OK
+      { "id": 101, "status": "ISSUED",
+        "certificateSerial": "4F2A1B3C...", ... }
+
+  Step 4B: APPROVER REJECTS (alternative)
+  -------------------------------------------------------------------
+    API:    POST /api/ra/requests/101/reject
+    Auth:   HTTP Basic (priya.patel)
+    Body:   { "comment": "Domain api.acme.com not registered in CMDB" }
+
+    System actions:
+      a. Validate: status == PENDING? YES
+      b. Save rejection:
+           certificate_request_approvals (
+             request_id=101, approver_id=2,
+             decision="REJECTED",
+             comment="Domain api.acme.com not registered in CMDB"
+           )
+      c. Update request:
+           status = REJECTED,
+           status_reason = "Domain api.acme.com not registered in CMDB"
+      d. Audit log:
+           username=priya.patel, action=CSR_REJECT,
+           resource_id=101, outcome=SUCCESS
+      e. Notify requester:
+           "Your request #101 was rejected: [reason]"
+
+    Response: 200 OK
+      { "id": 101, "status": "REJECTED",
+        "statusReason": "Domain api.acme.com not registered..." }
+
+
+  MODEL B — AUTO-APPROVE (Detailed Steps)
+  =======================================================================
+
+  Step 1: REQUESTER SUBMITS CSR (same as Model A)
+
+  Step 2: SYSTEM CHECKS AUTO-APPROVE CONDITIONS
+  -------------------------------------------------------------------
+    System actions:
+      a. Determine template (from CSR content or explicit template_id)
+      b. Load approval_policy for this template
+      c. Check auto_approve_conditions:
+           {
+             "conditions": [
+               {"type": "role", "value": "ROLE_OPERATOR"},
+               {"type": "dn_pattern", "value": "CN=*.dev.acme.internal"},
+               {"type": "max_validity_days", "value": 90},
+               {"type": "renewal", "value": true}
+             ],
+             "match_mode": "ALL"
+           }
+      d. Requester has ROLE_OPERATOR? YES ✅
+      e. DN matches *.dev.acme.internal? YES ✅
+      f. Validity <= 90 days? YES ✅
+      g. ALL conditions met --> AUTO-APPROVE
+
+  Step 3: SYSTEM AUTO-APPROVES
+  -------------------------------------------------------------------
+    System actions:
+      a. Save auto-approval:
+           certificate_request_approvals (
+             request_id=102, approver_id=NULL,
+             decision="APPROVED",
+             comment="Auto-approved: template policy (dev-tls-short)"
+           )
+      b. Update request: status = APPROVED
+      c. Audit log:
+           username=system, action=CSR_AUTO_APPROVE,
+           resource_id=102, outcome=SUCCESS,
+           description="Auto-approved by template policy: dev-tls-short"
+      d. Immediately send to CA --> issue certificate
+      e. Audit log: CERT_ISSUE
+
+    Total time: < 5 seconds (no human wait)
+
+
+  MODEL C — MULTI-LEVEL APPROVAL (Detailed Steps)
+  =======================================================================
+
+  Scenario: Code Signing certificate — requires 3 approvals
+
+  Approval Policy:
+    {
+      "name": "code-signing-policy",
+      "template_id": 3,
+      "approval_chain": [
+        {"level": 1, "role": "ROLE_OPERATOR", "count": 1,
+         "description": "Team lead verifies requester identity"},
+        {"level": 2, "group": "security-team", "count": 1,
+         "description": "Security officer reviews code signing scope"},
+        {"level": 3, "role": "ROLE_ADMIN", "count": 1,
+         "description": "CA manager gives final authorization"}
+      ],
+      "escalation_hours": 48
+    }
+
+  Step 1: REQUESTER SUBMITS CSR
+    status = PENDING (current_approval_level = 1)
+    Notify: all ROLE_OPERATOR users
+
+  Step 2: LEVEL 1 — Team Lead Approves
+  -------------------------------------------------------------------
+    API:    POST /api/ra/requests/103/approve
+    Auth:   amit.kumar (ROLE_OPERATOR)
+    Body:   { "comment": "Identity verified, requester is authorized" }
+
+    System actions:
+      a. Validate: current_approval_level == 1? YES
+      b. Validate: amit.kumar has ROLE_OPERATOR? YES
+      c. Save approval (level=1)
+      d. Check: level 1 complete? (count=1, got 1) YES
+      e. Advance: current_approval_level = 2, status = PENDING_L2
+      f. Set escalation_deadline = now + 48 hours
+      g. Audit log: CSR_APPROVE_L1
+      h. Notify: security-team group members
+           "Request #103 needs Level 2 security review"
+
+  Step 3: LEVEL 2 — Security Officer Approves
+  -------------------------------------------------------------------
+    API:    POST /api/ra/requests/103/approve
+    Auth:   sneha.gupta (member of security-team group)
+    Body:   { "comment": "Code signing scope acceptable for internal use" }
+
+    System actions:
+      a. Validate: current_approval_level == 2? YES
+      b. Validate: sneha.gupta in approval_groups "security-team"? YES
+      c. Validate: sneha.gupta != amit.kumar (different person)? YES
+      d. Save approval (level=2)
+      e. Advance: current_approval_level = 3, status = PENDING_L3
+      f. Reset escalation_deadline = now + 48 hours
+      g. Audit log: CSR_APPROVE_L2
+      h. Notify: all ROLE_ADMIN users
+
+  Step 4: LEVEL 3 — CA Manager Approves
+  -------------------------------------------------------------------
+    API:    POST /api/ra/requests/103/approve
+    Auth:   admin (ROLE_ADMIN)
+    Body:   { "comment": "Final approval granted" }
+
+    System actions:
+      a. Validate: current_approval_level == 3? YES
+      b. Validate: admin has ROLE_ADMIN? YES
+      c. Validate: admin != amit.kumar AND admin != sneha.gupta? YES
+      d. Save approval (level=3)
+      e. All levels complete --> status = FULLY_APPROVED
+      f. Audit log: CSR_APPROVE_L3
+      g. Send to CA --> issue certificate
+      h. status = ISSUED
+
+  REJECTION AT ANY LEVEL:
+    If sneha.gupta rejects at Level 2:
+      - status = REJECTED
+      - Level 3 is SKIPPED (never reaches CA manager)
+      - Requester notified: "Rejected at Level 2 by sneha.gupta: [reason]"
+      - Audit log: CSR_REJECT_L2
+
+
+  MODEL D — DELEGATION (Detailed Steps)
+  =======================================================================
+
+  Step 1: OPERATOR A CREATES DELEGATION
+  -------------------------------------------------------------------
+    API:    POST /api/ra/delegations
+    Auth:   priya.patel (ROLE_ADMIN)
+    Body:   {
+              "delegateUsername": "vikram.singh",
+              "validFrom": "2026-07-01T00:00:00Z",
+              "validUntil": "2026-07-15T23:59:59Z"
+            }
+
+    System actions:
+      a. Validate: vikram.singh exists and is_active? YES
+      b. Validate: vikram.singh has same or higher role? YES
+      c. Validate: valid_until > valid_from? YES
+      d. Save delegation:
+           approval_delegations (
+             delegator_user_id = priya.patel.id,
+             delegate_user_id = vikram.singh.id,
+             valid_from = 2026-07-01, valid_until = 2026-07-15,
+             is_active = true
+           )
+      e. Audit log: DELEGATION_CREATE
+      f. Notify vikram.singh:
+           "priya.patel has delegated approval authority to you
+            from July 1 to July 15"
+
+  Step 2: DURING DELEGATION — REQUEST ARRIVES
+  -------------------------------------------------------------------
+    Date: 2026-07-05 (within delegation period)
+    CSR submitted --> status = PENDING
+
+    Approver queue logic:
+      a. Who can approve?
+         - All ROLE_OPERATOR and ROLE_ADMIN users
+         - PLUS: vikram.singh (delegated from priya.patel)
+      b. vikram.singh sees request in "My Pending Approvals"
+         (includes directly assigned + delegated)
+
+  Step 3: DELEGATE APPROVES
+  -------------------------------------------------------------------
+    API:    POST /api/ra/requests/104/approve
+    Auth:   vikram.singh
+    Body:   { "comment": "Approved (on behalf of priya.patel)" }
+
+    System actions:
+      a. Validate: vikram.singh is delegate for priya.patel? YES
+      b. Validate: delegation is active and within date range? YES
+      c. Save approval:
+           certificate_request_approvals (
+             request_id=104, approver_id=vikram.singh.id,
+             decision="APPROVED",
+             delegated_from_user_id=priya.patel.id,
+             comment="Approved (on behalf of priya.patel)"
+           )
+      d. Audit log:
+           action=CSR_APPROVE,
+           description="Approved by vikram.singh
+                        (delegated from priya.patel)"
+
+
+================================================================================
+  6. REST API ENDPOINTS
+================================================================================
+
+  PHASE 1 APIs (Currently Implemented):
+
+  +--------+---------------------------------------+-----------------------+
+  | Method | Path                                  | Purpose               |
+  +--------+---------------------------------------+-----------------------+
+  | POST   | /api/ra/requests                      | Submit CSR            |
+  | GET    | /api/ra/requests                      | List all requests     |
+  |        |   ?status=PENDING                     |   (filter by status)  |
+  |        |   &page=0&size=20                     |   (paginated)         |
+  | GET    | /api/ra/requests/{id}                 | Get request details   |
+  | POST   | /api/ra/requests/{id}/approve         | Approve request       |
+  | POST   | /api/ra/requests/{id}/reject          | Reject request        |
+  | GET    | /api/ra/certificates/{serial}         | Get cert details      |
+  | GET    | /api/ra/certificates/{serial}/download| Download cert PEM     |
+  +--------+---------------------------------------+-----------------------+
+
+  PHASE 5 APIs (New — Advanced Workflows):
+
+  +--------+---------------------------------------+-----------------------+
+  | Method | Path                                  | Purpose               |
+  +--------+---------------------------------------+-----------------------+
+  |        |                                       |                       |
+  |        | PENDING QUEUE                         |                       |
+  | GET    | /api/ra/requests/my-pending           | My pending approvals  |
+  |        |                                       | (includes delegated)  |
+  | GET    | /api/ra/requests/my-pending/count      | Count of my pending   |
+  |        |                                       |                       |
+  |        | APPROVAL POLICIES                     |                       |
+  | GET    | /api/ra/policies                      | List all policies     |
+  | GET    | /api/ra/policies/{id}                 | Get policy details    |
+  | POST   | /api/ra/policies                      | Create policy         |
+  | PUT    | /api/ra/policies/{id}                 | Update policy         |
+  | DELETE | /api/ra/policies/{id}                 | Deactivate policy     |
+  |        |                                       |                       |
+  |        | DELEGATIONS                           |                       |
+  | GET    | /api/ra/delegations                   | List my delegations   |
+  | GET    | /api/ra/delegations/active            | Currently active      |
+  | POST   | /api/ra/delegations                   | Create delegation     |
+  | DELETE | /api/ra/delegations/{id}              | Revoke delegation     |
+  |        |                                       |                       |
+  |        | APPROVAL GROUPS                       |                       |
+  | GET    | /api/ra/groups                        | List all groups       |
+  | GET    | /api/ra/groups/{id}                   | Get group + members   |
+  | POST   | /api/ra/groups                        | Create group          |
+  | PUT    | /api/ra/groups/{id}                   | Update group          |
+  | POST   | /api/ra/groups/{id}/members           | Add member to group   |
+  | DELETE | /api/ra/groups/{id}/members/{userId}  | Remove member         |
+  |        |                                       |                       |
+  |        | APPROVAL HISTORY                      |                       |
+  | GET    | /api/ra/requests/{id}/approvals       | Full approval chain   |
+  |        |                                       | for a request         |
+  | GET    | /api/ra/requests/{id}/timeline        | Complete timeline     |
+  |        |                                       | (submit, approve,     |
+  |        |                                       | escalate, issue)      |
+  +--------+---------------------------------------+-----------------------+
+
+  TOTAL: 7 (Phase 1) + 16 (Phase 5) = 23 approval-related endpoints
+
+
+================================================================================
+  7. REQUEST / RESPONSE FORMATS
+================================================================================
+
+  7.1 — Submit CSR
+  -------------------------------------------------------------------
+  POST /api/ra/requests
+
+  Request:
+    {
+      "pkcs10": "-----BEGIN CERTIFICATE REQUEST-----\nMIIC...\n-----END...",
+      "validityDays": 365,
+      "subjectAltNames": "dns:api.acme.com,dns:api2.acme.com",
+      "templateId": 1
+    }
+
+  Response (201 Created):
+    {
+      "id": 101,
+      "subjectDn": "CN=api.acme.com,O=Acme Corp,C=IN",
+      "keyAlgorithm": "RSA",
+      "keySize": 4096,
+      "subjectAltNames": "dns:api.acme.com,dns:api2.acme.com",
+      "requestedValidityDays": 365,
+      "status": "PENDING",
+      "currentApprovalLevel": 1,
+      "requiredApprovalLevels": 3,
+      "requesterUsername": "rahul.sharma",
+      "createdAt": "2026-06-20T10:00:00Z",
+      "approvals": []
+    }
+
+  7.2 — Approve Request
+  -------------------------------------------------------------------
+  POST /api/ra/requests/{id}/approve
+
+  Request:
+    {
+      "comment": "Verified: domain ownership confirmed"
+    }
+
+  Response (200 OK — single level, auto-issues):
+    {
+      "id": 101,
+      "status": "ISSUED",
+      "certificateSerial": "4F2A1B3C...",
+      "approvals": [
+        {
+          "approverUsername": "priya.patel",
+          "decision": "APPROVED",
+          "comment": "Verified: domain ownership confirmed",
+          "level": 1,
+          "delegatedFrom": null,
+          "createdAt": "2026-06-20T10:15:00Z"
+        }
+      ]
+    }
+
+  Response (200 OK — multi-level, advances to next level):
+    {
+      "id": 103,
+      "status": "PENDING_L2",
+      "currentApprovalLevel": 2,
+      "requiredApprovalLevels": 3,
+      "escalationDeadline": "2026-06-22T10:15:00Z",
+      "approvals": [
+        {
+          "approverUsername": "amit.kumar",
+          "decision": "APPROVED",
+          "level": 1,
+          "createdAt": "2026-06-20T10:15:00Z"
+        }
+      ]
+    }
+
+  7.3 — Reject Request
+  -------------------------------------------------------------------
+  POST /api/ra/requests/{id}/reject
+
+  Request:
+    {
+      "comment": "Domain not registered in CMDB. Please register first."
+    }
+
+  Response (200 OK):
+    {
+      "id": 101,
+      "status": "REJECTED",
+      "statusReason": "Domain not registered in CMDB...",
+      "approvals": [
+        {
+          "approverUsername": "priya.patel",
+          "decision": "REJECTED",
+          "comment": "Domain not registered in CMDB...",
+          "level": 1,
+          "createdAt": "2026-06-20T10:15:00Z"
+        }
+      ]
+    }
+
+  7.4 — Create Approval Policy
+  -------------------------------------------------------------------
+  POST /api/ra/policies
+
+  Request:
+    {
+      "name": "code-signing-3-level",
+      "templateId": 3,
+      "approvalChain": [
+        {"level": 1, "type": "role", "value": "ROLE_OPERATOR", "count": 1,
+         "description": "Team lead verification"},
+        {"level": 2, "type": "group", "value": "security-team", "count": 1,
+         "description": "Security review"},
+        {"level": 3, "type": "role", "value": "ROLE_ADMIN", "count": 1,
+         "description": "Final authorization"}
+      ],
+      "autoApproveConditions": null,
+      "escalationHours": 48
+    }
+
+  Response (201 Created):
+    {
+      "id": 5,
+      "name": "code-signing-3-level",
+      "templateId": 3,
+      "approvalChain": [...],
+      "escalationHours": 48,
+      "isActive": true
+    }
+
+  7.5 — Create Delegation
+  -------------------------------------------------------------------
+  POST /api/ra/delegations
+
+  Request:
+    {
+      "delegateUsername": "vikram.singh",
+      "validFrom": "2026-07-01T00:00:00Z",
+      "validUntil": "2026-07-15T23:59:59Z"
+    }
+
+  Response (201 Created):
+    {
+      "id": 10,
+      "delegatorUsername": "priya.patel",
+      "delegateUsername": "vikram.singh",
+      "validFrom": "2026-07-01T00:00:00Z",
+      "validUntil": "2026-07-15T23:59:59Z",
+      "isActive": true
+    }
+
+  7.6 — My Pending Approvals
+  -------------------------------------------------------------------
+  GET /api/ra/requests/my-pending
+
+  Response (200 OK):
+    {
+      "content": [
+        {
+          "id": 103,
+          "subjectDn": "CN=signing.acme.com",
+          "status": "PENDING_L2",
+          "currentApprovalLevel": 2,
+          "myRole": "security-team (group member)",
+          "escalationDeadline": "2026-06-22T10:15:00Z",
+          "requesterUsername": "rahul.sharma",
+          "createdAt": "2026-06-20T10:00:00Z",
+          "previousApprovals": [
+            {"level": 1, "approver": "amit.kumar", "decision": "APPROVED"}
+          ]
+        },
+        {
+          "id": 104,
+          "subjectDn": "CN=api.acme.com",
+          "status": "PENDING",
+          "myRole": "delegated from priya.patel",
+          "requesterUsername": "sneha.gupta",
+          "createdAt": "2026-06-20T11:00:00Z"
+        }
+      ],
+      "totalElements": 2
+    }
+
+  7.7 — Request Timeline
+  -------------------------------------------------------------------
+  GET /api/ra/requests/{id}/timeline
+
+  Response (200 OK):
+    {
+      "requestId": 103,
+      "timeline": [
+        {"timestamp": "2026-06-20T10:00:00Z", "event": "CSR_SUBMITTED",
+         "actor": "rahul.sharma", "detail": "CSR submitted for CN=signing.acme.com"},
+        {"timestamp": "2026-06-20T10:00:01Z", "event": "VALIDATION_PASSED",
+         "actor": "system", "detail": "7-layer validation passed, 0 warnings"},
+        {"timestamp": "2026-06-20T10:00:02Z", "event": "PENDING_L1",
+         "actor": "system", "detail": "Awaiting Level 1 approval (ROLE_OPERATOR)"},
+        {"timestamp": "2026-06-20T10:15:00Z", "event": "APPROVED_L1",
+         "actor": "amit.kumar", "detail": "Identity verified"},
+        {"timestamp": "2026-06-20T10:15:01Z", "event": "PENDING_L2",
+         "actor": "system", "detail": "Awaiting Level 2 (security-team group)"},
+        {"timestamp": "2026-06-20T14:30:00Z", "event": "APPROVED_L2",
+         "actor": "sneha.gupta", "detail": "Scope acceptable"},
+        {"timestamp": "2026-06-20T14:30:01Z", "event": "PENDING_L3",
+         "actor": "system", "detail": "Awaiting Level 3 (ROLE_ADMIN)"},
+        {"timestamp": "2026-06-20T16:00:00Z", "event": "APPROVED_L3",
+         "actor": "admin", "detail": "Final approval granted"},
+        {"timestamp": "2026-06-20T16:00:05Z", "event": "SENT_TO_CA",
+         "actor": "system", "detail": "CSR forwarded to CA for signing"},
+        {"timestamp": "2026-06-20T16:00:08Z", "event": "CERT_ISSUED",
+         "actor": "system", "detail": "Serial: 4F2A1B3C..."}
+      ]
+    }
+
+
+================================================================================
+  8. ROLE & PERMISSION MATRIX
+================================================================================
+
+  +-------------------------+--------+--------+--------+--------+--------+
+  | Action                  | VIEWER | AUDITOR| OPERATOR| RA_OFF | ADMIN  |
+  +-------------------------+--------+--------+--------+--------+--------+
+  | Submit CSR              |   ❌   |   ❌   |   ✅   |   ✅   |   ✅   |
+  | View own requests       |   ✅   |   ✅   |   ✅   |   ✅   |   ✅   |
+  | View all requests       |   ❌   |   ✅   |   ✅   |   ✅   |   ✅   |
+  | Approve (Level 1)       |   ❌   |   ❌   |   ✅   |   ✅   |   ✅   |
+  | Approve (Level 2+)      |   ❌   |   ❌   |   ❌   |   ✅   |   ✅   |
+  | Reject at any level     |   ❌   |   ❌   |   ✅   |   ✅   |   ✅   |
+  | Approve own request     |   ❌   |   ❌   |   ❌   |   ❌   |   ❌   |
+  | Create approval policy  |   ❌   |   ❌   |   ❌   |   ❌   |   ✅   |
+  | Create delegation       |   ❌   |   ❌   |   ✅   |   ✅   |   ✅   |
+  | Manage approval groups  |   ❌   |   ❌   |   ❌   |   ✅   |   ✅   |
+  | View approval history   |   ❌   |   ✅   |   ✅   |   ✅   |   ✅   |
+  | View audit logs         |   ❌   |   ✅   |   ❌   |   ✅   |   ✅   |
+  | Override escalation     |   ❌   |   ❌   |   ❌   |   ✅   |   ✅   |
+  | Download certificate    |   ✅   |   ✅   |   ✅   |   ✅   |   ✅   |
+  +-------------------------+--------+--------+--------+--------+--------+
+
+
+================================================================================
+  9. NOTIFICATION TRIGGERS
+================================================================================
+
+  +-------------------------------+------------------+-----------------------+
+  | Event                         | Who Gets Notified| Channel               |
+  +-------------------------------+------------------+-----------------------+
+  | CSR submitted                 | All approvers    | Email + In-App        |
+  |                               | for Level 1      |                       |
+  +-------------------------------+------------------+-----------------------+
+  | Level N approved              | All approvers    | Email + In-App        |
+  | (advances to N+1)             | for Level N+1    |                       |
+  +-------------------------------+------------------+-----------------------+
+  | Request rejected              | Requester        | Email + In-App        |
+  |                               |                  |                       |
+  +-------------------------------+------------------+-----------------------+
+  | Certificate issued            | Requester        | Email + In-App        |
+  |                               |                  | + Webhook (optional)  |
+  +-------------------------------+------------------+-----------------------+
+  | Certificate issuance failed   | Requester +      | Email + In-App        |
+  |                               | Last approver    |                       |
+  +-------------------------------+------------------+-----------------------+
+  | Escalation warning            | Current level    | Email + In-App        |
+  | (75% of timeout elapsed)      | approvers        |                       |
+  +-------------------------------+------------------+-----------------------+
+  | Escalation triggered          | Next level       | Email + In-App        |
+  | (timeout exceeded)            | approvers + Admin|                       |
+  +-------------------------------+------------------+-----------------------+
+  | Request expired               | Requester +      | Email + In-App        |
+  | (all escalation levels done)  | All admins       |                       |
+  +-------------------------------+------------------+-----------------------+
+  | Delegation created            | Delegate         | Email + In-App        |
+  +-------------------------------+------------------+-----------------------+
+  | Delegation expiring (1 day)   | Delegator +      | Email                 |
+  |                               | Delegate         |                       |
+  +-------------------------------+------------------+-----------------------+
+  | Auto-approved                 | Requester        | Email + In-App        |
+  |                               |                  | (info only)           |
+  +-------------------------------+------------------+-----------------------+
+
+
+================================================================================
+  10. ERROR CODES (Approval-Specific)
+================================================================================
+
+  +-------------------+-----+-----+----------------------------------------+
+  | Code              | HTTP| Ext | Message                                |
+  +-------------------+-----+-----+----------------------------------------+
+  | PKI_APR_001       | 400 | E401| Request is not in pending status       |
+  | PKI_APR_002       | 403 | E402| Cannot approve your own request        |
+  | PKI_APR_003       | 403 | E403| Insufficient role for this approval    |
+  |                   |     |     | level                                  |
+  | PKI_APR_004       | 409 | E404| You have already approved this request |
+  | PKI_APR_005       | 400 | E405| Request is not at the correct approval |
+  |                   |     |     | level for your role                    |
+  | PKI_APR_006       | 404 | E406| Approval policy not found              |
+  | PKI_APR_007       | 409 | E407| Request has expired (timeout)          |
+  | PKI_APR_008       | 400 | E408| Delegation period is invalid           |
+  | PKI_APR_009       | 403 | E409| Delegate must have same or higher role |
+  | PKI_APR_010       | 409 | E410| Active delegation already exists for   |
+  |                   |     |     | this period                            |
+  | PKI_APR_011       | 403 | E411| Delegation has expired or been revoked |
+  | PKI_APR_012       | 400 | E412| Approval group is empty (no members)   |
+  | PKI_APR_013       | 409 | E413| Same person cannot approve at multiple |
+  |                   |     |     | levels                                 |
+  +-------------------+-----+-----+----------------------------------------+
+
+
+================================================================================
+  11. AUDIT LOG ENTRIES
+================================================================================
+
+  Every workflow action creates an immutable audit log entry:
+
+  +----------------------------+----------------------------+---------------+
+  | Action                     | Description Pattern        | Outcome       |
+  +----------------------------+----------------------------+---------------+
+  | CSR_SUBMIT                 | "CSR submitted for {DN}"   | SUCCESS/FAIL  |
+  | CSR_VALIDATE               | "7-layer validation {res}" | SUCCESS/FAIL  |
+  | CSR_AUTO_APPROVE           | "Auto-approved: {policy}"  | SUCCESS       |
+  | CSR_APPROVE                | "Approved at level {N}"    | SUCCESS       |
+  | CSR_APPROVE_L1             | "Level 1 approved by {who}"| SUCCESS       |
+  | CSR_APPROVE_L2             | "Level 2 approved by {who}"| SUCCESS       |
+  | CSR_APPROVE_L3             | "Level 3 approved by {who}"| SUCCESS       |
+  | CSR_REJECT                 | "Rejected at L{N}: {why}"  | SUCCESS       |
+  | CSR_ESCALATE               | "Escalated from L{N} to    | SUCCESS       |
+  |                            |  L{N+1}: timeout {hours}h" |               |
+  | CSR_EXPIRE                 | "Request expired: no       | FAILURE       |
+  |                            |  approval within {hours}h" |               |
+  | CERT_ISSUE                 | "Cert issued: {serial}"    | SUCCESS       |
+  | CERT_ISSUE_FAIL            | "Issuance failed: {error}" | FAILURE       |
+  | DELEGATION_CREATE          | "Delegated to {who} until  | SUCCESS       |
+  |                            |  {date}"                   |               |
+  | DELEGATION_REVOKE          | "Delegation revoked"       | SUCCESS       |
+  | DELEGATION_EXPIRE          | "Delegation expired"       | SUCCESS       |
+  | POLICY_CREATE              | "Policy created: {name}"   | SUCCESS       |
+  | POLICY_UPDATE              | "Policy updated: {name}"   | SUCCESS       |
+  | GROUP_CREATE               | "Group created: {name}"    | SUCCESS       |
+  | GROUP_MEMBER_ADD           | "Added {who} to {group}"   | SUCCESS       |
+  | GROUP_MEMBER_REMOVE        | "Removed {who} from {grp}" | SUCCESS       |
+  +----------------------------+----------------------------+---------------+
+
+  Each entry includes: username, userId, ipAddress, resourceId, timestamp
+
+
+================================================================================
+  12. ESCALATION & TIMEOUT RULES
+================================================================================
+
+  When an approval level is not completed within the configured time,
+  the system automatically escalates or expires the request.
+
+  ESCALATION FLOW:
+
+    Request submitted --> PENDING (Level 1)
+        |
+        | escalation_hours = 48 (from policy)
+        | escalation_deadline = submit_time + 48h
+        |
+        +-- 36 hours pass (75% of 48h) --> WARNING notification
+        |   "Request #103 needs approval — escalation in 12 hours"
+        |
+        +-- 48 hours pass (100%) --> ESCALATION
+            |
+            | System actions:
+            |   a. Current level's deadline passed
+            |   b. Advance to NEXT level automatically
+            |   c. Notify next-level approvers
+            |   d. Audit log: CSR_ESCALATE
+            |   e. Set new escalation_deadline for next level
+            |
+            | If NO more levels to escalate to:
+            |   a. Status = EXPIRED_REQUEST
+            |   b. Notify requester + all admins
+            |   c. Audit log: CSR_EXPIRE
+            |   d. Requester must re-submit
+
+  QUARTZ JOB: ApprovalEscalationJob
+
+    Runs every: 15 minutes
+    Query:
+      SELECT * FROM certificate_requests
+      WHERE status LIKE 'PENDING%'
+      AND escalation_deadline < NOW()
+
+    For each expired request:
+      - Check if next level exists in policy
+      - YES: advance level + notify + new deadline
+      - NO:  expire request + notify
+
+  CONFIGURABLE TIMEOUTS (per policy):
+
+    +-------------------------------+-----------+
+    | Certificate Type              | Timeout   |
+    +-------------------------------+-----------+
+    | TLS Server (standard)         | 72 hours  |
+    | TLS Client (internal)         | 48 hours  |
+    | Code Signing (high-risk)      | 48 hours  |
+    | Wildcard certificate          | 24 hours  |
+    | Dev/test (auto-approve)       | N/A       |
+    +-------------------------------+-----------+
+
+
+================================================================================
+  13. TESTING PLAN — EVERY SCENARIO
+================================================================================
+
+  Each test case lists: scenario, steps, expected result, API call.
+
+
+  13.1 — MODEL A: SINGLE APPROVAL TESTS
+  =======================================================================
+
+  TEST-A01: Happy Path — Submit + Approve + Issue
+  -------------------------------------------------------------------
+    Pre:  User rahul (ROLE_OPERATOR), User priya (ROLE_ADMIN)
+    Steps:
+      1. POST /api/ra/requests (auth: rahul, body: valid CSR)
+         → 201, status=PENDING, id=101
+      2. GET /api/ra/requests/101 (auth: priya)
+         → 200, status=PENDING, approvals=[]
+      3. POST /api/ra/requests/101/approve (auth: priya)
+         → 200, status=ISSUED, certificateSerial != null
+      4. GET /api/ra/certificates/{serial}
+         → 200, status=ACTIVE
+      5. Verify audit_log has 3 entries:
+         CSR_SUBMIT, CSR_APPROVE, CERT_ISSUE
+    Expected: Certificate issued, all audit entries present
+
+  TEST-A02: Happy Path — Submit + Reject
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests (auth: rahul)
+         → 201, status=PENDING
+      2. POST /api/ra/requests/101/reject (auth: priya,
+         comment: "Domain not approved")
+         → 200, status=REJECTED, statusReason="Domain not approved"
+      3. Verify audit_log: CSR_SUBMIT, CSR_REJECT
+    Expected: Request rejected with reason
+
+  TEST-A03: Self-Approval Blocked
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests (auth: rahul) → 201, id=102
+      2. POST /api/ra/requests/102/approve (auth: rahul)
+         → 403, error=PKI_APR_002 "Cannot approve your own request"
+    Expected: 403 Forbidden
+
+  TEST-A04: Unauthorized Role Cannot Approve
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests (auth: rahul) → 201, id=103
+      2. POST /api/ra/requests/103/approve (auth: viewer_user)
+         → 403, error=PKI_APR_003
+    Expected: 403 Forbidden (ROLE_VIEWER cannot approve)
+
+  TEST-A05: Double Approval Blocked
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests (auth: rahul) → 201, id=104
+      2. POST /api/ra/requests/104/approve (auth: priya) → 200, ISSUED
+      3. POST /api/ra/requests/104/approve (auth: admin2)
+         → 400, error=PKI_APR_001 "Request is not in pending status"
+    Expected: Second approval rejected (already issued)
+
+  TEST-A06: Approve Non-Existent Request
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests/99999/approve (auth: priya)
+         → 404, error=PKI_CERT_001
+    Expected: 404 Not Found
+
+  TEST-A07: Reject Already Rejected Request
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests (auth: rahul) → 201, id=105
+      2. POST /api/ra/requests/105/reject (auth: priya) → 200, REJECTED
+      3. POST /api/ra/requests/105/reject (auth: admin2)
+         → 400, PKI_APR_001 "not in pending status"
+    Expected: Cannot reject twice
+
+  TEST-A08: CA Failure Handling
+  -------------------------------------------------------------------
+    Pre: CA server is down / unreachable
+    Steps:
+      1. POST /api/ra/requests (auth: rahul) → 201, id=106
+      2. POST /api/ra/requests/106/approve (auth: priya)
+         → 500 or 503, status=FAILED,
+           statusReason="CA unreachable"
+      3. Verify audit_log: CSR_APPROVE (SUCCESS), CERT_ISSUE (FAILURE)
+      4. Verify request status = FAILED (not APPROVED or ISSUED)
+    Expected: Request marked FAILED, not stuck in APPROVED
+
+  TEST-A09: Invalid CSR Submission
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests (auth: rahul, body: garbage CSR)
+         → 400 or 422, error=PKI_VAL_002
+    Expected: Rejected at validation, never reaches PENDING
+
+  TEST-A10: Unauthenticated Request
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests (no auth header)
+         → 401 Unauthorized
+    Expected: Blocked at security layer
+
+
+  13.2 — MODEL B: AUTO-APPROVE TESTS
+  =======================================================================
+
+  TEST-B01: Auto-Approve Triggers Successfully
+  -------------------------------------------------------------------
+    Pre: Template "dev-tls" has auto_approve=true,
+         condition: role=ROLE_OPERATOR, max_validity=90
+    Steps:
+      1. POST /api/ra/requests (auth: rahul/OPERATOR,
+         templateId=dev-tls, validityDays=30)
+         → 201, status=ISSUED (not PENDING!)
+      2. Verify audit_log: CSR_SUBMIT, CSR_AUTO_APPROVE, CERT_ISSUE
+      3. Verify approval record: approver=null, decision=APPROVED,
+         comment="Auto-approved: template policy"
+    Expected: No manual step, certificate issued in <5 seconds
+
+  TEST-B02: Auto-Approve NOT Triggered — Condition Fails
+  -------------------------------------------------------------------
+    Pre: Template "dev-tls" auto_approve condition: max_validity=90
+    Steps:
+      1. POST /api/ra/requests (auth: rahul,
+         templateId=dev-tls, validityDays=365)
+         → 201, status=PENDING (365 > 90, condition not met)
+    Expected: Falls back to manual approval
+
+  TEST-B03: Auto-Approve NOT Triggered — Wrong Role
+  -------------------------------------------------------------------
+    Pre: Template auto_approve condition: role=ROLE_OPERATOR
+    Steps:
+      1. POST /api/ra/requests (auth: viewer_user/VIEWER)
+         → 403 (VIEWER cannot submit) or PENDING (no auto-approve)
+    Expected: Does not auto-approve for wrong role
+
+  TEST-B04: Auto-Approve With Multiple Conditions (match_mode=ALL)
+  -------------------------------------------------------------------
+    Pre: Conditions: role=OPERATOR AND dn_pattern=*.dev.* AND validity<=90
+    Steps:
+      1. Submit with: OPERATOR + CN=test.dev.acme + validity=30
+         → auto-approved ✅ (all match)
+      2. Submit with: OPERATOR + CN=test.prod.acme + validity=30
+         → PENDING ❌ (dn_pattern fails)
+    Expected: ALL conditions must match
+
+
+  13.3 — MODEL C: MULTI-LEVEL APPROVAL TESTS
+  =======================================================================
+
+  TEST-C01: Full 3-Level Approval
+  -------------------------------------------------------------------
+    Pre: Policy: L1=OPERATOR, L2=security-team, L3=ADMIN
+    Steps:
+      1. POST /api/ra/requests → 201, PENDING, level=1
+      2. POST /approve (auth: operator1) → 200, PENDING_L2, level=2
+      3. POST /approve (auth: sec_officer) → 200, PENDING_L3, level=3
+      4. POST /approve (auth: admin) → 200, ISSUED
+      5. Verify 3 approval records (level 1, 2, 3)
+      6. Verify audit: CSR_APPROVE_L1, CSR_APPROVE_L2, CSR_APPROVE_L3
+    Expected: Certificate issued after all 3 levels complete
+
+  TEST-C02: Rejection at Level 2
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests → 201, PENDING
+      2. POST /approve (auth: operator1) → 200, PENDING_L2
+      3. POST /reject (auth: sec_officer, comment: "Scope too broad")
+         → 200, REJECTED
+      4. Verify: Level 3 never reached
+      5. Verify audit: CSR_APPROVE_L1, CSR_REJECT_L2
+    Expected: Rejected, Level 3 skipped entirely
+
+  TEST-C03: Same Person Cannot Approve Multiple Levels
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests → 201, PENDING
+      2. POST /approve (auth: admin) → 200, PENDING_L2
+      3. POST /approve (auth: admin) → 409, PKI_APR_013
+         "Same person cannot approve at multiple levels"
+    Expected: Blocked — different person required per level
+
+  TEST-C04: Wrong Level Approver Blocked
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests → 201, PENDING (level=1)
+      2. POST /approve (auth: sec_officer, who is Level 2 only)
+         → 400, PKI_APR_005 "Not at correct level for your role"
+    Expected: Level 2 approver cannot approve Level 1
+
+  TEST-C05: Group-Based Approval
+  -------------------------------------------------------------------
+    Pre: Level 2 requires group "security-team",
+         sneha and vikram are members
+    Steps:
+      1. POST /api/ra/requests → PENDING
+      2. POST /approve (operator) → PENDING_L2
+      3. POST /approve (auth: sneha) → PENDING_L3 ✅
+      4. OR: POST /approve (auth: vikram) → PENDING_L3 ✅
+         (either member can approve)
+    Expected: Any group member satisfies the level
+
+  TEST-C06: Count=2 Requires Two Different Approvers
+  -------------------------------------------------------------------
+    Pre: Level 2 policy: group=security-team, count=2
+    Steps:
+      1. PENDING → L1 approved → PENDING_L2
+      2. POST /approve (auth: sneha) → still PENDING_L2 (1 of 2)
+      3. POST /approve (auth: vikram) → PENDING_L3 (2 of 2, level done)
+      4. POST /approve (auth: sneha again) → PKI_APR_004
+         "You have already approved"
+    Expected: Need 2 DIFFERENT people from the group
+
+
+  13.4 — MODEL D: DELEGATION TESTS
+  =======================================================================
+
+  TEST-D01: Valid Delegation — Delegate Can Approve
+  -------------------------------------------------------------------
+    Pre: priya delegates to vikram (July 1-15)
+    Steps:
+      1. POST /api/ra/delegations (auth: priya) → 201
+      2. Set system date to July 5 (within range)
+      3. POST /api/ra/requests → PENDING
+      4. GET /api/ra/requests/my-pending (auth: vikram)
+         → includes the request (via delegation)
+      5. POST /approve (auth: vikram) → 200, ISSUED
+      6. Verify approval: delegated_from = priya.patel
+    Expected: Vikram approved on behalf of Priya
+
+  TEST-D02: Expired Delegation — Delegate Cannot Approve
+  -------------------------------------------------------------------
+    Pre: priya delegates to vikram (July 1-15)
+    Steps:
+      1. Set system date to July 20 (after expiry)
+      2. POST /api/ra/requests → PENDING
+      3. GET /api/ra/requests/my-pending (auth: vikram)
+         → does NOT include delegated requests
+    Expected: Delegation expired, vikram cannot see/approve
+
+  TEST-D03: Delegation Revoked Early
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/delegations (auth: priya) → 201, id=10
+      2. DELETE /api/ra/delegations/10 (auth: priya) → 200
+      3. vikram tries to approve → blocked (delegation revoked)
+    Expected: Revoked delegation is immediately inactive
+
+  TEST-D04: Delegate Cannot Re-Delegate
+  -------------------------------------------------------------------
+    Steps:
+      1. priya delegates to vikram
+      2. POST /api/ra/delegations (auth: vikram,
+         delegate: someone_else) → 403
+         "Cannot re-delegate received authority"
+    Expected: Chain delegation blocked
+
+  TEST-D05: Delegate Role Check
+  -------------------------------------------------------------------
+    Steps:
+      1. priya (ROLE_ADMIN) tries to delegate to viewer_user (ROLE_VIEWER)
+         → 403, PKI_APR_009 "Delegate must have same or higher role"
+    Expected: Cannot delegate to lower role
+
+
+  13.5 — ESCALATION & TIMEOUT TESTS
+  =======================================================================
+
+  TEST-E01: Escalation Triggers After Timeout
+  -------------------------------------------------------------------
+    Pre: Policy escalation_hours=2 (short for testing)
+    Steps:
+      1. POST /api/ra/requests → PENDING (level=1)
+      2. Wait 2+ hours (or mock time)
+      3. ApprovalEscalationJob runs
+      4. Verify: status changed from PENDING to PENDING_L2
+      5. Verify audit: CSR_ESCALATE
+      6. Verify notification sent to Level 2 approvers
+    Expected: Auto-escalated to next level
+
+  TEST-E02: Warning at 75% of Timeout
+  -------------------------------------------------------------------
+    Pre: escalation_hours=4 (warning at 3 hours)
+    Steps:
+      1. POST /api/ra/requests → PENDING
+      2. Wait 3 hours (75%)
+      3. Verify: warning notification sent
+         "Request #X needs approval — escalation in 1 hour"
+    Expected: Warning before escalation
+
+  TEST-E03: Request Expires — No More Levels
+  -------------------------------------------------------------------
+    Pre: Policy has 1 level, escalation_hours=2
+    Steps:
+      1. POST /api/ra/requests → PENDING
+      2. Wait 2+ hours, no approval
+      3. ApprovalEscalationJob runs
+      4. No more levels → status = EXPIRED_REQUEST
+      5. Verify audit: CSR_EXPIRE
+      6. Verify notification to requester + admins
+    Expected: Request expired, requester must re-submit
+
+  TEST-E04: Approval Before Escalation
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests → PENDING
+      2. POST /approve (auth: operator) before timeout
+         → APPROVED/ISSUED
+      3. ApprovalEscalationJob runs later → skips this request
+    Expected: Normal approval, no escalation
+
+
+  13.6 — SECURITY & EDGE CASE TESTS
+  =======================================================================
+
+  TEST-S01: SQL Injection in Comment
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /approve with comment: "'; DROP TABLE certificates;--"
+         → 200 (comment saved as plain text, no SQL execution)
+      2. Verify: tables intact, comment stored literally
+    Expected: No SQL injection
+
+  TEST-S02: XSS in Comment
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /approve with comment: "<script>alert('xss')</script>"
+         → 200 (comment stored as-is)
+      2. GET /requests/101 → comment returned HTML-escaped in JSON
+    Expected: No XSS execution
+
+  TEST-S03: Concurrent Approvals (Race Condition)
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /api/ra/requests → PENDING
+      2. Two approvers POST /approve simultaneously
+         → Only first succeeds (200), second gets 400
+           "Request is not in pending status"
+    Expected: Only one approval recorded (optimistic locking)
+
+  TEST-S04: Approve Request From Different RA Instance
+  -------------------------------------------------------------------
+    Steps:
+      1. Submit on RA instance 1
+      2. Approve on RA instance 2 (shared database)
+         → 200, works correctly
+    Expected: Stateless — any RA instance can process any request
+
+  TEST-S05: Request With No Approval Policy
+  -------------------------------------------------------------------
+    Steps:
+      1. Submit CSR for template with no policy defined
+         → Falls back to default single-approval (Model A)
+    Expected: Graceful fallback, not an error
+
+  TEST-S06: Approval Group With No Members
+  -------------------------------------------------------------------
+    Steps:
+      1. Policy requires group "empty-team" at Level 2
+      2. Submit CSR → PENDING → L1 approved → PENDING_L2
+      3. Nobody can approve Level 2 (empty group)
+      4. After escalation_hours → escalate or expire
+    Expected: System handles gracefully, does not hang forever
+
+  TEST-S07: Large Comment (Boundary)
+  -------------------------------------------------------------------
+    Steps:
+      1. POST /approve with comment = 1000 chars → 200 ✅
+      2. POST /approve with comment = 1001 chars → 400
+         "Comment exceeds maximum length"
+    Expected: Validates comment length
+
+  TEST-S08: Approve After CA Key Rotation
+  -------------------------------------------------------------------
+    Steps:
+      1. Submit CSR → PENDING
+      2. CA rotates signing key
+      3. Approve → CA signs with new key → ISSUED
+      4. Verify: cert signed by new intermediate CA
+    Expected: Works — RA doesn't cache CA keys
+
+
+================================================================================
+  14. EDGE CASES & SECURITY CONSIDERATIONS
+================================================================================
+
+  14.1 — Race Conditions
+  -------------------------------------------------------------------
+    Problem:  Two operators approve same request simultaneously
+    Solution: Optimistic locking on certificate_requests.status
+              First approve wins, second gets 400 "not PENDING"
+              Use @Version column or explicit status check in SQL:
+                UPDATE certificate_requests
+                SET status = 'APPROVED'
+                WHERE id = :id AND status = 'PENDING'
+              If rows_affected = 0 → someone else already changed it
+
+  14.2 — Orphaned Requests
+  -------------------------------------------------------------------
+    Problem:  Request stuck in APPROVED but CA never responds
+    Solution: Quartz job scans for status=APPROVED older than 1 hour
+              Retry CA call or mark as FAILED
+              Alert admin if retry also fails
+
+  14.3 — Circular Delegation
+  -------------------------------------------------------------------
+    Problem:  A delegates to B, B delegates to C, C delegates to A
+    Solution: No re-delegation allowed (TEST-D04)
+              Only original authority holders can delegate
+
+  14.4 — Privilege Escalation via Delegation
+  -------------------------------------------------------------------
+    Problem:  ROLE_VIEWER delegates to ROLE_ADMIN (escalation)
+    Solution: Only delegate to same or higher role (TEST-D05)
+              Delegation cannot GRANT new permissions
+
+  14.5 — Time Zone Issues
+  -------------------------------------------------------------------
+    Problem:  Delegation valid_from/valid_until in different timezone
+    Solution: All timestamps stored as UTC (DATETIME(6))
+              Comparison always in UTC
+              UI converts to local timezone for display only
+
+  14.6 — Approval After Certificate Expiry
+  -------------------------------------------------------------------
+    Problem:  Request pending for months, cert validity would
+              now exceed CA's expiry
+    Solution: Re-validate Layer 6 (validity check) at approval time
+              Not just at submission time
+
+  14.7 — Bulk Approval
+  -------------------------------------------------------------------
+    Problem:  Admin wants to approve 50 requests at once
+    Solution: POST /api/ra/requests/bulk-approve
+              Body: { "requestIds": [101, 102, ...], "comment": "..." }
+              Each request validated individually
+              Partial success possible (some approved, some failed)
+              Response includes per-request result
+
+  14.8 — Audit Integrity
+  -------------------------------------------------------------------
+    Problem:  Admin tries to delete audit log entries
+    Solution: audit_log has NO delete API
+              No DELETE permission on table
+              REQUIRES_NEW transaction (survives rollback)
+              SIEM forwarding for off-site backup
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================

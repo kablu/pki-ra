@@ -1,0 +1,139 @@
+
+================================================================================
+  FLOW-01: CLIENT PREPARATION (Steps 1-5)
+  Master Flow Reference: MASTER_FLOW_CSR_To_Certificate.txt
+  Next: FLOW-02 (Request Reception)
+================================================================================
+
+  This flow happens ENTIRELY on the client side.
+  RA has no involvement until Step 5 (submit).
+
+  STEP 1: KEY PAIR GENERATION
+  ===================================================================
+  What:   Client generates a cryptographic key pair (public + private)
+  Where:  On the client device/server — NEVER on RA
+  Why:    Private key must NEVER leave the device that owns it
+
+  Actions:
+    a. Choose algorithm: RSA or ECDSA
+    b. Choose key size:
+         RSA:   2048 (minimum), 3072, 4096 (recommended)
+         ECDSA: P-256, P-384 (recommended), P-521
+    c. Generate key pair using secure random
+    d. Store private key with restricted permissions (chmod 600)
+    e. Private key NEVER transmitted over network
+
+  Tools:
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384
+    keytool -genkeypair -alias mykey -keyalg RSA -keysize 4096
+
+  Output:
+    private.key  — stays on device (NEVER shared)
+    public key   — embedded inside CSR (next step)
+
+
+  STEP 2: CSR CREATION (PKCS#10)
+  ===================================================================
+  What:   Client creates a Certificate Signing Request
+  Format: PKCS#10 (RFC 2986)
+  Why:    CSR says "this is who I am, this is my public key,
+          and I prove I have the private key (self-signature)"
+
+  Actions:
+    a. Set Subject DN:
+         CN=api.example.com, O=Acme Corp, OU=Engineering, C=IN
+    b. Set Subject Alternative Names (optional):
+         DNS:api.example.com, DNS:api2.example.com, IP:10.0.5.43
+    c. Set requested extensions (optional):
+         Key Usage, Extended Key Usage
+    d. Sign CSR with private key (proof of possession)
+    e. Encode as PEM or DER
+
+  Tools:
+    openssl req -new -key private.key -out request.csr \
+      -subj "/CN=api.example.com/O=Acme Corp/C=IN" \
+      -addext "subjectAltName=DNS:api.example.com"
+
+  Output:
+    -----BEGIN CERTIFICATE REQUEST-----
+    MIICYDCCAUgCAQAwGzEZMBcGA1UEAxMQ...
+    -----END CERTIFICATE REQUEST-----
+
+  CSR contains:
+    ✅ Subject DN (who I am)
+    ✅ Public Key (my public key)
+    ✅ Self-Signature (I prove I have the private key)
+    ❌ Private Key (NEVER in CSR)
+
+
+  STEP 3: PROTOCOL CHOICE
+  ===================================================================
+  What:   Client decides HOW to send CSR to RA
+  Why:    Different clients have different capabilities
+
+  Decision Matrix:
+    +---------------------------+------------------+
+    | Client Type               | Use Protocol     |
+    +---------------------------+------------------+
+    | Web browser / admin portal| REST API (JSON)  |
+    | CI/CD pipeline / script   | REST API (JSON)  |
+    | certbot / automated       | EST (RFC 7030)   |
+    | IoT device / embedded     | EST (libest)     |
+    | MDM (Intune/JAMF)         | SCEP             |
+    | Legacy network device     | SCEP             |
+    | Enterprise CA agent       | CMP (RFC 4210)   |
+    | Kubernetes cert-manager   | EST or ACME      |
+    +---------------------------+------------------+
+
+
+  STEP 4: TRUST BOOTSTRAP
+  ===================================================================
+  What:   Client obtains RA/CA trust certificates
+  Why:    Without CA certs, client can't verify RA's TLS cert
+          and can't verify the issued certificate later
+
+  Methods:
+    a. EST: GET /.well-known/est/cacerts → PKCS#7 with CA certs
+    b. Pre-installed: Ansible/Puppet pushes ca-bundle.pem
+    c. Manual: IT admin copies CA cert to device
+    d. MDM: MDM profile includes root CA cert
+
+  Output:
+    CA trust chain saved in client's truststore
+
+
+  STEP 5: SUBMIT REQUEST
+  ===================================================================
+  What:   Client sends CSR to RA server
+  How:    Depends on protocol chosen in Step 3
+
+  REST API:
+    POST /api/ra/requests
+    Content-Type: application/json
+    Authorization: Basic dXNlcjpwYXNz
+    Body: { "pkcs10": "-----BEGIN CERT...", "validityDays": 365 }
+
+  EST:
+    POST /.well-known/est/simpleenroll
+    Content-Type: application/pkcs10
+    Authorization: Basic dXNlcjpwYXNz
+    Body: (Base64-encoded PKCS#10, no PEM headers)
+
+  SCEP:
+    POST /scep/pkiclient.exe?operation=PKIOperation
+    Content-Type: application/x-pki-message
+    Body: (PKCS#7 SignedData envelope containing CSR)
+
+  CMP:
+    POST /cmp
+    Content-Type: application/pkixcmp
+    Body: (DER-encoded PKIMessage containing CertRequest)
+
+  After this step → control passes to RA → FLOW-02 begins
+
+
+================================================================================
+  END OF FLOW-01
+  Next: FLOW-02 (Request Reception) → docs/internal/FLOW_02_...
+================================================================================
