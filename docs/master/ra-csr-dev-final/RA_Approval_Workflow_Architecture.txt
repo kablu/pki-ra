@@ -70,20 +70,26 @@
   [SUBMITTED] -----> Admin assigns to Operator (Maker)
        |
        v
-  [ASSIGNED] ------> Maker reviews + writes remarks
+  [ASSIGNED] ------> Maker reviews CSR
        |
-       v
-  [REVIEWED] ------> Checker sees remarks
-       |
-       +----------+----------+
-       |                     |
-       v                     v
-  [ACCEPTED]            [REJECTED]
-       |                     |
-       v                     v
-  Send to CA            Notify requester
-       |                (with rejection reason)
-       +--------+
+       +----------------+--------------------+
+       |                                     |
+       v                                     v
+  Maker recommends                     Maker returns to Admin
+  (sends to Checker)                   (CSR has issues)
+       |                                     |
+       v                                     v
+  [REVIEWED] ------> Checker         [RETURNED] -----> Admin sees
+       |              sees remarks         |            returned request
+       +----------+----------+             |
+       |                     |             +--- Admin can:
+       v                     v             |    1. Reassign to same/different Maker
+  [ACCEPTED]            [REJECTED]         |    2. Reject the request directly
+       |                     |             |
+       v                     v             v
+  Send to CA            Notify         [ASSIGNED] (reassign)
+       |                requester           or
+       +--------+      + Maker         [REJECTED] (Admin rejects)
        |        |
        v        v
   [ISSUED]  [FAILED]
@@ -103,13 +109,21 @@
   | ASSIGNED        | Admin assigned to a Maker (operator),              |
   |                 | waiting for Maker to review                       |
   +-----------------+---------------------------------------------------+
-  | REVIEWED        | Maker submitted review with remarks,               |
-  |                 | waiting for Checker to accept or reject            |
+  | RETURNED        | Maker returned the request to Admin with reason.   |
+  |                 | Maker found issues during review and cannot        |
+  |                 | recommend the request for approval.                |
+  |                 | Admin can either:                                 |
+  |                 |   a. Reassign to same or different operator        |
+  |                 |   b. Reject the request directly                  |
+  +-----------------+---------------------------------------------------+
+  | REVIEWED        | Maker recommended and submitted review with        |
+  |                 | remarks. Waiting for Checker to accept or reject. |
   +-----------------+---------------------------------------------------+
   | ACCEPTED        | Checker accepted, sending to CA for signing        |
   +-----------------+---------------------------------------------------+
-  | REJECTED        | Checker rejected (with reason)                     |
-  |                 | Requester notified, request closed                |
+  | REJECTED        | Request rejected — either by Checker (after Maker  |
+  |                 | review) or by Admin (after Maker returned).        |
+  |                 | Requester notified, request closed.               |
   +-----------------+---------------------------------------------------+
   | ISSUED          | CA signed successfully, certificate stored          |
   +-----------------+---------------------------------------------------+
@@ -123,7 +137,10 @@
   | From              |     | To                |                   |
   +-------------------+     +-------------------+-------------------+
   | SUBMITTED         | --> | ASSIGNED          | Admin assigns     |
-  | ASSIGNED          | --> | REVIEWED          | Maker submits     |
+  | ASSIGNED          | --> | REVIEWED          | Maker recommends  |
+  | ASSIGNED          | --> | RETURNED          | Maker returns     |
+  | RETURNED          | --> | ASSIGNED          | Admin reassigns   |
+  | RETURNED          | --> | REJECTED          | Admin rejects     |
   | REVIEWED          | --> | ACCEPTED          | Checker accepts   |
   | REVIEWED          | --> | REJECTED          | Checker rejects   |
   | ACCEPTED          | --> | ISSUED            | CA signs OK       |
@@ -136,6 +153,8 @@
   | SUBMITTED → REVIEWED   | Cannot skip assignment              |
   | SUBMITTED → ACCEPTED   | Cannot skip Maker + Checker         |
   | ASSIGNED  → ACCEPTED   | Cannot skip Maker review            |
+  | RETURNED  → REVIEWED   | Must be reassigned first            |
+  | RETURNED  → ACCEPTED   | Must go through Maker again         |
   | REJECTED  → ACCEPTED   | Final state, must resubmit CSR      |
   | ISSUED    → REJECTED   | Cannot un-issue (use revocation)    |
 
@@ -170,8 +189,15 @@
   | checker_decided_at         | DATETIME(6)   | YES | When Checker decided  |
   +----------------------------+---------------+-----+-----------------------+
 
+  +----------------------------+---------------+-----+-----------------------+
+  | return_reason              | VARCHAR(2000) | YES | Why Maker returned    |
+  |                            |               |     | the request to Admin  |
+  +----------------------------+---------------+-----+-----------------------+
+  | returned_at                | DATETIME(6)   | YES | When Maker returned   |
+  +----------------------------+---------------+-----+-----------------------+
+
   UPDATED STATUS CHECK constraint:
-    CHECK (status IN ('SUBMITTED', 'ASSIGNED', 'REVIEWED',
+    CHECK (status IN ('SUBMITTED', 'ASSIGNED', 'RETURNED', 'REVIEWED',
                       'ACCEPTED', 'REJECTED', 'ISSUED', 'FAILED'))
 
   Flyway migration:
@@ -230,10 +256,10 @@
   |                    CSR REQUEST DASHBOARD                        |
   +================================================================+
   |                                                                |
-  |  [NEW / PENDING]     [IN PROGRESS]    [COMPLETED]   [ISSUES]  |
-  |  SUBMITTED: 5        ASSIGNED: 3      ISSUED: 28    REJECTED:4|
-  |                      REVIEWED: 2                    FAILED: 0 |
-  |                      ACCEPTED: 1                              |
+  |  [NEW/PENDING]   [IN PROGRESS]  [COMPLETED]   [ISSUES]        |
+  |  SUBMITTED: 5    ASSIGNED: 3    ISSUED: 28    REJECTED: 4     |
+  |                  REVIEWED: 2                  RETURNED: 2     |
+  |                  ACCEPTED: 1                  FAILED: 0       |
   +================================================================+
 
   Category APIs — Admin uses these to view each section:
@@ -342,7 +368,28 @@
   |     - Checker rejected it (with reason)                         |
   |     - No further action needed (requester must resubmit)        |
   |                                                                 |
-  | Sub-tab B: FAILED (CA signing error)                            |
+  | Sub-tab B: RETURNED (Maker sent back to Admin)                  |
+  | API:    GET /api/ra/requests?status=RETURNED                    |
+  | Shows:  Maker found issues and returned to Admin with reason.   |
+  |         Admin can see who was assigned (Maker), what the         |
+  |         Maker found (return reason), and decide next action:    |
+  |         REASSIGN to another operator or REJECT directly.        |
+  |   [{                                                            |
+  |     "id": 105,                                                  |
+  |     "subjectDn": "CN=test.evil.com",                             |
+  |     "status": "RETURNED",                                      |
+  |     "requesterUsername": "rahul.sharma",                         |
+  |     "makerUsername": "priya.patel",                              |
+  |     "makerRemarks": "Domain evil.com not in approved list.      |
+  |                      Key size 1024 below minimum policy.",      |
+  |     "returnedAt": "2026-06-23T11:30:00Z"                        |
+  |   }]                                                            |
+  |                                                                 |
+  |   Admin actions:                                                |
+  |     POST /api/ra/requests/105/assign → reassign to operator    |
+  |     POST /api/ra/requests/105/reject → reject directly          |
+  |                                                                 |
+  | Sub-tab C: FAILED (CA signing error)                            |
   | API:    GET /api/ra/requests?status=FAILED                      |
   | Shows:  Checker approved but CA failed to sign                  |
   |         Admin can retry: POST /api/ra/requests/{id}/retry       |
@@ -359,10 +406,11 @@
         "assigned": 3,
         "reviewed": 2,
         "accepted": 1,
+        "returned": 2,
         "rejected": 4,
         "issued": 28,
         "failed": 0,
-        "total": 43
+        "total": 45
       }
 
 
@@ -417,7 +465,7 @@
       }]
 
 
-  STEP 6: MAKER REVIEWS AND SUBMITS REMARKS
+  STEP 6A: MAKER RECOMMENDS — SUBMITS REVIEW (happy path)
   =================================================================
     API:    POST /api/ra/requests/{id}/review
     Auth:   ROLE_OPERATOR (must be the assigned Maker)
@@ -442,6 +490,103 @@
         "makerRemarks": "CSR verified...",
         "makerUsername": "priya.patel",
         "makerReviewedAt": "2026-06-23T11:00:00Z" }
+
+
+  STEP 6B: MAKER RETURNS REQUEST TO ADMIN (CSR has issues)
+  =================================================================
+    When the Maker finds issues during review and cannot recommend
+    the request for approval, the Maker returns it to the Admin
+    with a reason. The Maker does NOT have the authority to reject
+    the request directly — only the Admin or Checker can reject.
+
+    API:    POST /api/ra/requests/{id}/return
+    Auth:   ROLE_OPERATOR (must be the assigned Maker)
+    Body:   {
+              "reason": "Subject DN contains unauthorized domain
+                         evil.com which is not in the approved
+                         domain list. CSR key size is only 1024
+                         which does not meet minimum policy."
+            }
+
+    System:
+      a. Validate: status == ASSIGNED
+      b. Validate: current user == assigned_to_id (only Maker can return)
+      c. Validate: reason is not blank
+      d. Update: status = RETURNED,
+                 maker_remarks = body.reason,
+                 maker_reviewed_at = now
+      e. Audit: CSR_RETURN (resource=101,
+                desc="Maker returned to Admin: unauthorized domain")
+      f. Notify: all ADMINs
+         "CSR #101 returned by priya.patel: [reason]"
+
+    Response: 200 OK
+      { "id": 101, "status": "RETURNED",
+        "makerRemarks": "Subject DN contains unauthorized domain...",
+        "makerUsername": "priya.patel",
+        "makerReviewedAt": "2026-06-23T11:00:00Z" }
+
+
+  STEP 6C: ADMIN HANDLES RETURNED REQUEST
+  =================================================================
+    Admin sees the returned request in the ISSUES category of the
+    dashboard. Admin reads the Maker's return reason and decides
+    the next action.
+
+    Admin has TWO options:
+
+    OPTION 1 — REASSIGN to same or different operator:
+    -----------------------------------------------------------------
+    API:    POST /api/ra/requests/{id}/assign
+    Auth:   ROLE_ADMIN
+    Body:   { "operatorId": 7 }
+            (same operator or a different one)
+
+    System:
+      a. Validate: status == RETURNED
+      b. Same validation as original assignment
+      c. Update: status = ASSIGNED,
+                 assigned_to_id = 7 (new or same operator),
+                 assigned_at = now,
+                 assigned_by_id = admin.id
+         Note: previous maker_remarks are preserved for history
+      d. Audit: CSR_REASSIGN (resource=101,
+                desc="Reassigned to vikram.singh after return")
+      e. Notify: new Maker operator
+
+    Use case:
+      - Maker flagged a minor issue that requester can fix
+      - Admin wants a second opinion from another operator
+      - Same operator can review again after requester correction
+
+
+    OPTION 2 — ADMIN REJECTS DIRECTLY:
+    -----------------------------------------------------------------
+    API:    POST /api/ra/requests/{id}/reject
+    Auth:   ROLE_ADMIN
+    Body:   {
+              "remarks": "Rejected per Maker's findings.
+                          Domain evil.com is permanently blocked."
+            }
+
+    System:
+      a. Validate: status == RETURNED
+      b. Update: status = REJECTED,
+                 checker_id = NULL (no Checker involved),
+                 checker_decision = REJECTED,
+                 checker_remarks = "Admin rejected after Maker return: "
+                                   + body.remarks,
+                 checker_decided_at = now,
+                 status_reason = body.remarks
+      c. Audit: CSR_REJECT_BY_ADMIN (resource=101,
+                desc="Admin rejected after Maker return: [reason]")
+      d. Notify: requester + original Maker
+         "CSR #101 rejected by Admin: [reason]"
+
+    Use case:
+      - Maker found a serious issue (blocked domain, weak key)
+      - Admin agrees and rejects without needing Checker review
+      - Saves time — no point sending to Checker
 
 
   STEP 7: CHECKER VIEWS REVIEWED REQUESTS
@@ -557,9 +702,12 @@
   | POST   | /api/ra/requests/{id}/assign          | Assign to Maker       | ADMIN  |
   | POST   | /api/ra/requests/{id}/retry           | Retry failed issuance | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
+  | GET    | /api/ra/requests?status=RETURNED      | Returned by Maker     | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
   |        | === MAKER (Operator) ===               |                       |        |
   | GET    | /api/ra/requests/my-assigned          | My assigned requests  | OPER   |
-  | POST   | /api/ra/requests/{id}/review          | Submit review+remarks | OPER   |
+  | POST   | /api/ra/requests/{id}/review          | Recommend (to Checker)| OPER   |
+  | POST   | /api/ra/requests/{id}/return          | Return to Admin       | OPER   |
   +--------+---------------------------------------+-----------------------+--------+
   |        | === CHECKER (Operator) ===             |                       |        |
   | GET    | /api/ra/requests/pending-check        | Reviewed, not by me   | OPER   |
@@ -620,7 +768,11 @@
   | CSR_ASSIGN                 | "Assigned to {operator}"   | Admin         |
   | CSR_REVIEW                 | "Maker reviewed: {remarks}"| Maker         |
   | CSR_ACCEPT                 | "Checker accepted: {rmks}" | Checker       |
+  | CSR_RETURN                 | "Maker returned: {reason}" | Maker         |
+  | CSR_REASSIGN               | "Reassigned to {operator}" | Admin         |
   | CSR_REJECT                 | "Checker rejected: {rmks}" | Checker       |
+  | CSR_REJECT_BY_ADMIN        | "Admin rejected after      | Admin         |
+  |                            |  Maker return: {reason}"   |               |
   | CERT_ISSUE                 | "Cert issued: {serial}"    | System        |
   | CERT_ISSUE_FAIL            | "Issuance failed: {error}" | System        |
   +----------------------------+----------------------------+---------------+
@@ -637,6 +789,9 @@
   | Admin assigns to Maker        | Maker (operator) | Email + In-App        |
   | Maker submits review          | All other OPERs  | Email + In-App        |
   |                               | (potential Chkrs) |                       |
+  | Maker returns to Admin        | All ADMINs       | Email + In-App        |
+  | Admin reassigns after return  | New Maker (oper) | Email + In-App        |
+  | Admin rejects after return    | Requester + Maker| Email + In-App        |
   | Checker accepts               | Requester        | Email + In-App        |
   | Checker rejects               | Requester + Maker| Email + In-App        |
   | Certificate issued            | Requester        | Email + In-App        |
@@ -663,6 +818,9 @@
   | PKI_APR_007       | 404 | Operator not found                      |
   | PKI_APR_008       | 400 | Remarks are required for review         |
   | PKI_APR_009       | 400 | Request not assigned to you             |
+  | PKI_APR_010       | 400 | Return reason is required               |
+  | PKI_APR_011       | 400 | Only RETURNED requests can be reassigned|
+  |                   |     | or rejected by Admin                   |
   +-------------------+-----+----------------------------------------+
 
 
