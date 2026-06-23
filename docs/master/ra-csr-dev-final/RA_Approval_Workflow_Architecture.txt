@@ -83,19 +83,27 @@
        |              sees remarks         |            returned request
        +----------+----------+             |
        |                     |             +--- Admin can:
-       v                     v             |    1. Reassign to same/different Maker
-  [ACCEPTED]            [REJECTED]         |    2. Reject the request directly
+       v                     |             |    1. Reassign to same/different Maker
+  [ACCEPTED]                 |             |    2. Close the request permanently
        |                     |             |
-       v                     v             v
-  Send to CA            Notify         [ASSIGNED] (reassign)
-       |                requester           or
-       +--------+      + Maker         [REJECTED] (Admin rejects)
-       |        |
-       v        v
-  [ISSUED]  [FAILED]
-       |
-       v
-  [ACTIVE]
+       v                     |             v
+  Send to CA                 |         [ASSIGNED] (reassign)
+       |                     |              or
+       +--------+            |         [CLOSED] (Admin closes permanently)
+       |        |            |
+       v        v            v
+  [ISSUED]  [FAILED]    [REJECTED] -------> Goes back to Admin
+       |                     |
+       v                     +--- Admin sees rejected request
+  [ACTIVE]                   |    Admin can:
+                             |    1. Reassign to same/different Maker
+                             |       (for re-review with new/updated CSR context)
+                             |    2. Close the request permanently
+                             |
+                             v
+                         [ASSIGNED] (reassign for re-review)
+                              or
+                         [CLOSED] (Admin closes permanently)
 
 
   STATE DEFINITIONS:
@@ -121,9 +129,23 @@
   +-----------------+---------------------------------------------------+
   | ACCEPTED        | Checker accepted, sending to CA for signing        |
   +-----------------+---------------------------------------------------+
-  | REJECTED        | Request rejected — either by Checker (after Maker  |
-  |                 | review) or by Admin (after Maker returned).        |
-  |                 | Requester notified, request closed.               |
+  | REJECTED        | Checker rejected the request. NOT a final state.   |
+  |                 | Request goes back to Admin's dashboard under        |
+  |                 | ISSUES category. Admin can see the full trail:     |
+  |                 |   - Who was the Maker (reviewed it)                |
+  |                 |   - Who was the Checker (rejected it)              |
+  |                 |   - Maker's remarks + Checker's rejection reason   |
+  |                 | Admin can either:                                 |
+  |                 |   a. Reassign to same or different operator        |
+  |                 |      (for re-review — goes back to ASSIGNED)       |
+  |                 |   b. Close the request permanently (→ CLOSED)      |
+  +-----------------+---------------------------------------------------+
+  | CLOSED          | Request permanently closed by Admin. This is the   |
+  |                 | TRUE final state — no further action possible.     |
+  |                 | Used when Admin decides the request should not     |
+  |                 | proceed after reviewing Maker return reason or     |
+  |                 | Checker rejection reason.                          |
+  |                 | Requester notified with closure reason.            |
   +-----------------+---------------------------------------------------+
   | ISSUED          | CA signed successfully, certificate stored          |
   +-----------------+---------------------------------------------------+
@@ -140,13 +162,20 @@
   | ASSIGNED          | --> | REVIEWED          | Maker recommends  |
   | ASSIGNED          | --> | RETURNED          | Maker returns     |
   | RETURNED          | --> | ASSIGNED          | Admin reassigns   |
-  | RETURNED          | --> | REJECTED          | Admin rejects     |
+  | RETURNED          | --> | CLOSED            | Admin closes      |
   | REVIEWED          | --> | ACCEPTED          | Checker accepts   |
   | REVIEWED          | --> | REJECTED          | Checker rejects   |
+  | REJECTED          | --> | ASSIGNED          | Admin reassigns   |
+  | REJECTED          | --> | CLOSED            | Admin closes      |
   | ACCEPTED          | --> | ISSUED            | CA signs OK       |
   | ACCEPTED          | --> | FAILED            | CA error          |
   | FAILED            | --> | ACCEPTED          | Admin retries     |
   +-------------------+     +-------------------+-------------------+
+
+  IMPORTANT — REJECTED is NOT final:
+    When Checker rejects, the request goes back to Admin.
+    Admin decides whether to give it another chance (reassign)
+    or permanently close it. Only CLOSED is the true final state.
 
   INVALID TRANSITIONS (blocked in code):
 
@@ -155,7 +184,7 @@
   | ASSIGNED  → ACCEPTED   | Cannot skip Maker review            |
   | RETURNED  → REVIEWED   | Must be reassigned first            |
   | RETURNED  → ACCEPTED   | Must go through Maker again         |
-  | REJECTED  → ACCEPTED   | Final state, must resubmit CSR      |
+  | CLOSED    → any        | True final state, no action possible|
   | ISSUED    → REJECTED   | Cannot un-issue (use revocation)    |
 
 
@@ -196,9 +225,18 @@
   | returned_at                | DATETIME(6)   | YES | When Maker returned   |
   +----------------------------+---------------+-----+-----------------------+
 
+  +----------------------------+---------------+-----+-----------------------+
+  | closed_at                  | DATETIME(6)   | YES | When Admin closed     |
+  +----------------------------+---------------+-----+-----------------------+
+  | closed_by_id               | BIGINT FK     | YES | --> users.id (Admin   |
+  |                            |               |     | who closed request)   |
+  +----------------------------+---------------+-----+-----------------------+
+  | closed_reason              | VARCHAR(2000) | YES | Admin's closure reason|
+  +----------------------------+---------------+-----+-----------------------+
+
   UPDATED STATUS CHECK constraint:
     CHECK (status IN ('SUBMITTED', 'ASSIGNED', 'RETURNED', 'REVIEWED',
-                      'ACCEPTED', 'REJECTED', 'ISSUED', 'FAILED'))
+                      'ACCEPTED', 'REJECTED', 'CLOSED', 'ISSUED', 'FAILED'))
 
   Flyway migration:
     V9__alter_certificate_requests_maker_checker.sql
@@ -258,7 +296,7 @@
   |                                                                |
   |  [NEW/PENDING]   [IN PROGRESS]  [COMPLETED]   [ISSUES]        |
   |  SUBMITTED: 5    ASSIGNED: 3    ISSUED: 28    REJECTED: 4     |
-  |                  REVIEWED: 2                  RETURNED: 2     |
+  |                  REVIEWED: 2    CLOSED: 3     RETURNED: 2     |
   |                  ACCEPTED: 1                  FAILED: 0       |
   +================================================================+
 
@@ -560,33 +598,30 @@
       - Same operator can review again after requester correction
 
 
-    OPTION 2 — ADMIN REJECTS DIRECTLY:
+    OPTION 2 — ADMIN CLOSES PERMANENTLY:
     -----------------------------------------------------------------
-    API:    POST /api/ra/requests/{id}/reject
+    API:    POST /api/ra/requests/{id}/close
     Auth:   ROLE_ADMIN
     Body:   {
-              "remarks": "Rejected per Maker's findings.
-                          Domain evil.com is permanently blocked."
+              "reason": "Closed per Maker's findings.
+                         Domain evil.com is permanently blocked."
             }
 
     System:
       a. Validate: status == RETURNED
-      b. Update: status = REJECTED,
-                 checker_id = NULL (no Checker involved),
-                 checker_decision = REJECTED,
-                 checker_remarks = "Admin rejected after Maker return: "
-                                   + body.remarks,
-                 checker_decided_at = now,
-                 status_reason = body.remarks
-      c. Audit: CSR_REJECT_BY_ADMIN (resource=101,
-                desc="Admin rejected after Maker return: [reason]")
+      b. Update: status = CLOSED,
+                 closed_at = now,
+                 closed_by_id = admin.id,
+                 closed_reason = body.reason
+      c. Audit: CSR_CLOSED (resource=101,
+                desc="Admin closed after Maker return: [reason]")
       d. Notify: requester + original Maker
-         "CSR #101 rejected by Admin: [reason]"
+         "CSR #101 permanently closed by Admin: [reason]"
 
     Use case:
       - Maker found a serious issue (blocked domain, weak key)
-      - Admin agrees and rejects without needing Checker review
-      - Saves time — no point sending to Checker
+      - Admin agrees and closes without needing Checker review
+      - CLOSED = true final state, no further action possible
 
 
   STEP 7: CHECKER VIEWS REVIEWED REQUESTS
@@ -665,13 +700,64 @@
                  checker_decided_at = now,
                  status_reason = body.remarks
       d. Audit: CSR_REJECT (resource=101)
-      e. Notify: requester + Maker
+      e. Notify: ALL ADMINs + Maker
          "CSR #101 rejected by vikram.singh: Domain not in approved list"
+         → Request appears in Admin's ISSUES → REJECTED section
 
     Response: 200 OK
       { "id": 101, "status": "REJECTED",
         "checkerUsername": "vikram.singh",
         "checkerRemarks": "Domain not in approved list..." }
+
+    WHAT HAPPENS NEXT — REJECTED goes to Admin dashboard:
+      Admin sees rejected request in ISSUES category.
+      Admin sees full trail: Maker remarks + Checker rejection reason.
+      Admin has TWO options:
+        1. Reassign: POST /api/ra/requests/101/assign
+           → status = ASSIGNED (Maker reviews again with new context)
+        2. Close permanently: POST /api/ra/requests/101/close
+           → status = CLOSED (true final state, no further action)
+
+
+  STEP 9: ADMIN HANDLES REJECTED REQUEST
+  =================================================================
+
+    OPTION 1 — REASSIGN (give it another chance):
+    -----------------------------------------------------------------
+    API:    POST /api/ra/requests/{id}/assign
+    Auth:   ROLE_ADMIN
+    Body:   { "operatorId": 9 }
+
+    System:
+      a. Validate: status == REJECTED
+      b. Update: status = ASSIGNED (back into pipeline)
+      c. Previous Maker/Checker remarks preserved for history
+      d. Audit: CSR_REASSIGN_AFTER_REJECT
+      e. Notify: new Maker operator
+
+    Use case:
+      - Checker rejected but Admin thinks issue is fixable
+      - Requester has provided additional context
+      - Admin wants a different operator to review fresh
+
+    OPTION 2 — CLOSE PERMANENTLY:
+    -----------------------------------------------------------------
+    API:    POST /api/ra/requests/{id}/close
+    Auth:   ROLE_ADMIN
+    Body:   { "reason": "Confirmed: domain is permanently blocked.
+                         Request cannot be fulfilled." }
+
+    System:
+      a. Validate: status == REJECTED or RETURNED
+      b. Update: status = CLOSED,
+                 closed_at = now,
+                 closed_by_id = admin.id,
+                 closed_reason = body.reason
+      c. Audit: CSR_CLOSED (resource=101)
+      d. Notify: requester + Maker
+         "CSR #101 permanently closed by Admin: [reason]"
+
+    CLOSED is the TRUE FINAL STATE — no further action possible.
 
 
 ================================================================================
@@ -701,6 +787,7 @@
   |        |                                       |   assignment dropdown |        |
   | POST   | /api/ra/requests/{id}/assign          | Assign to Maker       | ADMIN  |
   | POST   | /api/ra/requests/{id}/retry           | Retry failed issuance | ADMIN  |
+  | POST   | /api/ra/requests/{id}/close           | Close permanently     | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
   | GET    | /api/ra/requests?status=RETURNED      | Returned by Maker     | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
@@ -771,8 +858,9 @@
   | CSR_RETURN                 | "Maker returned: {reason}" | Maker         |
   | CSR_REASSIGN               | "Reassigned to {operator}" | Admin         |
   | CSR_REJECT                 | "Checker rejected: {rmks}" | Checker       |
-  | CSR_REJECT_BY_ADMIN        | "Admin rejected after      | Admin         |
-  |                            |  Maker return: {reason}"   |               |
+  | CSR_REASSIGN_AFTER_REJECT  | "Reassigned after Checker  | Admin         |
+  |                            |  rejection: {operator}"    |               |
+  | CSR_CLOSED                 | "Permanently closed: {rsn}"| Admin         |
   | CERT_ISSUE                 | "Cert issued: {serial}"    | System        |
   | CERT_ISSUE_FAIL            | "Issuance failed: {error}" | System        |
   +----------------------------+----------------------------+---------------+
