@@ -199,21 +199,171 @@
       { "id": 101, "status": "SUBMITTED", ... }
 
 
-  STEP 2: ADMIN VIEWS ALL SUBMITTED REQUESTS
+  STEP 2: ADMIN DASHBOARD — CATEGORIZED VIEW
   =================================================================
-    API:    GET /api/ra/requests?status=SUBMITTED
-    Auth:   ROLE_ADMIN only
 
-    Response: list of all SUBMITTED requests with details
-      [{
-        "id": 101,
-        "subjectDn": "CN=api.example.com",
-        "keyAlgorithm": "RSA",
-        "keySize": 4096,
-        "requesterUsername": "rahul.sharma",
-        "status": "SUBMITTED",
-        "createdAt": "2026-06-23T10:00:00Z"
-      }]
+  Admin sees ALL requests grouped by status categories.
+  Each category is a separate section/tab so Admin can instantly
+  understand what needs attention and what has been processed.
+
+  API:    GET /api/ra/requests/dashboard
+  Auth:   ROLE_ADMIN only
+
+  Response:
+    {
+      "summary": {
+        "submitted":  5,
+        "assigned":   3,
+        "reviewed":   2,
+        "accepted":   1,
+        "rejected":   4,
+        "issued":    28,
+        "failed":     0,
+        "total":     43
+      },
+      "categories": { ... }
+    }
+
+  Admin Dashboard Layout:
+
+  +================================================================+
+  |                    CSR REQUEST DASHBOARD                        |
+  +================================================================+
+  |                                                                |
+  |  [NEW / PENDING]     [IN PROGRESS]    [COMPLETED]   [ISSUES]  |
+  |  SUBMITTED: 5        ASSIGNED: 3      ISSUED: 28    REJECTED:4|
+  |                      REVIEWED: 2                    FAILED: 0 |
+  |                      ACCEPTED: 1                              |
+  +================================================================+
+
+  Category APIs — Admin uses these to view each section:
+
+  +-----------------------------------------------------------------+
+  | CATEGORY 1: NEW / PENDING ACTION                                |
+  | "These need Admin to assign to an Operator"                     |
+  +-----------------------------------------------------------------+
+  | API:    GET /api/ra/requests?status=SUBMITTED                   |
+  | Shows:  CSRs waiting for Admin to assign a Maker                |
+  | Action: Admin selects operator from dropdown → POST /assign     |
+  |                                                                 |
+  | Response:                                                       |
+  |   [{                                                            |
+  |     "id": 101,                                                  |
+  |     "subjectDn": "CN=api.example.com",                          |
+  |     "keyAlgorithm": "RSA",                                     |
+  |     "keySize": 4096,                                            |
+  |     "requesterUsername": "rahul.sharma",                         |
+  |     "status": "SUBMITTED",                                     |
+  |     "createdAt": "2026-06-23T10:00:00Z"                         |
+  |   }]                                                            |
+  +-----------------------------------------------------------------+
+
+  +-----------------------------------------------------------------+
+  | CATEGORY 2: IN PROGRESS (Maker-Checker pipeline)                |
+  | "These are being processed through the approval pipeline"       |
+  +-----------------------------------------------------------------+
+  |                                                                 |
+  | Sub-tab A: ASSIGNED (waiting for Maker review)                  |
+  | API:    GET /api/ra/requests?status=ASSIGNED                    |
+  | Shows:  Requests assigned to operators but not yet reviewed     |
+  |   [{                                                            |
+  |     "id": 102,                                                  |
+  |     "subjectDn": "CN=billing.acme.com",                         |
+  |     "status": "ASSIGNED",                                      |
+  |     "assignedTo": "priya.patel",                                |
+  |     "assignedAt": "2026-06-23T10:15:00Z",                       |
+  |     "assignedBy": "admin"                                       |
+  |   }]                                                            |
+  |                                                                 |
+  | Sub-tab B: REVIEWED (waiting for Checker decision)              |
+  | API:    GET /api/ra/requests?status=REVIEWED                    |
+  | Shows:  Maker finished, waiting for another operator to decide  |
+  |   [{                                                            |
+  |     "id": 103,                                                  |
+  |     "subjectDn": "CN=auth.acme.com",                            |
+  |     "status": "REVIEWED",                                      |
+  |     "makerUsername": "priya.patel",                              |
+  |     "makerRemarks": "CSR verified. DN matches CMDB...",         |
+  |     "makerReviewedAt": "2026-06-23T11:00:00Z"                   |
+  |   }]                                                            |
+  |                                                                 |
+  | Sub-tab C: ACCEPTED (sent to CA, awaiting issuance)             |
+  | API:    GET /api/ra/requests?status=ACCEPTED                    |
+  | Shows:  Checker approved, certificate being issued by CA        |
+  |                                                                 |
+  +-----------------------------------------------------------------+
+
+  +-----------------------------------------------------------------+
+  | CATEGORY 3: COMPLETED (Successfully issued)                     |
+  | "These are done — certificates issued and active"               |
+  +-----------------------------------------------------------------+
+  | API:    GET /api/ra/requests?status=ISSUED                      |
+  | Shows:  Successfully issued certificates                       |
+  |   [{                                                            |
+  |     "id": 98,                                                   |
+  |     "subjectDn": "CN=api.acme.com",                             |
+  |     "status": "ISSUED",                                        |
+  |     "certificateSerial": "4F2A1B3C...",                          |
+  |     "makerUsername": "priya.patel",                              |
+  |     "checkerUsername": "vikram.singh",                           |
+  |     "checkerDecision": "ACCEPTED",                              |
+  |     "issuedAt": "2026-06-22T14:30:00Z"                          |
+  |   }]                                                            |
+  +-----------------------------------------------------------------+
+
+  +-----------------------------------------------------------------+
+  | CATEGORY 4: ISSUES (Rejected + Failed)                          |
+  | "These need attention — rejected by Checker or CA failed"       |
+  +-----------------------------------------------------------------+
+  |                                                                 |
+  | Sub-tab A: REJECTED (Checker denied the request)                |
+  | API:    GET /api/ra/requests?status=REJECTED                    |
+  | Shows:  Requests that went through Maker-Checker pipeline       |
+  |         but were REJECTED by the Checker.                       |
+  |         Admin can see WHO reviewed (Maker), WHO rejected         |
+  |         (Checker), and WHY (checker remarks).                   |
+  |   [{                                                            |
+  |     "id": 99,                                                   |
+  |     "subjectDn": "CN=test.evil.com",                             |
+  |     "status": "REJECTED",                                      |
+  |     "requesterUsername": "rahul.sharma",                         |
+  |     "makerUsername": "priya.patel",                              |
+  |     "makerRemarks": "CSR looks OK but domain not in CMDB",     |
+  |     "makerReviewedAt": "2026-06-22T09:00:00Z",                  |
+  |     "checkerUsername": "vikram.singh",                           |
+  |     "checkerDecision": "REJECTED",                              |
+  |     "checkerRemarks": "Domain not in approved list. Rejected.", |
+  |     "checkerDecidedAt": "2026-06-22T10:30:00Z"                   |
+  |   }]                                                            |
+  |                                                                 |
+  |   Admin knows:                                                  |
+  |     - Maker-Checker process COMPLETED for this request          |
+  |     - Maker reviewed it (with remarks)                          |
+  |     - Checker rejected it (with reason)                         |
+  |     - No further action needed (requester must resubmit)        |
+  |                                                                 |
+  | Sub-tab B: FAILED (CA signing error)                            |
+  | API:    GET /api/ra/requests?status=FAILED                      |
+  | Shows:  Checker approved but CA failed to sign                  |
+  |         Admin can retry: POST /api/ra/requests/{id}/retry       |
+  |                                                                 |
+  +-----------------------------------------------------------------+
+
+  SUMMARY API (counts for dashboard header):
+
+    API:    GET /api/ra/requests/summary
+    Auth:   ROLE_ADMIN only
+    Response:
+      {
+        "submitted": 5,
+        "assigned": 3,
+        "reviewed": 2,
+        "accepted": 1,
+        "rejected": 4,
+        "issued": 28,
+        "failed": 0,
+        "total": 43
+      }
 
 
   STEP 3: ADMIN ASSIGNS REQUEST TO OPERATOR (MAKER)
@@ -386,18 +536,37 @@
   +--------+---------------------------------------+-----------------------+--------+
   | Method | Path                                  | Purpose               | Auth   |
   +--------+---------------------------------------+-----------------------+--------+
+  |        | === CSR SUBMISSION ===                 |                       |        |
   | POST   | /api/ra/requests                      | Submit CSR            | Any    |
-  | GET    | /api/ra/requests                      | List all requests     | ADMIN  |
-  |        |   ?status=SUBMITTED/ASSIGNED/REVIEWED  |   (filter by status)  |        |
   | GET    | /api/ra/requests/{id}                 | Get request details   | Any    |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === ADMIN DASHBOARD ===                |                       |        |
+  | GET    | /api/ra/requests/summary              | Status-wise counts    | ADMIN  |
+  |        |                                       |   (dashboard header)  |        |
+  | GET    | /api/ra/requests?status=SUBMITTED     | New/Pending requests  | ADMIN  |
+  | GET    | /api/ra/requests?status=ASSIGNED      | Assigned to Maker     | ADMIN  |
+  | GET    | /api/ra/requests?status=REVIEWED      | Awaiting Checker      | ADMIN  |
+  | GET    | /api/ra/requests?status=ACCEPTED      | Sent to CA            | ADMIN  |
+  | GET    | /api/ra/requests?status=REJECTED      | Rejected by Checker   | ADMIN  |
+  | GET    | /api/ra/requests?status=ISSUED        | Successfully issued   | ADMIN  |
+  | GET    | /api/ra/requests?status=FAILED        | CA signing failed     | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === ADMIN ACTIONS ===                  |                       |        |
   | GET    | /api/ra/operators                     | List operators for    | ADMIN  |
   |        |                                       |   assignment dropdown |        |
   | POST   | /api/ra/requests/{id}/assign          | Assign to Maker       | ADMIN  |
-  | GET    | /api/ra/requests/my-assigned          | My assigned (Maker)   | OPER   |
-  | POST   | /api/ra/requests/{id}/review          | Maker submits remarks | OPER   |
+  | POST   | /api/ra/requests/{id}/retry           | Retry failed issuance | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === MAKER (Operator) ===               |                       |        |
+  | GET    | /api/ra/requests/my-assigned          | My assigned requests  | OPER   |
+  | POST   | /api/ra/requests/{id}/review          | Submit review+remarks | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === CHECKER (Operator) ===             |                       |        |
   | GET    | /api/ra/requests/pending-check        | Reviewed, not by me   | OPER   |
-  | POST   | /api/ra/requests/{id}/accept          | Checker accepts       | OPER   |
-  | POST   | /api/ra/requests/{id}/reject          | Checker rejects       | OPER   |
+  | POST   | /api/ra/requests/{id}/accept          | Accept request        | OPER   |
+  | POST   | /api/ra/requests/{id}/reject          | Reject request        | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === CERTIFICATE ===                    |                       |        |
   | GET    | /api/ra/certificates/{serial}         | Get cert details      | Any    |
   | GET    | /api/ra/certificates/{serial}/download| Download PEM          | Any    |
   +--------+---------------------------------------+-----------------------+--------+
