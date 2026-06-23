@@ -26,7 +26,12 @@
     - Only ADMIN can assign a request to an operator
     - MAKER reviews and writes remarks (cannot accept/reject)
     - CHECKER sees Maker's remarks and accepts or rejects
-    - MAKER and CHECKER must be DIFFERENT operators
+    - The RA Operator who acts as the MAKER for a request is
+      STRICTLY PROHIBITED from acting as the CHECKER for the
+      same request. This is a mandatory separation of duties
+      enforced at the application level. The system must reject
+      any attempt by the Maker to accept or reject a request
+      they have already reviewed.
     - Requester cannot be Maker or Checker
 
 
@@ -311,9 +316,19 @@
     Auth:   ROLE_OPERATOR (must NOT be the Maker)
     Body:   { "remarks": "Agreed with Maker's assessment. Approved." }
 
+    CRITICAL VALIDATION — SEPARATION OF DUTIES:
+      The RA Operator who acted as the Maker (reviewed this request
+      and submitted remarks) is strictly prohibited from acting as
+      the Checker. The system compares the current user's ID against
+      the assigned_to_id field. If they match, the request is
+      rejected with HTTP 403 (PKI_APR_005: "The operator who
+      reviewed this request cannot accept or reject it. A different
+      operator must perform the Checker role.").
+
     System:
       a. Validate: status == REVIEWED
       b. Validate: current user != assigned_to_id (Checker != Maker)
+         → FAIL: 403 PKI_APR_005 — separation of duties violation
       c. Validate: current user != requester
       d. Update: status = ACCEPTED,
                  checker_id = current_user.id,
@@ -340,9 +355,14 @@
     Auth:   ROLE_OPERATOR (must NOT be the Maker)
     Body:   { "remarks": "Domain not in approved list. Rejecting." }
 
+    CRITICAL VALIDATION — SEPARATION OF DUTIES:
+      Same rule as accept — the Maker operator cannot reject the
+      request either. A different operator must perform this action.
+
     System:
       a. Validate: status == REVIEWED
       b. Validate: current user != assigned_to_id (Checker != Maker)
+         → FAIL: 403 PKI_APR_005 — separation of duties violation
       c. Update: status = REJECTED,
                  checker_id = current_user.id,
                  checker_decision = REJECTED,
@@ -405,7 +425,15 @@
   +-----------------------------+--------+--------+--------+--------+
 
   KEY RULES:
-    1. Maker and Checker MUST be different operators
+    1. The RA Operator who performed the Maker role (reviewed the
+       request and submitted remarks) is STRICTLY PROHIBITED from
+       acting as the Checker for the same request. This is the
+       fundamental separation of duties principle — no single
+       operator can both review and approve/reject a certificate
+       request. The system enforces this at the API level by
+       comparing the current user's ID against the assigned_to_id
+       (Maker) before allowing accept or reject operations. Any
+       violation returns HTTP 403 with error PKI_APR_005.
     2. Requester cannot be Maker or Checker
     3. Only Admin can assign (select from operator dropdown)
     4. Only assigned Maker can submit review
@@ -458,7 +486,10 @@
   | PKI_APR_002       | 403 | Cannot review your own request          |
   | PKI_APR_003       | 403 | Only Admin can assign requests          |
   | PKI_APR_004       | 403 | Only assigned Maker can submit review   |
-  | PKI_APR_005       | 403 | Checker cannot be the same as Maker     |
+  | PKI_APR_005       | 403 | The operator who reviewed this request   |
+  |                   |     | cannot accept or reject it. A different  |
+  |                   |     | operator must perform the Checker role.  |
+  |                   |     | (Separation of duties violation)         |
   | PKI_APR_006       | 403 | Requester cannot be Maker or Checker    |
   | PKI_APR_007       | 404 | Operator not found                      |
   | PKI_APR_008       | 400 | Remarks are required for review         |
