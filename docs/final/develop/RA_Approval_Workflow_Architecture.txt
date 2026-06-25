@@ -167,12 +167,22 @@
   |                            |               |      | center, environment)   |
   |                            |               |      |                        |
   | --- TRANSITION STATUS ---  |               |      |                        |
-  | status                     | VARCHAR(20)   | NO   | Current status:        |
-  |                            |               |      | RECEIVED, VALIDATED,   |
-  |                            |               |      | VALIDATION_FAILED,     |
-  |                            |               |      | SUBMITTED              |
-  |                            |               |      | (→ then approval       |
-  |                            |               |      |  workflow statuses)    |
+  | status                     | VARCHAR(20)   | NO   | ALL statuses:          |
+  |                            |               |      | Pre-approval:          |
+  |                            |               |      |   RECEIVED             |
+  |                            |               |      |   VALIDATED            |
+  |                            |               |      |   VALIDATION_FAILED    |
+  |                            |               |      |   SUBMITTED            |
+  |                            |               |      | Approval workflow:     |
+  |                            |               |      |   IN_REVIEW            |
+  |                            |               |      |   REVIEWED (DUAL only) |
+  |                            |               |      |   APPROVED             |
+  |                            |               |      |   REJECTED             |
+  |                            |               |      |   RETURNED             |
+  |                            |               |      |   CLOSED               |
+  |                            |               |      | Post-approval:         |
+  |                            |               |      |   ISSUED               |
+  |                            |               |      |   FAILED               |
   | status_reason              | VARCHAR(1000) | YES  | Reason for current     |
   |                            |               |      | status (esp. failure)  |
   |                            |               |      |                        |
@@ -353,7 +363,7 @@
 
 
 ================================================================================
-  2. APPROVAL WORKFLOW — OVERVIEW (starts from SUBMITTED status)
+  2. APPROVAL WORKFLOW OVERVIEW (starts from SUBMITTED status)
 ================================================================================
 
   The approval workflow is FULLY CONFIGURABLE by Admin:
@@ -381,7 +391,7 @@
 
 
 ================================================================================
-  2. ADMIN CONFIGURATION MATRIX
+  3. ADMIN CONFIGURATION MATRIX
 ================================================================================
 
   Admin configures the approval process from the dashboard.
@@ -447,7 +457,7 @@
 
 
 ================================================================================
-  3. ACTORS & ROLES
+  4. ACTORS & ROLES
 ================================================================================
 
   +------------------+--------------------------------------------------+
@@ -475,7 +485,7 @@
 
 
 ================================================================================
-  4. STATE MACHINE
+  5. STATE MACHINE
 ================================================================================
 
   MODE 1 — SINGLE OPERATOR:
@@ -590,7 +600,7 @@
 
 
 ================================================================================
-  5. FLOW — SINGLE OPERATOR MODE
+  6. FLOW — SINGLE OPERATOR MODE
 ================================================================================
 
   Step 1: Client submits CSR
@@ -628,7 +638,7 @@
 
 
 ================================================================================
-  6. FLOW — DUAL OPERATOR MODE (Maker + Checker)
+  7. FLOW — DUAL OPERATOR MODE (Maker + Checker)
 ================================================================================
 
   Step 1: Client submits CSR
@@ -670,7 +680,7 @@
 
 
 ================================================================================
-  7. RECORD VISIBILITY — WHO SEES WHAT
+  8. RECORD VISIBILITY — WHO SEES WHAT
 ================================================================================
 
   +-------------------+------------------------------------------+
@@ -694,7 +704,7 @@
 
 
 ================================================================================
-  8. TRANSITION STATUS HISTORY (per record)
+  9. TRANSITION STATUS HISTORY (per record)
 ================================================================================
 
   Every status change creates a history entry.
@@ -706,7 +716,7 @@
   | Column                     | Type          | Null| Purpose               |
   +----------------------------+---------------+-----+-----------------------+
   | id                         | BIGINT PK     | NO  | Auto-increment        |
-  | request_id                 | BIGINT FK     | NO  | → certificate_requests|
+  | request_id                 | BIGINT FK     | NO  | → csr_requests.id     |
   | from_status                | VARCHAR(20)   | YES | Previous status       |
   |                            |               |     | (NULL for first entry)|
   | to_status                  | VARCHAR(20)   | NO  | New status            |
@@ -720,15 +730,17 @@
 
   Example history for one record:
 
-  +----+--------+-----------+-----------+-------------+--------------------+
-  | #  | From   | To        | By        | Role        | Remarks            |
-  +----+--------+-----------+-----------+-------------+--------------------+
-  | 1  | NULL   | SUBMITTED | rahul     | USER        | CSR submitted      |
-  | 2  | SUBMIT | IN_REVIEW | priya     | OPERATOR    | Picked up          |
-  | 3  | IN_REV | REVIEWED  | priya     | OPERATOR    | CSR verified. OK.  |
-  | 4  | REVIEW | APPROVED  | vikram    | OPERATOR    | Agreed. Approved.  |
-  | 5  | APPROV | ISSUED    | system    | SYSTEM      | Cert: 4F2A1B3C...  |
-  +----+--------+-----------+-----------+-------------+--------------------+
+  +----+-----------+-----------+-----------+-------------+--------------------+
+  | #  | From      | To        | By        | Role        | Remarks            |
+  +----+-----------+-----------+-----------+-------------+--------------------+
+  | 1  | NULL      | RECEIVED  | system    | SYSTEM      | CSR received       |
+  | 2  | RECEIVED  | VALIDATED | system    | SYSTEM      | 7-layer passed     |
+  | 3  | VALIDATED | SUBMITTED | system    | SYSTEM      | Queued for approval|
+  | 4  | SUBMITTED | IN_REVIEW | priya     | OPERATOR    | Picked up          |
+  | 5  | IN_REVIEW | REVIEWED  | priya     | OPERATOR    | CSR verified. OK.  |
+  | 6  | REVIEWED  | APPROVED  | vikram    | OPERATOR    | Agreed. Approved.  |
+  | 7  | APPROVED  | ISSUED    | system    | SYSTEM      | Cert: 4F2A1B3C...  |
+  +----+-----------+-----------+-----------+-------------+--------------------+
 
   API to view transition history:
     GET /api/ra/requests/{id}/history
@@ -736,7 +748,7 @@
 
 
 ================================================================================
-  9. REST API ENDPOINTS
+  10. REST API ENDPOINTS
 ================================================================================
 
   +--------+---------------------------------------+-----------------------+--------+
@@ -746,9 +758,11 @@
   | GET    | /api/ra/admin/config/workflow          | Get current config    | ADMIN  |
   | PUT    | /api/ra/admin/config/workflow          | Update config         | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
-  |        | === CSR SUBMISSION ===                 |                       |        |
+  |        | === CSR SUBMISSION & LOOKUP ===        |                       |        |
   | POST   | /api/ra/requests                      | Submit CSR            | Any    |
-  | GET    | /api/ra/requests/{id}                 | Get request details   | Any    |
+  | GET    | /api/ra/requests/{id}                 | Get by internal ID    | Any    |
+  | GET    | /api/ra/requests/by-request-id/{reqId} | Get by RA-REQ-... ID | Any    |
+  | GET    | /api/ra/requests/by-txn-id/{txnId}    | Get by client txn ID  | Any    |
   | GET    | /api/ra/requests/{id}/history          | Transition history    | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
   |        | === ADMIN DASHBOARD ===                |                       |        |
@@ -790,7 +804,7 @@
 
 
 ================================================================================
-  10. ADMIN DASHBOARD — MONITORING VIEW
+  11. ADMIN DASHBOARD — MONITORING VIEW
 ================================================================================
 
   +====================================================================+
@@ -799,10 +813,10 @@
   |  Config: DUAL mode | HYBRID assignment | Remarks: required         |
   +====================================================================+
   |                                                                    |
-  |  [POOL]          [IN PROGRESS]    [COMPLETED]     [ISSUES]        |
-  |  SUBMITTED: 5    IN_REVIEW: 3    ISSUED: 28      REJECTED: 4     |
-  |                  REVIEWED: 2     CLOSED: 3       RETURNED: 2     |
-  |                  APPROVED: 1                     FAILED: 0       |
+  |  [INCOMING]       [POOL]       [IN PROGRESS]  [COMPLETED] [ISSUES]  |
+  |  RECEIVED: 1     SUBMITTED: 5  IN_REVIEW: 3   ISSUED: 28  REJECT:4|
+  |  VALIDATING: 0                 REVIEWED: 2    CLOSED: 3   RETURN:2|
+  |  VAL_FAILED: 2                 APPROVED: 1                FAIL: 0|
   +====================================================================+
   |                                                                    |
   |  FILTERS:                                                         |
@@ -831,7 +845,7 @@
 
 
 ================================================================================
-  11. ROLE & PERMISSION MATRIX
+  12. ROLE & PERMISSION MATRIX
 ================================================================================
 
   +-------------------------------+--------+--------+--------+--------+
@@ -855,7 +869,7 @@
 
 
 ================================================================================
-  12. AUDIT LOG ENTRIES
+  13. AUDIT LOG ENTRIES
 ================================================================================
 
   +----------------------------+----------------------------+---------------+
@@ -878,7 +892,7 @@
 
 
 ================================================================================
-  13. ERROR CODES
+  14. ERROR CODES
 ================================================================================
 
   +-------------------+-----+--------------------------------------------+
@@ -903,7 +917,92 @@
 
 
 ================================================================================
-  14. TESTING PLAN
+  15. API MODE-BLOCKING RULES
+================================================================================
+
+  APIs behave DIFFERENTLY based on the configured approval_mode.
+  Developers MUST check the mode before allowing API calls.
+
+  +----------------------------------+-------------------+-------------------+
+  | API                              | SINGLE mode       | DUAL mode         |
+  +----------------------------------+-------------------+-------------------+
+  | POST /pickup                     | WORKS             | WORKS             |
+  | POST /return                     | WORKS             | WORKS             |
+  +----------------------------------+-------------------+-------------------+
+  | POST /approve (direct approve)   | WORKS             | BLOCKED (400)     |
+  |                                  | → APPROVED        | "Use /review then |
+  |                                  |                   |  Checker /accept" |
+  +----------------------------------+-------------------+-------------------+
+  | POST /reject (direct reject)     | WORKS             | BLOCKED (400)     |
+  |                                  | → REJECTED        | "Only Checker can |
+  |                                  |                   |  reject after     |
+  |                                  |                   |  Maker /review"   |
+  +----------------------------------+-------------------+-------------------+
+  | POST /review (Maker remarks)     | BLOCKED (400)     | WORKS             |
+  |                                  | "SINGLE mode —    | → REVIEWED        |
+  |                                  |  use /approve or  |                   |
+  |                                  |  /reject directly"|                   |
+  +----------------------------------+-------------------+-------------------+
+  | POST /pickup-check               | BLOCKED (400)     | WORKS             |
+  |                                  | "No Checker in    |                   |
+  |                                  |  SINGLE mode"     |                   |
+  +----------------------------------+-------------------+-------------------+
+  | POST /accept (Checker accepts)   | BLOCKED (400)     | WORKS             |
+  |                                  | "No Checker in    | → APPROVED        |
+  |                                  |  SINGLE mode"     |                   |
+  +----------------------------------+-------------------+-------------------+
+
+  Error code for mode violations: PKI_APR_012
+
+
+================================================================================
+  16. MODE-SWITCH RULES (changing config while requests in-flight)
+================================================================================
+
+  When Admin changes approval_mode while requests are in-progress,
+  the system must handle existing requests gracefully:
+
+  RULE 1: SINGLE → DUAL switch
+  ----------------------------------------------------------------
+    Requests in IN_REVIEW:
+      → Stay in IN_REVIEW. Operator continues as Maker.
+      → After submitting /review → goes to REVIEWED (DUAL flow).
+      → If operator uses /approve (SINGLE flow) → BLOCKED (400)
+        "Mode changed to DUAL. Submit /review instead."
+
+    Requests in SUBMITTED:
+      → Follow new DUAL flow from next pickup.
+
+    Requests in APPROVED/ISSUED/CLOSED:
+      → No change (already past approval stage).
+
+  RULE 2: DUAL → SINGLE switch
+  ----------------------------------------------------------------
+    Requests in IN_REVIEW (Maker hasn't reviewed yet):
+      → Operator can now use /approve or /reject directly.
+      → /review still works (system accepts either path).
+
+    Requests in REVIEWED (Maker done, waiting for Checker):
+      → STILL NEED Checker. Cannot skip because Maker already
+        submitted. Checker must complete the process.
+      → System enforces: "Request was reviewed under DUAL mode.
+        Checker decision still required."
+
+    Requests in SUBMITTED:
+      → Follow new SINGLE flow from next pickup.
+
+  RULE 3: General principles
+  ----------------------------------------------------------------
+    - Mode change applies to NEW pickups only
+    - Requests already in mid-flow complete under the mode
+      they started with (except Rule 2 IN_REVIEW case)
+    - The mode at time of pickup is stored on the request:
+      New column: approval_mode_at_pickup VARCHAR(10)
+      This ensures each request follows its own mode
+
+
+================================================================================
+  17. TESTING PLAN
 ================================================================================
 
   SINGLE MODE TESTS:
