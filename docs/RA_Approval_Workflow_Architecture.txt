@@ -1,109 +1,188 @@
 
 ================================================================================
-     RA APPROVAL WORKFLOW — MAKER-CHECKER MODEL
+     RA APPROVAL WORKFLOW — CONFIGURABLE MAKER-CHECKER MODEL
      Project  : pki-ra (Enterprise Registration Authority)
      Module   : raservice
-     Date     : 2026-06-23
-     Model    : Maker-Checker (2 operators, Admin assigns)
+     Date     : 2026-06-25
+     Model    : Configurable Maker-Checker (1 or 2 operators)
 ================================================================================
 
 
 ================================================================================
-  1. OVERVIEW — MAKER-CHECKER MODEL
+  1. OVERVIEW
 ================================================================================
 
-  This workflow uses a MAKER-CHECKER pattern:
+  The RA approval workflow is FULLY CONFIGURABLE by Admin:
 
-  1. Client submits CSR → status = SUBMITTED
-  2. ADMIN sees all requests → assigns to OPERATOR (Maker)
-  3. MAKER reviews CSR → submits remarks → status = REVIEWED
-  4. CHECKER (another operator) sees Maker's remarks →
-     ACCEPTS or REJECTS → status = ACCEPTED / REJECTED
-  5. ACCEPTED → sent to CA → ISSUED
+  MODE 1 — SINGLE OPERATOR (Maker only):
+    Admin configures: approval_mode = SINGLE
+    One operator reviews, verifies, and approves/rejects the CSR.
+    No second operator (Checker) needed.
 
-  Rules:
-    - Only ADMIN can see all CSR requests
-    - Only ADMIN can assign a request to an operator
-    - MAKER reviews and writes remarks (cannot accept/reject)
-    - CHECKER sees Maker's remarks and accepts or rejects
-    - The RA Operator who acts as the MAKER for a request is
-      STRICTLY PROHIBITED from acting as the CHECKER for the
-      same request. This is a mandatory separation of duties
-      enforced at the application level. The system must reject
-      any attempt by the Maker to accept or reject a request
-      they have already reviewed.
-    - Requester cannot be Maker or Checker
+  MODE 2 — DUAL OPERATOR (Maker + Checker):
+    Admin configures: approval_mode = DUAL
+    Maker reviews and submits remarks.
+    Checker (different operator) accepts or rejects.
+    Separation of duties enforced — Maker cannot be Checker.
+
+  KEY DESIGN PRINCIPLES:
+    - Admin CONFIGURES the process (how many operators needed)
+    - Admin MONITORS all records and their status
+    - Operators work INDEPENDENTLY (pick up CSR requests themselves)
+    - Admin CAN optionally assign a specific request to a specific operator
+    - All records visible to Admin AND all operators (with status)
+    - Every record maintains full TRANSITION STATUS history
+    - Admin can FILTER any record by any criteria at any time
+    - Configuration is changeable at any time via Admin dashboard
 
 
 ================================================================================
-  2. ACTORS & ROLES
+  2. ADMIN CONFIGURATION MATRIX
+================================================================================
+
+  Admin configures the approval process from the dashboard.
+  Configuration stored in app_config table (hot-reloadable).
+
+  +====================================================================+
+  |                ADMIN CONFIGURATION DASHBOARD                       |
+  +====================================================================+
+  |                                                                    |
+  |  APPROVAL MODE:                                                   |
+  |  +------------------------------------------------------------+   |
+  |  |  ( ) SINGLE OPERATOR — one operator verifies + approves    |   |
+  |  |  (•) DUAL OPERATOR   — Maker reviews, Checker approves    |   |
+  |  +------------------------------------------------------------+   |
+  |                                                                    |
+  |  ASSIGNMENT MODE:                                                 |
+  |  +------------------------------------------------------------+   |
+  |  |  (•) SELF-PICKUP — operators pick requests from pool       |   |
+  |  |  ( ) ADMIN-ASSIGN — Admin assigns each request manually    |   |
+  |  |  ( ) HYBRID — operators can self-pickup, Admin can also    |   |
+  |  |               assign specific requests to specific operators|   |
+  |  +------------------------------------------------------------+   |
+  |                                                                    |
+  |  AUTO-ASSIGNMENT (optional, for SELF-PICKUP mode):                |
+  |  +------------------------------------------------------------+   |
+  |  |  [ ] Round-robin among active operators                    |   |
+  |  |  [ ] Least-loaded operator first                           |   |
+  |  |  [x] Manual pickup (no auto-assignment)                    |   |
+  |  +------------------------------------------------------------+   |
+  |                                                                    |
+  +====================================================================+
+
+  CONFIGURATION TABLE (app_config):
+
+  +----------------------------+------------------+------------------------+
+  | config_key                 | config_type      | Example value          |
+  +----------------------------+------------------+------------------------+
+  | approval_mode              | CSR_WORKFLOW     | SINGLE or DUAL         |
+  | assignment_mode            | CSR_WORKFLOW     | SELF_PICKUP or         |
+  |                            |                  | ADMIN_ASSIGN or HYBRID |
+  | auto_assignment_strategy   | CSR_WORKFLOW     | NONE or ROUND_ROBIN    |
+  |                            |                  | or LEAST_LOADED        |
+  | max_pending_per_operator   | CSR_WORKFLOW     | 10                     |
+  | maker_can_return_to_admin  | CSR_WORKFLOW     | true                   |
+  | require_remarks            | CSR_WORKFLOW     | true                   |
+  +----------------------------+------------------+------------------------+
+
+  API to update configuration:
+    PUT /api/ra/admin/config/workflow
+    Auth: ROLE_ADMIN only
+    Body: {
+      "approvalMode": "DUAL",
+      "assignmentMode": "HYBRID",
+      "autoAssignmentStrategy": "NONE",
+      "maxPendingPerOperator": 10,
+      "makerCanReturnToAdmin": true,
+      "requireRemarks": true
+    }
+
+  API to read current configuration:
+    GET /api/ra/admin/config/workflow
+    Auth: ROLE_ADMIN only
+
+
+================================================================================
+  3. ACTORS & ROLES
 ================================================================================
 
   +------------------+--------------------------------------------------+
   | Role             | Responsibilities                                 |
   +------------------+--------------------------------------------------+
-  | CLIENT / USER    | Submits CSR (REST / EST / SCEP / CMP)            |
+  | CLIENT / USER    | Submits CSR                                      |
   |                  | Downloads issued certificate                     |
   +------------------+--------------------------------------------------+
-  | ROLE_ADMIN       | Sees ALL submitted CSR requests                  |
-  |                  | Assigns request to an Operator (Maker)           |
-  |                  | Selects operator from dropdown                   |
-  |                  | Can also act as Maker or Checker if needed       |
+  | ROLE_ADMIN       | Configures approval mode (SINGLE/DUAL)           |
+  |                  | Configures assignment mode                       |
+  |                  | Monitors ALL records with status                 |
+  |                  | Can optionally assign request to operator         |
+  |                  | Can close requests permanently                   |
+  |                  | Can filter/search any record                     |
   +------------------+--------------------------------------------------+
-  | ROLE_OPERATOR    | Acts as MAKER or CHECKER (not both on same req)  |
-  | (Maker)          | Reviews CSR, writes remarks, submits review      |
-  +------------------+--------------------------------------------------+
-  | ROLE_OPERATOR    | Sees Maker's remarks                             |
-  | (Checker)        | Accepts or Rejects the request                   |
+  | ROLE_OPERATOR    | In SINGLE mode: reviews + approves/rejects       |
+  |                  | In DUAL mode:                                    |
+  |                  |   As Maker: reviews + submits remarks             |
+  |                  |   As Checker: accepts or rejects                  |
+  |                  | Can self-pickup requests from pool               |
+  |                  | Views all requests and their status              |
   +------------------+--------------------------------------------------+
   | ROLE_AUDITOR     | Read-only access to all requests + audit logs    |
   +------------------+--------------------------------------------------+
 
 
 ================================================================================
-  3. STATE MACHINE — REQUEST LIFECYCLE
+  4. STATE MACHINE
 ================================================================================
 
-  CSR Submitted
-       |
-       v
-  [SUBMITTED] -----> Admin assigns to Operator (Maker)
-       |
-       v
-  [ASSIGNED] ------> Maker reviews CSR
-       |
-       +----------------+--------------------+
-       |                                     |
-       v                                     v
-  Maker recommends                     Maker returns to Admin
-  (sends to Checker)                   (CSR has issues)
-       |                                     |
-       v                                     v
-  [REVIEWED] ------> Checker         [RETURNED] -----> Admin sees
-       |              sees remarks         |            returned request
-       +----------+----------+             |
-       |                     |             +--- Admin can:
-       v                     |             |    1. Reassign to same/different Maker
-  [ACCEPTED]                 |             |    2. Close the request permanently
-       |                     |             |
-       v                     |             v
-  Send to CA                 |         [ASSIGNED] (reassign)
-       |                     |              or
-       +--------+            |         [CLOSED] (Admin closes permanently)
-       |        |            |
-       v        v            v
-  [ISSUED]  [FAILED]    [REJECTED] -------> Goes back to Admin
-       |                     |
-       v                     +--- Admin sees rejected request
-  [ACTIVE]                   |    Admin can:
-                             |    1. Reassign to same/different Maker
-                             |       (for re-review with new/updated CSR context)
-                             |    2. Close the request permanently
-                             |
-                             v
-                         [ASSIGNED] (reassign for re-review)
-                              or
-                         [CLOSED] (Admin closes permanently)
+  MODE 1 — SINGLE OPERATOR:
+
+    [SUBMITTED] → Operator picks up (or Admin assigns)
+         |
+         v
+    [IN_REVIEW] → Operator reviewing
+         |
+         +----------+----------+----------+
+         |                     |          |
+         v                     v          v
+    [APPROVED]            [REJECTED]  [RETURNED]
+         |                     |          |
+         v                     v          v
+    Send to CA           Admin sees   Admin sees
+         |               (reassign    (reassign
+         +--------+       or close)    or close)
+         |        |
+         v        v
+    [ISSUED]  [FAILED]
+
+
+  MODE 2 — DUAL OPERATOR (Maker + Checker):
+
+    [SUBMITTED] → Maker picks up (or Admin assigns)
+         |
+         v
+    [IN_REVIEW] → Maker reviewing
+         |
+         +----------------+--------------------+
+         |                                     |
+         v                                     v
+    [REVIEWED]                            [RETURNED]
+    Maker submitted remarks               Maker sent back to Admin
+         |                                     |
+         v                                     v
+    Checker picks up                      Admin (reassign or close)
+         |
+         +----------+----------+
+         |                     |
+         v                     v
+    [APPROVED]            [REJECTED]
+         |                     |
+         v                     v
+    Send to CA            Admin sees
+         |                (reassign or close)
+         +--------+
+         |        |
+         v        v
+    [ISSUED]  [FAILED]
 
 
   STATE DEFINITIONS:
@@ -111,695 +190,254 @@
   +-----------------+---------------------------------------------------+
   | State           | Description                                       |
   +-----------------+---------------------------------------------------+
-  | SUBMITTED       | CSR received, 7-layer validation passed,          |
-  |                 | waiting for Admin to assign                       |
+  | SUBMITTED       | CSR received, validation passed.                  |
+  |                 | Visible to all operators and Admin.               |
+  |                 | Available for pickup or assignment.                |
   +-----------------+---------------------------------------------------+
-  | ASSIGNED        | Admin assigned to a Maker (operator),              |
-  |                 | waiting for Maker to review                       |
+  | IN_REVIEW       | An operator has picked up / been assigned this     |
+  |                 | request and is currently reviewing it.             |
+  |                 | In SINGLE mode: this operator will approve/reject.|
+  |                 | In DUAL mode: this is the Maker.                  |
   +-----------------+---------------------------------------------------+
-  | RETURNED        | Maker returned the request to Admin with reason.   |
-  |                 | Maker found issues during review and cannot        |
-  |                 | recommend the request for approval.                |
-  |                 | Admin can either:                                 |
-  |                 |   a. Reassign to same or different operator        |
-  |                 |   b. Reject the request directly                  |
+  | REVIEWED        | DUAL mode only. Maker submitted review with        |
+  |                 | remarks. Waiting for Checker to pick up.          |
   +-----------------+---------------------------------------------------+
-  | REVIEWED        | Maker recommended and submitted review with        |
-  |                 | remarks. Waiting for Checker to accept or reject. |
+  | RETURNED        | Maker/Operator sent request back to Admin.         |
+  |                 | Admin can reassign or close permanently.           |
   +-----------------+---------------------------------------------------+
-  | ACCEPTED        | Checker accepted, sending to CA for signing        |
+  | APPROVED        | Approved (by single operator or Checker).           |
+  |                 | Sending to CA for signing.                         |
   +-----------------+---------------------------------------------------+
-  | REJECTED        | Checker rejected the request. NOT a final state.   |
-  |                 | Request goes back to Admin's dashboard under        |
-  |                 | ISSUES category. Admin can see the full trail:     |
-  |                 |   - Who was the Maker (reviewed it)                |
-  |                 |   - Who was the Checker (rejected it)              |
-  |                 |   - Maker's remarks + Checker's rejection reason   |
-  |                 | Admin can either:                                 |
-  |                 |   a. Reassign to same or different operator        |
-  |                 |      (for re-review — goes back to ASSIGNED)       |
-  |                 |   b. Close the request permanently (→ CLOSED)      |
+  | REJECTED        | Rejected (by single operator or Checker).           |
+  |                 | Goes back to Admin for reassign or close.          |
   +-----------------+---------------------------------------------------+
-  | CLOSED          | Request permanently closed by Admin. This is the   |
-  |                 | TRUE final state — no further action possible.     |
-  |                 | Used when Admin decides the request should not     |
-  |                 | proceed after reviewing Maker return reason or     |
-  |                 | Checker rejection reason.                          |
-  |                 | Requester notified with closure reason.            |
+  | CLOSED          | Permanently closed by Admin. True final state.     |
   +-----------------+---------------------------------------------------+
-  | ISSUED          | CA signed successfully, certificate stored          |
+  | ISSUED          | CA signed successfully. Certificate active.        |
   +-----------------+---------------------------------------------------+
-  | FAILED          | CA signing failed (network/config error)           |
-  |                 | Can be retried by Admin                           |
+  | FAILED          | CA signing failed. Admin can retry.                |
   +-----------------+---------------------------------------------------+
 
   VALID TRANSITIONS:
 
-  +-------------------+---> +-------------------+--- Who ----------+
-  | From              |     | To                |                   |
-  +-------------------+     +-------------------+-------------------+
-  | SUBMITTED         | --> | ASSIGNED          | Admin assigns     |
-  | ASSIGNED          | --> | REVIEWED          | Maker recommends  |
-  | ASSIGNED          | --> | RETURNED          | Maker returns     |
-  | RETURNED          | --> | ASSIGNED          | Admin reassigns   |
-  | RETURNED          | --> | CLOSED            | Admin closes      |
-  | REVIEWED          | --> | ACCEPTED          | Checker accepts   |
-  | REVIEWED          | --> | REJECTED          | Checker rejects   |
-  | REJECTED          | --> | ASSIGNED          | Admin reassigns   |
-  | REJECTED          | --> | CLOSED            | Admin closes      |
-  | ACCEPTED          | --> | ISSUED            | CA signs OK       |
-  | ACCEPTED          | --> | FAILED            | CA error          |
-  | FAILED            | --> | ACCEPTED          | Admin retries     |
-  +-------------------+     +-------------------+-------------------+
-
-  IMPORTANT — REJECTED is NOT final:
-    When Checker rejects, the request goes back to Admin.
-    Admin decides whether to give it another chance (reassign)
-    or permanently close it. Only CLOSED is the true final state.
-
-  INVALID TRANSITIONS (blocked in code):
-
-  | SUBMITTED → REVIEWED   | Cannot skip assignment              |
-  | SUBMITTED → ACCEPTED   | Cannot skip Maker + Checker         |
-  | ASSIGNED  → ACCEPTED   | Cannot skip Maker review            |
-  | RETURNED  → REVIEWED   | Must be reassigned first            |
-  | RETURNED  → ACCEPTED   | Must go through Maker again         |
-  | CLOSED    → any        | True final state, no action possible|
-  | ISSUED    → REJECTED   | Cannot un-issue (use revocation)    |
+  +-------------------+---> +-------------------+--- Who / When --------+
+  | From              |     | To                |                        |
+  +-------------------+     +-------------------+------------------------+
+  | SUBMITTED         | --> | IN_REVIEW         | Operator picks up      |
+  |                   |     |                   | or Admin assigns       |
+  | IN_REVIEW         | --> | APPROVED          | SINGLE mode: operator  |
+  |                   |     |                   | approves directly      |
+  | IN_REVIEW         | --> | REJECTED          | SINGLE mode: operator  |
+  |                   |     |                   | rejects directly       |
+  | IN_REVIEW         | --> | REVIEWED          | DUAL mode: Maker       |
+  |                   |     |                   | submits remarks        |
+  | IN_REVIEW         | --> | RETURNED          | Operator returns to    |
+  |                   |     |                   | Admin (any mode)       |
+  | REVIEWED          | --> | APPROVED          | DUAL: Checker accepts  |
+  | REVIEWED          | --> | REJECTED          | DUAL: Checker rejects  |
+  | RETURNED          | --> | IN_REVIEW         | Admin reassigns        |
+  | RETURNED          | --> | CLOSED            | Admin closes           |
+  | REJECTED          | --> | IN_REVIEW         | Admin reassigns        |
+  | REJECTED          | --> | CLOSED            | Admin closes           |
+  | APPROVED          | --> | ISSUED            | CA signs OK            |
+  | APPROVED          | --> | FAILED            | CA error               |
+  | FAILED            | --> | APPROVED          | Admin retries          |
+  +-------------------+     +-------------------+------------------------+
 
 
 ================================================================================
-  4. DATABASE CHANGES
+  5. FLOW — SINGLE OPERATOR MODE
 ================================================================================
 
-  EXISTING TABLE — certificate_requests (add new columns):
+  Step 1: Client submits CSR
+    API: POST /api/ra/requests
+    → status = SUBMITTED
+    → visible to ALL operators + Admin
 
-  +----------------------------+---------------+-----+-----------------------+
-  | New Column                 | Type          | Null| Purpose               |
-  +----------------------------+---------------+-----+-----------------------+
-  | assigned_to_id             | BIGINT FK     | YES | --> users.id (Maker)  |
-  |                            |               |     | Admin assigns this    |
-  +----------------------------+---------------+-----+-----------------------+
-  | assigned_at                | DATETIME(6)   | YES | When Admin assigned   |
-  +----------------------------+---------------+-----+-----------------------+
-  | assigned_by_id             | BIGINT FK     | YES | --> users.id (Admin)  |
-  +----------------------------+---------------+-----+-----------------------+
-  | maker_remarks              | VARCHAR(2000) | YES | Maker's review notes  |
-  +----------------------------+---------------+-----+-----------------------+
-  | maker_reviewed_at          | DATETIME(6)   | YES | When Maker submitted  |
-  +----------------------------+---------------+-----+-----------------------+
-  | checker_id                 | BIGINT FK     | YES | --> users.id (Checker)|
-  +----------------------------+---------------+-----+-----------------------+
-  | checker_decision           | VARCHAR(20)   | YES | ACCEPTED / REJECTED   |
-  +----------------------------+---------------+-----+-----------------------+
-  | checker_remarks            | VARCHAR(2000) | YES | Checker's decision    |
-  |                            |               |     | reason / comments     |
-  +----------------------------+---------------+-----+-----------------------+
-  | checker_decided_at         | DATETIME(6)   | YES | When Checker decided  |
-  +----------------------------+---------------+-----+-----------------------+
+  Step 2: Operator picks up request (SELF-PICKUP)
+    API: POST /api/ra/requests/{id}/pickup
+    Auth: ROLE_OPERATOR
+    → status = IN_REVIEW
+    → picked_up_by = current operator
+    → Other operators see: "In review by priya.patel"
 
-  +----------------------------+---------------+-----+-----------------------+
-  | return_reason              | VARCHAR(2000) | YES | Why Maker returned    |
-  |                            |               |     | the request to Admin  |
-  +----------------------------+---------------+-----+-----------------------+
-  | returned_at                | DATETIME(6)   | YES | When Maker returned   |
-  +----------------------------+---------------+-----+-----------------------+
+    OR Admin assigns (ADMIN-ASSIGN / HYBRID):
+    API: POST /api/ra/requests/{id}/assign
+    Auth: ROLE_ADMIN
+    Body: { "operatorId": 5 }
+    → status = IN_REVIEW, assigned_to_id = 5
 
-  +----------------------------+---------------+-----+-----------------------+
-  | closed_at                  | DATETIME(6)   | YES | When Admin closed     |
-  +----------------------------+---------------+-----+-----------------------+
-  | closed_by_id               | BIGINT FK     | YES | --> users.id (Admin   |
-  |                            |               |     | who closed request)   |
-  +----------------------------+---------------+-----+-----------------------+
-  | closed_reason              | VARCHAR(2000) | YES | Admin's closure reason|
-  +----------------------------+---------------+-----+-----------------------+
+  Step 3: Operator reviews and decides
+    API: POST /api/ra/requests/{id}/approve
+    Body: { "remarks": "CSR verified. All checks passed." }
+    → status = APPROVED → auto-issue via CA
 
-  UPDATED STATUS CHECK constraint:
-    CHECK (status IN ('SUBMITTED', 'ASSIGNED', 'RETURNED', 'REVIEWED',
-                      'ACCEPTED', 'REJECTED', 'CLOSED', 'ISSUED', 'FAILED'))
+    OR
+    API: POST /api/ra/requests/{id}/reject
+    Body: { "remarks": "Domain not in approved list." }
+    → status = REJECTED → goes to Admin dashboard
 
-  Flyway migration:
-    V9__alter_certificate_requests_maker_checker.sql
+    OR
+    API: POST /api/ra/requests/{id}/return
+    Body: { "reason": "Key size too small, need clarification." }
+    → status = RETURNED → goes to Admin dashboard
 
 
 ================================================================================
-  5. COMPLETE FLOW — STEP BY STEP
+  6. FLOW — DUAL OPERATOR MODE (Maker + Checker)
 ================================================================================
 
-
-  STEP 1: CLIENT SUBMITS CSR
-  =================================================================
-    API:    POST /api/ra/requests
-    Auth:   Any authenticated user
-    Body:   { "pkcs10": "-----BEGIN CERT REQ...", ... }
-
-    System:
-      a. Run 7-layer validation
-      b. Save: status = SUBMITTED
-      c. Audit: CSR_SUBMIT
-      d. Notify: all ADMINs ("New CSR received: CN=api.example.com")
-
-    Response: 201 Created
-      { "id": 101, "status": "SUBMITTED", ... }
-
-
-  STEP 2: ADMIN DASHBOARD — CATEGORIZED VIEW
-  =================================================================
-
-  Admin sees ALL requests grouped by status categories.
-  Each category is a separate section/tab so Admin can instantly
-  understand what needs attention and what has been processed.
-
-  API:    GET /api/ra/requests/dashboard
-  Auth:   ROLE_ADMIN only
-
-  Response:
-    {
-      "summary": {
-        "submitted":  5,
-        "assigned":   3,
-        "reviewed":   2,
-        "accepted":   1,
-        "rejected":   4,
-        "issued":    28,
-        "failed":     0,
-        "total":     43
-      },
-      "categories": { ... }
-    }
-
-  Admin Dashboard Layout:
-
-  +================================================================+
-  |                    CSR REQUEST DASHBOARD                        |
-  +================================================================+
-  |                                                                |
-  |  [NEW/PENDING]   [IN PROGRESS]  [COMPLETED]   [ISSUES]        |
-  |  SUBMITTED: 5    ASSIGNED: 3    ISSUED: 28    REJECTED: 4     |
-  |                  REVIEWED: 2    CLOSED: 3     RETURNED: 2     |
-  |                  ACCEPTED: 1                  FAILED: 0       |
-  +================================================================+
-
-  Category APIs — Admin uses these to view each section:
-
-  +-----------------------------------------------------------------+
-  | CATEGORY 1: NEW / PENDING ACTION                                |
-  | "These need Admin to assign to an Operator"                     |
-  +-----------------------------------------------------------------+
-  | API:    GET /api/ra/requests?status=SUBMITTED                   |
-  | Shows:  CSRs waiting for Admin to assign a Maker                |
-  | Action: Admin selects operator from dropdown → POST /assign     |
-  |                                                                 |
-  | Response:                                                       |
-  |   [{                                                            |
-  |     "id": 101,                                                  |
-  |     "subjectDn": "CN=api.example.com",                          |
-  |     "keyAlgorithm": "RSA",                                     |
-  |     "keySize": 4096,                                            |
-  |     "requesterUsername": "rahul.sharma",                         |
-  |     "status": "SUBMITTED",                                     |
-  |     "createdAt": "2026-06-23T10:00:00Z"                         |
-  |   }]                                                            |
-  +-----------------------------------------------------------------+
-
-  +-----------------------------------------------------------------+
-  | CATEGORY 2: IN PROGRESS (Maker-Checker pipeline)                |
-  | "These are being processed through the approval pipeline"       |
-  +-----------------------------------------------------------------+
-  |                                                                 |
-  | Sub-tab A: ASSIGNED (waiting for Maker review)                  |
-  | API:    GET /api/ra/requests?status=ASSIGNED                    |
-  | Shows:  Requests assigned to operators but not yet reviewed     |
-  |   [{                                                            |
-  |     "id": 102,                                                  |
-  |     "subjectDn": "CN=billing.acme.com",                         |
-  |     "status": "ASSIGNED",                                      |
-  |     "assignedTo": "priya.patel",                                |
-  |     "assignedAt": "2026-06-23T10:15:00Z",                       |
-  |     "assignedBy": "admin"                                       |
-  |   }]                                                            |
-  |                                                                 |
-  | Sub-tab B: REVIEWED (waiting for Checker decision)              |
-  | API:    GET /api/ra/requests?status=REVIEWED                    |
-  | Shows:  Maker finished, waiting for another operator to decide  |
-  |   [{                                                            |
-  |     "id": 103,                                                  |
-  |     "subjectDn": "CN=auth.acme.com",                            |
-  |     "status": "REVIEWED",                                      |
-  |     "makerUsername": "priya.patel",                              |
-  |     "makerRemarks": "CSR verified. DN matches CMDB...",         |
-  |     "makerReviewedAt": "2026-06-23T11:00:00Z"                   |
-  |   }]                                                            |
-  |                                                                 |
-  | Sub-tab C: ACCEPTED (sent to CA, awaiting issuance)             |
-  | API:    GET /api/ra/requests?status=ACCEPTED                    |
-  | Shows:  Checker approved, certificate being issued by CA        |
-  |                                                                 |
-  +-----------------------------------------------------------------+
-
-  +-----------------------------------------------------------------+
-  | CATEGORY 3: COMPLETED (Successfully issued)                     |
-  | "These are done — certificates issued and active"               |
-  +-----------------------------------------------------------------+
-  | API:    GET /api/ra/requests?status=ISSUED                      |
-  | Shows:  Successfully issued certificates                       |
-  |   [{                                                            |
-  |     "id": 98,                                                   |
-  |     "subjectDn": "CN=api.acme.com",                             |
-  |     "status": "ISSUED",                                        |
-  |     "certificateSerial": "4F2A1B3C...",                          |
-  |     "makerUsername": "priya.patel",                              |
-  |     "checkerUsername": "vikram.singh",                           |
-  |     "checkerDecision": "ACCEPTED",                              |
-  |     "issuedAt": "2026-06-22T14:30:00Z"                          |
-  |   }]                                                            |
-  +-----------------------------------------------------------------+
-
-  +-----------------------------------------------------------------+
-  | CATEGORY 4: ISSUES (Rejected + Failed)                          |
-  | "These need attention — rejected by Checker or CA failed"       |
-  +-----------------------------------------------------------------+
-  |                                                                 |
-  | Sub-tab A: REJECTED (Checker denied the request)                |
-  | API:    GET /api/ra/requests?status=REJECTED                    |
-  | Shows:  Requests that went through Maker-Checker pipeline       |
-  |         but were REJECTED by the Checker.                       |
-  |         Admin can see WHO reviewed (Maker), WHO rejected         |
-  |         (Checker), and WHY (checker remarks).                   |
-  |   [{                                                            |
-  |     "id": 99,                                                   |
-  |     "subjectDn": "CN=test.evil.com",                             |
-  |     "status": "REJECTED",                                      |
-  |     "requesterUsername": "rahul.sharma",                         |
-  |     "makerUsername": "priya.patel",                              |
-  |     "makerRemarks": "CSR looks OK but domain not in CMDB",     |
-  |     "makerReviewedAt": "2026-06-22T09:00:00Z",                  |
-  |     "checkerUsername": "vikram.singh",                           |
-  |     "checkerDecision": "REJECTED",                              |
-  |     "checkerRemarks": "Domain not in approved list. Rejected.", |
-  |     "checkerDecidedAt": "2026-06-22T10:30:00Z"                   |
-  |   }]                                                            |
-  |                                                                 |
-  |   Admin knows:                                                  |
-  |     - Maker-Checker process COMPLETED for this request          |
-  |     - Maker reviewed it (with remarks)                          |
-  |     - Checker rejected it (with reason)                         |
-  |     - No further action needed (requester must resubmit)        |
-  |                                                                 |
-  | Sub-tab B: RETURNED (Maker sent back to Admin)                  |
-  | API:    GET /api/ra/requests?status=RETURNED                    |
-  | Shows:  Maker found issues and returned to Admin with reason.   |
-  |         Admin can see who was assigned (Maker), what the         |
-  |         Maker found (return reason), and decide next action:    |
-  |         REASSIGN to another operator or REJECT directly.        |
-  |   [{                                                            |
-  |     "id": 105,                                                  |
-  |     "subjectDn": "CN=test.evil.com",                             |
-  |     "status": "RETURNED",                                      |
-  |     "requesterUsername": "rahul.sharma",                         |
-  |     "makerUsername": "priya.patel",                              |
-  |     "makerRemarks": "Domain evil.com not in approved list.      |
-  |                      Key size 1024 below minimum policy.",      |
-  |     "returnedAt": "2026-06-23T11:30:00Z"                        |
-  |   }]                                                            |
-  |                                                                 |
-  |   Admin actions:                                                |
-  |     POST /api/ra/requests/105/assign → reassign to operator    |
-  |     POST /api/ra/requests/105/reject → reject directly          |
-  |                                                                 |
-  | Sub-tab C: FAILED (CA signing error)                            |
-  | API:    GET /api/ra/requests?status=FAILED                      |
-  | Shows:  Checker approved but CA failed to sign                  |
-  |         Admin can retry: POST /api/ra/requests/{id}/retry       |
-  |                                                                 |
-  +-----------------------------------------------------------------+
-
-  SUMMARY API (counts for dashboard header):
-
-    API:    GET /api/ra/requests/summary
-    Auth:   ROLE_ADMIN only
-    Response:
-      {
-        "submitted": 5,
-        "assigned": 3,
-        "reviewed": 2,
-        "accepted": 1,
-        "returned": 2,
-        "rejected": 4,
-        "issued": 28,
-        "failed": 0,
-        "total": 45
-      }
-
-
-  STEP 3: ADMIN ASSIGNS REQUEST TO OPERATOR (MAKER)
-  =================================================================
-    API:    POST /api/ra/requests/{id}/assign
-    Auth:   ROLE_ADMIN only
-    Body:   { "operatorId": 5 }
-            (operator selected from dropdown in UI)
-
-    System:
-      a. Validate: status == SUBMITTED
-      b. Validate: operatorId exists, is_active, has ROLE_OPERATOR
-      c. Validate: operator != requester
-      d. Update: status = ASSIGNED,
-                 assigned_to_id = 5,
-                 assigned_at = now,
-                 assigned_by_id = admin.id
-      e. Audit: CSR_ASSIGN (resource=101, desc="Assigned to priya.patel")
-      f. Notify: operator (Maker) — "CSR #101 assigned to you for review"
-
-    Response: 200 OK
-      { "id": 101, "status": "ASSIGNED",
-        "assignedTo": "priya.patel", ... }
-
-
-  STEP 4: ADMIN GETS OPERATOR LIST (for dropdown)
-  =================================================================
-    API:    GET /api/ra/operators
-    Auth:   ROLE_ADMIN only
-
-    Response: list of active operators
-      [
-        { "id": 5, "username": "priya.patel", "displayName": "Priya Patel" },
-        { "id": 7, "username": "vikram.singh", "displayName": "Vikram Singh" },
-        { "id": 9, "username": "amit.kumar", "displayName": "Amit Kumar" }
-      ]
-
-
-  STEP 5: MAKER VIEWS ASSIGNED REQUESTS
-  =================================================================
-    API:    GET /api/ra/requests/my-assigned
-    Auth:   ROLE_OPERATOR (shows only requests assigned to this user)
-
-    Response: list of requests assigned to current operator
-      [{
-        "id": 101,
-        "subjectDn": "CN=api.example.com",
-        "status": "ASSIGNED",
-        "requesterUsername": "rahul.sharma",
-        "assignedAt": "2026-06-23T10:15:00Z"
-      }]
-
-
-  STEP 6A: MAKER RECOMMENDS — SUBMITS REVIEW (happy path)
-  =================================================================
-    API:    POST /api/ra/requests/{id}/review
-    Auth:   ROLE_OPERATOR (must be the assigned Maker)
-    Body:   {
-              "remarks": "CSR verified. Subject DN matches CMDB entry.
-                          Key size 4096 meets policy. SANs valid.
-                          Recommend approval."
-            }
-
-    System:
-      a. Validate: status == ASSIGNED
-      b. Validate: current user == assigned_to_id (only Maker can review)
-      c. Update: status = REVIEWED,
-                 maker_remarks = body.remarks,
-                 maker_reviewed_at = now
-      d. Audit: CSR_REVIEW (resource=101, desc="Maker reviewed with remarks")
-      e. Notify: all ROLE_OPERATOR except Maker
-         "CSR #101 reviewed by priya.patel — pending your acceptance"
-
-    Response: 200 OK
-      { "id": 101, "status": "REVIEWED",
-        "makerRemarks": "CSR verified...",
-        "makerUsername": "priya.patel",
-        "makerReviewedAt": "2026-06-23T11:00:00Z" }
-
-
-  STEP 6B: MAKER RETURNS REQUEST TO ADMIN (CSR has issues)
-  =================================================================
-    When the Maker finds issues during review and cannot recommend
-    the request for approval, the Maker returns it to the Admin
-    with a reason. The Maker does NOT have the authority to reject
-    the request directly — only the Admin or Checker can reject.
-
-    API:    POST /api/ra/requests/{id}/return
-    Auth:   ROLE_OPERATOR (must be the assigned Maker)
-    Body:   {
-              "reason": "Subject DN contains unauthorized domain
-                         evil.com which is not in the approved
-                         domain list. CSR key size is only 1024
-                         which does not meet minimum policy."
-            }
-
-    System:
-      a. Validate: status == ASSIGNED
-      b. Validate: current user == assigned_to_id (only Maker can return)
-      c. Validate: reason is not blank
-      d. Update: status = RETURNED,
-                 maker_remarks = body.reason,
-                 maker_reviewed_at = now
-      e. Audit: CSR_RETURN (resource=101,
-                desc="Maker returned to Admin: unauthorized domain")
-      f. Notify: all ADMINs
-         "CSR #101 returned by priya.patel: [reason]"
-
-    Response: 200 OK
-      { "id": 101, "status": "RETURNED",
-        "makerRemarks": "Subject DN contains unauthorized domain...",
-        "makerUsername": "priya.patel",
-        "makerReviewedAt": "2026-06-23T11:00:00Z" }
-
-
-  STEP 6C: ADMIN HANDLES RETURNED REQUEST
-  =================================================================
-    Admin sees the returned request in the ISSUES category of the
-    dashboard. Admin reads the Maker's return reason and decides
-    the next action.
-
-    Admin has TWO options:
-
-    OPTION 1 — REASSIGN to same or different operator:
-    -----------------------------------------------------------------
-    API:    POST /api/ra/requests/{id}/assign
-    Auth:   ROLE_ADMIN
-    Body:   { "operatorId": 7 }
-            (same operator or a different one)
-
-    System:
-      a. Validate: status == RETURNED
-      b. Same validation as original assignment
-      c. Update: status = ASSIGNED,
-                 assigned_to_id = 7 (new or same operator),
-                 assigned_at = now,
-                 assigned_by_id = admin.id
-         Note: previous maker_remarks are preserved for history
-      d. Audit: CSR_REASSIGN (resource=101,
-                desc="Reassigned to vikram.singh after return")
-      e. Notify: new Maker operator
-
-    Use case:
-      - Maker flagged a minor issue that requester can fix
-      - Admin wants a second opinion from another operator
-      - Same operator can review again after requester correction
-
-
-    OPTION 2 — ADMIN CLOSES PERMANENTLY:
-    -----------------------------------------------------------------
-    API:    POST /api/ra/requests/{id}/close
-    Auth:   ROLE_ADMIN
-    Body:   {
-              "reason": "Closed per Maker's findings.
-                         Domain evil.com is permanently blocked."
-            }
-
-    System:
-      a. Validate: status == RETURNED
-      b. Update: status = CLOSED,
-                 closed_at = now,
-                 closed_by_id = admin.id,
-                 closed_reason = body.reason
-      c. Audit: CSR_CLOSED (resource=101,
-                desc="Admin closed after Maker return: [reason]")
-      d. Notify: requester + original Maker
-         "CSR #101 permanently closed by Admin: [reason]"
-
-    Use case:
-      - Maker found a serious issue (blocked domain, weak key)
-      - Admin agrees and closes without needing Checker review
-      - CLOSED = true final state, no further action possible
-
-
-  STEP 7: CHECKER VIEWS REVIEWED REQUESTS
-  =================================================================
-    API:    GET /api/ra/requests?status=REVIEWED
-    Auth:   ROLE_OPERATOR (excludes requests where current user is Maker)
-
-    Response: list of reviewed requests (not assigned to this operator)
-      [{
-        "id": 101,
-        "subjectDn": "CN=api.example.com",
-        "status": "REVIEWED",
-        "makerUsername": "priya.patel",
-        "makerRemarks": "CSR verified. Subject DN matches...",
-        "makerReviewedAt": "2026-06-23T11:00:00Z"
-      }]
-
-
-  STEP 8A: CHECKER ACCEPTS
-  =================================================================
-    API:    POST /api/ra/requests/{id}/accept
-    Auth:   ROLE_OPERATOR (must NOT be the Maker)
-    Body:   { "remarks": "Agreed with Maker's assessment. Approved." }
-
-    CRITICAL VALIDATION — SEPARATION OF DUTIES:
-      The RA Operator who acted as the Maker (reviewed this request
-      and submitted remarks) is strictly prohibited from acting as
-      the Checker. The system compares the current user's ID against
-      the assigned_to_id field. If they match, the request is
-      rejected with HTTP 403 (PKI_APR_005: "The operator who
-      reviewed this request cannot accept or reject it. A different
-      operator must perform the Checker role.").
-
-    System:
-      a. Validate: status == REVIEWED
-      b. Validate: current user != assigned_to_id (Checker != Maker)
-         → FAIL: 403 PKI_APR_005 — separation of duties violation
-      c. Validate: current user != requester
-      d. Update: status = ACCEPTED,
-                 checker_id = current_user.id,
-                 checker_decision = ACCEPTED,
-                 checker_remarks = body.remarks,
-                 checker_decided_at = now
-      e. Audit: CSR_ACCEPT (resource=101)
-      f. AUTO-ISSUE: send CSR to CA
-           --> CaClient.sign(csrPem, validityDays, sans)
-           --> Save certificate, update status = ISSUED
-      g. Audit: CERT_ISSUE
-      h. Notify: requester "Your certificate has been issued"
-
-    Response: 200 OK
-      { "id": 101, "status": "ISSUED",
-        "certificateSerial": "4F2A1B3C...",
-        "checkerUsername": "vikram.singh",
-        "checkerRemarks": "Agreed with Maker's assessment..." }
-
-
-  STEP 8B: CHECKER REJECTS
-  =================================================================
-    API:    POST /api/ra/requests/{id}/reject
-    Auth:   ROLE_OPERATOR (must NOT be the Maker)
-    Body:   { "remarks": "Domain not in approved list. Rejecting." }
-
-    CRITICAL VALIDATION — SEPARATION OF DUTIES:
-      Same rule as accept — the Maker operator cannot reject the
-      request either. A different operator must perform this action.
-
-    System:
-      a. Validate: status == REVIEWED
-      b. Validate: current user != assigned_to_id (Checker != Maker)
-         → FAIL: 403 PKI_APR_005 — separation of duties violation
-      c. Update: status = REJECTED,
-                 checker_id = current_user.id,
-                 checker_decision = REJECTED,
-                 checker_remarks = body.remarks,
-                 checker_decided_at = now,
-                 status_reason = body.remarks
-      d. Audit: CSR_REJECT (resource=101)
-      e. Notify: ALL ADMINs + Maker
-         "CSR #101 rejected by vikram.singh: Domain not in approved list"
-         → Request appears in Admin's ISSUES → REJECTED section
-
-    Response: 200 OK
-      { "id": 101, "status": "REJECTED",
-        "checkerUsername": "vikram.singh",
-        "checkerRemarks": "Domain not in approved list..." }
-
-    WHAT HAPPENS NEXT — REJECTED goes to Admin dashboard:
-      Admin sees rejected request in ISSUES category.
-      Admin sees full trail: Maker remarks + Checker rejection reason.
-      Admin has TWO options:
-        1. Reassign: POST /api/ra/requests/101/assign
-           → status = ASSIGNED (Maker reviews again with new context)
-        2. Close permanently: POST /api/ra/requests/101/close
-           → status = CLOSED (true final state, no further action)
-
-
-  STEP 9: ADMIN HANDLES REJECTED REQUEST
-  =================================================================
-
-    OPTION 1 — REASSIGN (give it another chance):
-    -----------------------------------------------------------------
-    API:    POST /api/ra/requests/{id}/assign
-    Auth:   ROLE_ADMIN
-    Body:   { "operatorId": 9 }
-
-    System:
-      a. Validate: status == REJECTED
-      b. Update: status = ASSIGNED (back into pipeline)
-      c. Previous Maker/Checker remarks preserved for history
-      d. Audit: CSR_REASSIGN_AFTER_REJECT
-      e. Notify: new Maker operator
-
-    Use case:
-      - Checker rejected but Admin thinks issue is fixable
-      - Requester has provided additional context
-      - Admin wants a different operator to review fresh
-
-    OPTION 2 — CLOSE PERMANENTLY:
-    -----------------------------------------------------------------
-    API:    POST /api/ra/requests/{id}/close
-    Auth:   ROLE_ADMIN
-    Body:   { "reason": "Confirmed: domain is permanently blocked.
-                         Request cannot be fulfilled." }
-
-    System:
-      a. Validate: status == REJECTED or RETURNED
-      b. Update: status = CLOSED,
-                 closed_at = now,
-                 closed_by_id = admin.id,
-                 closed_reason = body.reason
-      c. Audit: CSR_CLOSED (resource=101)
-      d. Notify: requester + Maker
-         "CSR #101 permanently closed by Admin: [reason]"
-
-    CLOSED is the TRUE FINAL STATE — no further action possible.
+  Step 1: Client submits CSR
+    → status = SUBMITTED
+
+  Step 2: Maker picks up or Admin assigns
+    API: POST /api/ra/requests/{id}/pickup (or /assign)
+    → status = IN_REVIEW (Maker = current operator)
+
+  Step 3: Maker reviews and submits remarks
+    API: POST /api/ra/requests/{id}/review
+    Body: { "remarks": "CSR verified. Recommend approval." }
+    → status = REVIEWED
+    → Visible to all operators EXCEPT Maker (for Checker pickup)
+
+    OR Maker returns:
+    API: POST /api/ra/requests/{id}/return
+    → status = RETURNED → Admin dashboard
+
+  Step 4: Checker picks up reviewed request
+    API: POST /api/ra/requests/{id}/pickup-check
+    Auth: ROLE_OPERATOR (must NOT be the Maker)
+    → Checker sees Maker's remarks
+
+  Step 5: Checker decides
+    API: POST /api/ra/requests/{id}/accept
+    Body: { "remarks": "Agreed with Maker." }
+    → status = APPROVED → auto-issue
+
+    OR
+    API: POST /api/ra/requests/{id}/reject
+    Body: { "remarks": "Domain issue found." }
+    → status = REJECTED → Admin dashboard
+
+  SEPARATION OF DUTIES (DUAL mode):
+    The RA Operator who acts as Maker is STRICTLY PROHIBITED
+    from acting as Checker for the same request. This is enforced
+    at the API level. Violation returns 403 PKI_APR_005.
 
 
 ================================================================================
-  6. REST API ENDPOINTS
+  7. RECORD VISIBILITY — WHO SEES WHAT
+================================================================================
+
+  +-------------------+------------------------------------------+
+  | Role              | What They See                            |
+  +-------------------+------------------------------------------+
+  | ADMIN             | ALL records, ALL statuses                |
+  |                   | Full transition history per record       |
+  |                   | Who picked up, who reviewed, who decided |
+  |                   | Filter by: status, operator, date, DN    |
+  |                   | Configuration dashboard                  |
+  +-------------------+------------------------------------------+
+  | OPERATOR          | ALL records with current status           |
+  |                   | SUBMITTED: available for pickup           |
+  |                   | IN_REVIEW: who is reviewing it            |
+  |                   | REVIEWED: available for Checker pickup    |
+  |                   |   (only if not the Maker)                |
+  |                   | Own assigned/picked-up requests           |
+  +-------------------+------------------------------------------+
+  | AUDITOR           | ALL records (read-only) + audit logs      |
+  +-------------------+------------------------------------------+
+
+
+================================================================================
+  8. TRANSITION STATUS HISTORY (per record)
+================================================================================
+
+  Every status change creates a history entry.
+  Admin and Auditor can see the full trail.
+
+  Table: certificate_request_transitions
+
+  +----------------------------+---------------+-----+-----------------------+
+  | Column                     | Type          | Null| Purpose               |
+  +----------------------------+---------------+-----+-----------------------+
+  | id                         | BIGINT PK     | NO  | Auto-increment        |
+  | request_id                 | BIGINT FK     | NO  | → certificate_requests|
+  | from_status                | VARCHAR(20)   | YES | Previous status       |
+  |                            |               |     | (NULL for first entry)|
+  | to_status                  | VARCHAR(20)   | NO  | New status            |
+  | changed_by_id              | BIGINT FK     | NO  | → users.id            |
+  | changed_by_role            | VARCHAR(20)   | NO  | ADMIN / OPERATOR /    |
+  |                            |               |     | SYSTEM                |
+  | remarks                    | VARCHAR(2000) | YES | Remarks / reason      |
+  | created_at                 | DATETIME(6)   | NO  | When transition       |
+  |                            |               |     | occurred              |
+  +----------------------------+---------------+-----+-----------------------+
+
+  Example history for one record:
+
+  +----+--------+-----------+-----------+-------------+--------------------+
+  | #  | From   | To        | By        | Role        | Remarks            |
+  +----+--------+-----------+-----------+-------------+--------------------+
+  | 1  | NULL   | SUBMITTED | rahul     | USER        | CSR submitted      |
+  | 2  | SUBMIT | IN_REVIEW | priya     | OPERATOR    | Picked up          |
+  | 3  | IN_REV | REVIEWED  | priya     | OPERATOR    | CSR verified. OK.  |
+  | 4  | REVIEW | APPROVED  | vikram    | OPERATOR    | Agreed. Approved.  |
+  | 5  | APPROV | ISSUED    | system    | SYSTEM      | Cert: 4F2A1B3C...  |
+  +----+--------+-----------+-----------+-------------+--------------------+
+
+  API to view transition history:
+    GET /api/ra/requests/{id}/history
+    Auth: ROLE_ADMIN or ROLE_AUDITOR
+
+
+================================================================================
+  9. REST API ENDPOINTS
 ================================================================================
 
   +--------+---------------------------------------+-----------------------+--------+
   | Method | Path                                  | Purpose               | Auth   |
   +--------+---------------------------------------+-----------------------+--------+
+  |        | === CONFIGURATION ===                  |                       |        |
+  | GET    | /api/ra/admin/config/workflow          | Get current config    | ADMIN  |
+  | PUT    | /api/ra/admin/config/workflow          | Update config         | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
   |        | === CSR SUBMISSION ===                 |                       |        |
   | POST   | /api/ra/requests                      | Submit CSR            | Any    |
   | GET    | /api/ra/requests/{id}                 | Get request details   | Any    |
+  | GET    | /api/ra/requests/{id}/history          | Transition history    | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
   |        | === ADMIN DASHBOARD ===                |                       |        |
   | GET    | /api/ra/requests/summary              | Status-wise counts    | ADMIN  |
-  |        |                                       |   (dashboard header)  |        |
-  | GET    | /api/ra/requests?status=SUBMITTED     | New/Pending requests  | ADMIN  |
-  | GET    | /api/ra/requests?status=ASSIGNED      | Assigned to Maker     | ADMIN  |
-  | GET    | /api/ra/requests?status=REVIEWED      | Awaiting Checker      | ADMIN  |
-  | GET    | /api/ra/requests?status=ACCEPTED      | Sent to CA            | ADMIN  |
-  | GET    | /api/ra/requests?status=REJECTED      | Rejected by Checker   | ADMIN  |
-  | GET    | /api/ra/requests?status=ISSUED        | Successfully issued   | ADMIN  |
-  | GET    | /api/ra/requests?status=FAILED        | CA signing failed     | ADMIN  |
+  | GET    | /api/ra/requests?status={s}            | Filter by status      | ADMIN  |
+  | GET    | /api/ra/requests?operator={id}         | Filter by operator    | ADMIN  |
+  | GET    | /api/ra/requests?from={date}&to={date} | Filter by date range  | ADMIN  |
+  | GET    | /api/ra/requests?subjectDn={dn}        | Filter by subject DN  | ADMIN  |
+  | GET    | /api/ra/operators                     | List operators        | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
   |        | === ADMIN ACTIONS ===                  |                       |        |
-  | GET    | /api/ra/operators                     | List operators for    | ADMIN  |
-  |        |                                       |   assignment dropdown |        |
-  | POST   | /api/ra/requests/{id}/assign          | Assign to Maker       | ADMIN  |
-  | POST   | /api/ra/requests/{id}/retry           | Retry failed issuance | ADMIN  |
+  | POST   | /api/ra/requests/{id}/assign          | Assign to operator    | ADMIN  |
   | POST   | /api/ra/requests/{id}/close           | Close permanently     | ADMIN  |
+  | POST   | /api/ra/requests/{id}/retry           | Retry failed CA call  | ADMIN  |
   +--------+---------------------------------------+-----------------------+--------+
-  | GET    | /api/ra/requests?status=RETURNED      | Returned by Maker     | ADMIN  |
-  +--------+---------------------------------------+-----------------------+--------+
-  |        | === MAKER (Operator) ===               |                       |        |
-  | GET    | /api/ra/requests/my-assigned          | My assigned requests  | OPER   |
-  | POST   | /api/ra/requests/{id}/review          | Recommend (to Checker)| OPER   |
+  |        | === OPERATOR — COMMON ===              |                       |        |
+  | GET    | /api/ra/requests/pool                 | Available for pickup  | OPER   |
+  | GET    | /api/ra/requests/my-work              | My picked-up requests | OPER   |
+  | POST   | /api/ra/requests/{id}/pickup          | Pick up from pool     | OPER   |
   | POST   | /api/ra/requests/{id}/return          | Return to Admin       | OPER   |
   +--------+---------------------------------------+-----------------------+--------+
-  |        | === CHECKER (Operator) ===             |                       |        |
+  |        | === SINGLE MODE — OPERATOR ===         |                       |        |
+  | POST   | /api/ra/requests/{id}/approve         | Approve directly      | OPER   |
+  | POST   | /api/ra/requests/{id}/reject          | Reject directly       | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === DUAL MODE — MAKER ===              |                       |        |
+  | POST   | /api/ra/requests/{id}/review          | Submit remarks        | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === DUAL MODE — CHECKER ===            |                       |        |
   | GET    | /api/ra/requests/pending-check        | Reviewed, not by me   | OPER   |
-  | POST   | /api/ra/requests/{id}/accept          | Accept request        | OPER   |
-  | POST   | /api/ra/requests/{id}/reject          | Reject request        | OPER   |
+  | POST   | /api/ra/requests/{id}/pickup-check    | Pick up as Checker    | OPER   |
+  | POST   | /api/ra/requests/{id}/accept          | Accept                | OPER   |
+  | POST   | /api/ra/requests/{id}/reject          | Reject                | OPER   |
   +--------+---------------------------------------+-----------------------+--------+
   |        | === CERTIFICATE ===                    |                       |        |
   | GET    | /api/ra/certificates/{serial}         | Get cert details      | Any    |
@@ -808,224 +446,154 @@
 
 
 ================================================================================
-  7. ROLE & PERMISSION MATRIX
+  10. ADMIN DASHBOARD — MONITORING VIEW
 ================================================================================
 
-  +-----------------------------+--------+--------+--------+--------+
-  | Action                      | ADMIN  | OPER   | AUDITOR| VIEWER |
-  +-----------------------------+--------+--------+--------+--------+
-  | Submit CSR                  |   YES  |  YES   |   NO   |   NO   |
-  | View all requests           |   YES  |   NO   |  YES   |   NO   |
-  | View own assigned requests  |   YES  |  YES   |   NO   |   NO   |
-  | List operators (dropdown)   |   YES  |   NO   |   NO   |   NO   |
-  | Assign request to Maker     |   YES  |   NO   |   NO   |   NO   |
-  | Review + submit remarks     |   NO   |  YES*  |   NO   |   NO   |
-  |   (* only assigned Maker)   |        |        |        |        |
-  | Accept (Checker)            |   NO   |  YES** |   NO   |   NO   |
-  |   (** not Maker, not req)   |        |        |        |        |
-  | Reject (Checker)            |   NO   |  YES** |   NO   |   NO   |
-  | View audit logs             |   YES  |   NO   |  YES   |   NO   |
-  | Download certificate        |   YES  |  YES   |  YES   |  YES   |
-  +-----------------------------+--------+--------+--------+--------+
+  +====================================================================+
+  |                    CSR REQUEST DASHBOARD                            |
+  +====================================================================+
+  |  Config: DUAL mode | HYBRID assignment | Remarks: required         |
+  +====================================================================+
+  |                                                                    |
+  |  [POOL]          [IN PROGRESS]    [COMPLETED]     [ISSUES]        |
+  |  SUBMITTED: 5    IN_REVIEW: 3    ISSUED: 28      REJECTED: 4     |
+  |                  REVIEWED: 2     CLOSED: 3       RETURNED: 2     |
+  |                  APPROVED: 1                     FAILED: 0       |
+  +====================================================================+
+  |                                                                    |
+  |  FILTERS:                                                         |
+  |  [Status ▼] [Operator ▼] [Date From] [Date To] [Subject DN]     |
+  |  [Search]                                                         |
+  |                                                                    |
+  +====================================================================+
+  |                                                                    |
+  |  Recent Activity:                                                 |
+  |  10:15 priya.patel picked up CSR #101 (CN=api.example.com)       |
+  |  10:20 priya.patel reviewed CSR #101 — "Verified OK"             |
+  |  10:45 vikram.singh accepted CSR #101 — ISSUED (serial: 4F2A..)  |
+  |  11:00 amit.kumar picked up CSR #102 (CN=billing.acme.com)       |
+  |                                                                    |
+  +====================================================================+
 
-  KEY RULES:
-    1. The RA Operator who performed the Maker role (reviewed the
-       request and submitted remarks) is STRICTLY PROHIBITED from
-       acting as the Checker for the same request. This is the
-       fundamental separation of duties principle — no single
-       operator can both review and approve/reject a certificate
-       request. The system enforces this at the API level by
-       comparing the current user's ID against the assigned_to_id
-       (Maker) before allowing accept or reject operations. Any
-       violation returns HTTP 403 with error PKI_APR_005.
-    2. Requester cannot be Maker or Checker
-    3. Only Admin can assign (select from operator dropdown)
-    4. Only assigned Maker can submit review
-    5. Any operator EXCEPT the Maker can be Checker
+  Admin can see for EACH record:
+    - Current status
+    - Who submitted it (requester)
+    - Who picked it up (operator / Maker)
+    - Who is currently processing it
+    - Maker's remarks (if reviewed)
+    - Checker's decision and remarks (if decided)
+    - Full transition history (click to expand)
+    - Time spent in each status
 
 
 ================================================================================
-  8. AUDIT LOG ENTRIES
+  11. ROLE & PERMISSION MATRIX
+================================================================================
+
+  +-------------------------------+--------+--------+--------+--------+
+  | Action                        | ADMIN  | OPER   | AUDITOR| VIEWER |
+  +-------------------------------+--------+--------+--------+--------+
+  | Configure workflow settings   |  YES   |   NO   |   NO   |   NO   |
+  | View all requests + status    |  YES   |  YES   |  YES   |   NO   |
+  | View transition history       |  YES   |   NO   |  YES   |   NO   |
+  | Filter/search requests        |  YES   |  YES   |  YES   |   NO   |
+  | Assign request to operator    |  YES   |   NO   |   NO   |   NO   |
+  | Close request permanently     |  YES   |   NO   |   NO   |   NO   |
+  | Pick up request from pool     |   NO   |  YES   |   NO   |   NO   |
+  | Review (Maker — DUAL)         |   NO   |  YES   |   NO   |   NO   |
+  | Approve (SINGLE mode)         |   NO   |  YES   |   NO   |   NO   |
+  | Accept (Checker — DUAL)       |   NO   |  YES*  |   NO   |   NO   |
+  |   * must NOT be the Maker     |        |        |        |        |
+  | Reject                        |   NO   |  YES   |   NO   |   NO   |
+  | Return to Admin               |   NO   |  YES   |   NO   |   NO   |
+  | Retry failed issuance         |  YES   |   NO   |   NO   |   NO   |
+  +-------------------------------+--------+--------+--------+--------+
+
+
+================================================================================
+  12. AUDIT LOG ENTRIES
 ================================================================================
 
   +----------------------------+----------------------------+---------------+
-  | Action                     | Description Pattern        | Who           |
+  | Action                     | Description                | Who           |
   +----------------------------+----------------------------+---------------+
   | CSR_SUBMIT                 | "CSR submitted for {DN}"   | Requester     |
+  | CSR_PICKUP                 | "Picked up by {operator}"  | Operator      |
   | CSR_ASSIGN                 | "Assigned to {operator}"   | Admin         |
   | CSR_REVIEW                 | "Maker reviewed: {remarks}"| Maker         |
+  | CSR_APPROVE                | "Approved: {remarks}"      | Operator      |
   | CSR_ACCEPT                 | "Checker accepted: {rmks}" | Checker       |
-  | CSR_RETURN                 | "Maker returned: {reason}" | Maker         |
+  | CSR_REJECT                 | "Rejected: {remarks}"      | Oper/Checker  |
+  | CSR_RETURN                 | "Returned to Admin: {rsn}" | Operator      |
   | CSR_REASSIGN               | "Reassigned to {operator}" | Admin         |
-  | CSR_REJECT                 | "Checker rejected: {rmks}" | Checker       |
-  | CSR_REASSIGN_AFTER_REJECT  | "Reassigned after Checker  | Admin         |
-  |                            |  rejection: {operator}"    |               |
-  | CSR_CLOSED                 | "Permanently closed: {rsn}"| Admin         |
+  | CSR_CLOSED                 | "Closed: {reason}"         | Admin         |
   | CERT_ISSUE                 | "Cert issued: {serial}"    | System        |
   | CERT_ISSUE_FAIL            | "Issuance failed: {error}" | System        |
+  | CONFIG_CHANGE              | "Workflow config changed"  | Admin         |
   +----------------------------+----------------------------+---------------+
 
 
 ================================================================================
-  9. NOTIFICATION TRIGGERS
+  13. ERROR CODES
 ================================================================================
 
-  +-------------------------------+------------------+-----------------------+
-  | Event                         | Who Notified     | Channel               |
-  +-------------------------------+------------------+-----------------------+
-  | CSR submitted                 | All ADMINs       | Email + In-App        |
-  | Admin assigns to Maker        | Maker (operator) | Email + In-App        |
-  | Maker submits review          | All other OPERs  | Email + In-App        |
-  |                               | (potential Chkrs) |                       |
-  | Maker returns to Admin        | All ADMINs       | Email + In-App        |
-  | Admin reassigns after return  | New Maker (oper) | Email + In-App        |
-  | Admin rejects after return    | Requester + Maker| Email + In-App        |
-  | Checker accepts               | Requester        | Email + In-App        |
-  | Checker rejects               | Requester + Maker| Email + In-App        |
-  | Certificate issued            | Requester        | Email + In-App        |
-  | Issuance failed               | Maker + Checker  | Email + In-App        |
-  +-------------------------------+------------------+-----------------------+
-
-
-================================================================================
-  10. ERROR CODES
-================================================================================
-
-  +-------------------+-----+----------------------------------------+
-  | Code              | HTTP| Message                                |
-  +-------------------+-----+----------------------------------------+
-  | PKI_APR_001       | 400 | Request is not in correct status        |
-  | PKI_APR_002       | 403 | Cannot review your own request          |
-  | PKI_APR_003       | 403 | Only Admin can assign requests          |
-  | PKI_APR_004       | 403 | Only assigned Maker can submit review   |
-  | PKI_APR_005       | 403 | The operator who reviewed this request   |
-  |                   |     | cannot accept or reject it. A different  |
-  |                   |     | operator must perform the Checker role.  |
-  |                   |     | (Separation of duties violation)         |
-  | PKI_APR_006       | 403 | Requester cannot be Maker or Checker    |
-  | PKI_APR_007       | 404 | Operator not found                      |
-  | PKI_APR_008       | 400 | Remarks are required for review         |
-  | PKI_APR_009       | 400 | Request not assigned to you             |
-  | PKI_APR_010       | 400 | Return reason is required               |
-  | PKI_APR_011       | 400 | Only RETURNED requests can be reassigned|
-  |                   |     | or rejected by Admin                   |
-  +-------------------+-----+----------------------------------------+
+  +-------------------+-----+--------------------------------------------+
+  | Code              | HTTP| Message                                    |
+  +-------------------+-----+--------------------------------------------+
+  | PKI_APR_001       | 400 | Request is not in correct status            |
+  | PKI_APR_002       | 403 | Cannot process your own request             |
+  | PKI_APR_003       | 403 | Only Admin can perform this action          |
+  | PKI_APR_004       | 403 | Only the assigned operator can do this      |
+  | PKI_APR_005       | 403 | Maker cannot act as Checker (separation     |
+  |                   |     | of duties). A different operator must       |
+  |                   |     | perform the Checker role.                   |
+  | PKI_APR_006       | 403 | Requester cannot be Maker or Checker        |
+  | PKI_APR_007       | 404 | Operator not found                          |
+  | PKI_APR_008       | 400 | Remarks are required                        |
+  | PKI_APR_009       | 409 | Request already picked up by another oper   |
+  | PKI_APR_010       | 400 | Return reason is required                   |
+  | PKI_APR_011       | 400 | Invalid workflow configuration              |
+  | PKI_APR_012       | 400 | DUAL mode required but configured as SINGLE |
+  | PKI_APR_013       | 400 | Operator has reached max pending limit      |
+  +-------------------+-----+--------------------------------------------+
 
 
 ================================================================================
-  11. TESTING PLAN
+  14. TESTING PLAN
 ================================================================================
 
-  TEST-01: Happy Path — Submit → Assign → Review → Accept → Issue
-  -------------------------------------------------------------------
-    1. POST /requests (user: rahul) → 201, status=SUBMITTED
-    2. GET /requests?status=SUBMITTED (user: admin) → sees #101
-    3. GET /operators (user: admin) → list of operators
-    4. POST /requests/101/assign (admin, operatorId=5) → ASSIGNED
-    5. GET /requests/my-assigned (user: priya) → sees #101
-    6. POST /requests/101/review (priya, remarks="OK") → REVIEWED
-    7. GET /requests/pending-check (user: vikram) → sees #101
-    8. POST /requests/101/accept (vikram) → ISSUED
-    9. Audit: CSR_SUBMIT, CSR_ASSIGN, CSR_REVIEW, CSR_ACCEPT, CERT_ISSUE
+  SINGLE MODE TESTS:
 
-  TEST-02: Reject Path
-  -------------------------------------------------------------------
-    1-6. Same as TEST-01 (up to REVIEWED)
-    7. POST /requests/101/reject (vikram, remarks="Bad domain") → REJECTED
-    8. Audit: CSR_REJECT
-    9. Notification sent to requester + Maker
+  TEST-S01: Submit → Pickup → Approve → Issue
+  TEST-S02: Submit → Pickup → Reject → Admin reassigns → Approve
+  TEST-S03: Submit → Pickup → Return → Admin closes
+  TEST-S04: Submit → Admin assigns → Approve → Issue
+  TEST-S05: Requester cannot pickup own request
 
-  TEST-03: Maker Cannot Accept Own Review
-  -------------------------------------------------------------------
-    1-6. Same (Maker = priya)
-    7. POST /requests/101/accept (user: priya) → 403 PKI_APR_005
-    Expected: "Checker cannot be the same as Maker"
+  DUAL MODE TESTS:
 
-  TEST-04: Non-Assigned Operator Cannot Review
-  -------------------------------------------------------------------
-    1-4. Assigned to priya
-    5. POST /requests/101/review (user: vikram) → 403 PKI_APR_009
-    Expected: "Request not assigned to you"
+  TEST-D01: Submit → Maker pickup → Review → Checker pickup → Accept
+  TEST-D02: Submit → Maker pickup → Review → Checker rejects → Admin reassigns
+  TEST-D03: Maker cannot be Checker (403 PKI_APR_005)
+  TEST-D04: Requester cannot be Maker or Checker
+  TEST-D05: Submit → Maker returns → Admin closes
+  TEST-D06: Admin assigns Maker → Review → Different operator checks
 
-  TEST-05: Only Admin Can Assign
-  -------------------------------------------------------------------
-    1. POST /requests/101/assign (user: priya/OPERATOR) → 403 PKI_APR_003
-    Expected: "Only Admin can assign requests"
+  CONFIGURATION TESTS:
 
-  TEST-06: Cannot Skip Assignment
-  -------------------------------------------------------------------
-    1. POST /requests (rahul) → SUBMITTED
-    2. POST /requests/101/review (priya) → 400 PKI_APR_001
-    Expected: "Request is not in correct status" (must be ASSIGNED first)
+  TEST-C01: Switch SINGLE → DUAL (in-progress requests unaffected)
+  TEST-C02: Switch DUAL → SINGLE (REVIEWED requests still need Checker)
+  TEST-C03: Change assignment mode (self-pickup ↔ admin-assign)
+  TEST-C04: Max pending limit enforced per operator
 
-  TEST-07: Requester Cannot Be Maker
-  -------------------------------------------------------------------
-    1. POST /requests (rahul) → SUBMITTED
-    2. POST /assign (admin, operatorId=rahul.id) → 403 PKI_APR_006
-    Expected: "Requester cannot be Maker or Checker"
+  FILTER / MONITORING TESTS:
 
-  TEST-08: Requester Cannot Be Checker
-  -------------------------------------------------------------------
-    1-6. Maker = priya, Requester = rahul
-    7. POST /requests/101/accept (rahul) → 403 PKI_APR_006
-    Expected: "Requester cannot be Maker or Checker"
-
-  TEST-09: Cannot Accept Without Remarks (Review)
-  -------------------------------------------------------------------
-    1-4. Assigned
-    5. POST /requests/101/review (priya, remarks="") → 400 PKI_APR_008
-    Expected: "Remarks are required for review"
-
-  TEST-10: CA Failure
-  -------------------------------------------------------------------
-    1-8. Checker accepts → CA unreachable
-    9. status = FAILED, audit = CERT_ISSUE_FAIL
-    10. Admin can retry: POST /requests/101/retry
-
-
-================================================================================
-  12. COMPLETE FLOW DIAGRAM
-================================================================================
-
-  CLIENT              ADMIN                MAKER              CHECKER        CA
-  ======              =====                =====              =======        ==
-
-  Submit CSR -------> Sees request
-  (SUBMITTED)         in dashboard
-                        |
-                      Selects operator
-                      from dropdown
-                        |
-                      POST /assign ------> Notification:
-                      (ASSIGNED)           "Review CSR #101"
-                                              |
-                                           Reviews CSR
-                                           Writes remarks
-                                              |
-                                           POST /review
-                                           (REVIEWED) ----------> Notification:
-                                                                  "CSR #101 ready
-                                                                   for checking"
-                                                                      |
-                                                                  Reads Maker's
-                                                                  remarks
-                                                                      |
-                                                          +-----------+-----------+
-                                                          |                       |
-                                                       ACCEPT                  REJECT
-                                                          |                       |
-                                                       POST /accept           POST /reject
-                                                       (ACCEPTED)             (REJECTED)
-                                                          |                       |
-                                                       Send to CA             Notify:
-                                                          |                   requester
-                                                          v                   + Maker
-                                                       CA signs
-                                                          |
-                                                       (ISSUED)
-                                                          |
-  Receives cert <---- Cert stored
-  notification        Audit logged
+  TEST-F01: Admin filters by status
+  TEST-F02: Admin filters by operator
+  TEST-F03: Admin filters by date range
+  TEST-F04: Admin filters by subject DN
+  TEST-F05: Transition history shows full trail per record
+  TEST-F06: All operators see all records with current status
 
 
 ================================================================================
