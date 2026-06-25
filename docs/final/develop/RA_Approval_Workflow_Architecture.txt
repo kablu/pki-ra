@@ -9,10 +9,354 @@
 
 
 ================================================================================
-  1. OVERVIEW
+  1. CSR INTAKE — REQUEST RECEPTION & STORAGE
 ================================================================================
 
-  The RA approval workflow is FULLY CONFIGURABLE by Admin:
+  This is the ENTRY POINT of the entire RA system.
+  Before any approval workflow starts, the CSR must be received,
+  validated, stored, and assigned an initial transition status.
+  The approval workflow DEPENDS ON this initial status.
+
+
+  1.1 RA ENDPOINT — CSR SUBMISSION
+  ================================================================
+
+  API:    POST /api/ra/requests
+  Auth:   Any authenticated user or system (via REST / EST / SCEP / CMP)
+
+  The RA exposes a single endpoint that accepts certificate requests
+  in PKCS#10 / CSR encoded format along with additional attributes.
+
+  REQUEST FORMAT:
+
+    Content-Type: application/json
+
+    {
+      "pkcs10": "-----BEGIN CERTIFICATE REQUEST-----\n
+                 MIICYDCCAUgCAQAwGzEZMBcGA1UEAxMQ...\n
+                 -----END CERTIFICATE REQUEST-----",
+
+      "clientTxnId": "TXN-2026-06-25-00042",
+
+      "csrProfile": "TLS_SERVER",
+
+      "requestorName": "Rahul Sharma",
+      "requestorEmail": "rahul.sharma@acme.com",
+      "requestorDepartment": "Engineering",
+      "requestorPhone": "+91-9876543210",
+
+      "validityDays": 365,
+      "subjectAltNames": "dns:api.acme.com,dns:api2.acme.com",
+      "purpose": "Production API server TLS certificate",
+      "priority": "NORMAL",
+
+      "additionalAttributes": {
+        "projectCode": "PRJ-2026-BILLING",
+        "costCenter": "CC-421",
+        "environment": "PRODUCTION",
+        "serverHostname": "api-prod-03.acme.internal"
+      }
+    }
+
+  FIELD DEFINITIONS:
+
+  +----------------------------+----------+------+----------------------------+
+  | Field                      | Type     | Reqd | Description                |
+  +----------------------------+----------+------+----------------------------+
+  | pkcs10                     | String   | YES  | PKCS#10 CSR in PEM or     |
+  |                            |          |      | Base64-DER encoded format |
+  |                            |          |      | (auto-detected by RA)     |
+  +----------------------------+----------+------+----------------------------+
+  | clientTxnId                | String   | YES  | Transaction ID from       |
+  |                            |          |      | client's system. Unique   |
+  |                            |          |      | per client. Used for      |
+  |                            |          |      | cross-referencing between |
+  |                            |          |      | client and RA systems.    |
+  +----------------------------+----------+------+----------------------------+
+  | csrProfile                 | String   | YES  | Certificate profile/type: |
+  |                            |          |      | TLS_SERVER, TLS_CLIENT,   |
+  |                            |          |      | CODE_SIGNING, SMIME,      |
+  |                            |          |      | DOCUMENT_SIGNING          |
+  |                            |          |      | Maps to certificate_      |
+  |                            |          |      | templates table           |
+  +----------------------------+----------+------+----------------------------+
+  | requestorName              | String   | YES  | Full name of person or    |
+  |                            |          |      | system requesting cert    |
+  +----------------------------+----------+------+----------------------------+
+  | requestorEmail             | String   | YES  | Contact email for         |
+  |                            |          |      | notifications             |
+  +----------------------------+----------+------+----------------------------+
+  | requestorDepartment        | String   | NO   | Department / business unit|
+  +----------------------------+----------+------+----------------------------+
+  | requestorPhone             | String   | NO   | Contact phone             |
+  +----------------------------+----------+------+----------------------------+
+  | validityDays               | Integer  | NO   | Requested validity period |
+  |                            |          |      | NULL = use profile default|
+  +----------------------------+----------+------+----------------------------+
+  | subjectAltNames            | String   | NO   | Comma-separated SANs      |
+  |                            |          |      | (dns:, email:, ip:)       |
+  +----------------------------+----------+------+----------------------------+
+  | purpose                    | String   | NO   | Why this cert is needed   |
+  +----------------------------+----------+------+----------------------------+
+  | priority                   | String   | NO   | NORMAL (default), HIGH,   |
+  |                            |          |      | URGENT                    |
+  +----------------------------+----------+------+----------------------------+
+  | additionalAttributes       | JSON     | NO   | Key-value pairs for org-  |
+  |                            |          |      | specific metadata         |
+  |                            |          |      | (project, cost center...) |
+  +----------------------------+----------+------+----------------------------+
+
+
+  1.2 DATABASE TABLE — csr_requests
+  ================================================================
+
+  This is the PRIMARY table where all incoming CSR requests are stored.
+  Every record gets a UNIQUE REQUEST ID (system-generated) and stores
+  the CLIENT TXN ID for cross-referencing.
+
+  The approval workflow starts based on the INITIAL TRANSITION STATUS
+  of records in this table.
+
+  +----------------------------+---------------+------+------------------------+
+  | Column                     | Type          | Null | Description            |
+  +----------------------------+---------------+------+------------------------+
+  |                            |               |      |                        |
+  | --- PRIMARY KEY ---        |               |      |                        |
+  | id                         | BIGINT        | NO   | Auto-increment PK      |
+  |                            |               |      |                        |
+  | --- UNIQUE IDENTIFIERS --- |               |      |                        |
+  | request_id                 | VARCHAR(50)   | NO   | System-generated unique|
+  |                            |               |      | ID: RA-REQ-2026-000042 |
+  |                            |               |      | Format: RA-REQ-{YYYY}- |
+  |                            |               |      | {6-digit-sequence}     |
+  |                            |               |      | UNIQUE constraint      |
+  | client_txn_id              | VARCHAR(100)  | NO   | Transaction ID from    |
+  |                            |               |      | client's system        |
+  |                            |               |      | UNIQUE constraint      |
+  |                            |               |      |                        |
+  | --- CSR DATA ---           |               |      |                        |
+  | csr_pem                    | TEXT          | NO   | Raw PKCS#10 CSR in PEM |
+  | subject_dn                 | VARCHAR(500)  | NO   | Parsed from CSR:       |
+  |                            |               |      | CN=api.acme.com,O=...  |
+  | key_algorithm              | VARCHAR(20)   | NO   | RSA, ECDSA, Ed25519    |
+  | key_size                   | INT           | NO   | 2048, 4096, 256, 384   |
+  | signature_algorithm        | VARCHAR(50)   | NO   | SHA256withRSA, etc.    |
+  | subject_alt_names          | VARCHAR(2000) | YES  | Parsed SANs from CSR   |
+  | csr_hash                   | VARCHAR(64)   | NO   | SHA-256 of CSR bytes   |
+  |                            |               |      | (duplicate detection)  |
+  |                            |               |      |                        |
+  | --- PROFILE ---            |               |      |                        |
+  | csr_profile                | VARCHAR(50)   | NO   | TLS_SERVER, TLS_CLIENT |
+  |                            |               |      | CODE_SIGNING, SMIME    |
+  | template_id                | BIGINT FK     | YES  | → certificate_templates|
+  |                            |               |      | Resolved from profile  |
+  |                            |               |      |                        |
+  | --- REQUESTOR INFO ---     |               |      |                        |
+  | requestor_name             | VARCHAR(200)  | NO   | Who requested          |
+  | requestor_email            | VARCHAR(200)  | NO   | Contact email          |
+  | requestor_department       | VARCHAR(200)  | YES  | Department             |
+  | requestor_phone            | VARCHAR(50)   | YES  | Contact phone          |
+  | requestor_user_id          | BIGINT FK     | YES  | → users.id (if auth'd)|
+  |                            |               |      |                        |
+  | --- REQUEST DETAILS ---    |               |      |                        |
+  | requested_validity_days    | INT           | YES  | NULL = profile default |
+  | purpose                    | VARCHAR(1000) | YES  | Why cert is needed     |
+  | priority                   | VARCHAR(10)   | NO   | NORMAL / HIGH / URGENT |
+  | additional_attributes      | JSON          | YES  | Org-specific key-value |
+  |                            |               |      | pairs (project, cost   |
+  |                            |               |      | center, environment)   |
+  |                            |               |      |                        |
+  | --- TRANSITION STATUS ---  |               |      |                        |
+  | status                     | VARCHAR(20)   | NO   | Current status:        |
+  |                            |               |      | RECEIVED, VALIDATED,   |
+  |                            |               |      | VALIDATION_FAILED,     |
+  |                            |               |      | SUBMITTED              |
+  |                            |               |      | (→ then approval       |
+  |                            |               |      |  workflow statuses)    |
+  | status_reason              | VARCHAR(1000) | YES  | Reason for current     |
+  |                            |               |      | status (esp. failure)  |
+  |                            |               |      |                        |
+  | --- VALIDATION RESULT ---  |               |      |                        |
+  | validation_passed          | BOOLEAN       | YES  | 7-layer result         |
+  | validation_warnings        | JSON          | YES  | Warnings from valid.   |
+  | validation_flags           | JSON          | YES  | Flags needing review   |
+  |                            |               |      |                        |
+  | --- APPROVAL TRACKING ---  |               |      |                        |
+  | assigned_to_id             | BIGINT FK     | YES  | → users.id (Maker)    |
+  | assigned_at                | DATETIME(6)   | YES  | When assigned/picked   |
+  | maker_remarks              | VARCHAR(2000) | YES  | Maker's review notes   |
+  | maker_reviewed_at          | DATETIME(6)   | YES  | When Maker reviewed    |
+  | checker_id                 | BIGINT FK     | YES  | → users.id (Checker)  |
+  | checker_decision           | VARCHAR(20)   | YES  | APPROVED / REJECTED    |
+  | checker_remarks            | VARCHAR(2000) | YES  | Checker's decision     |
+  | checker_decided_at         | DATETIME(6)   | YES  | When Checker decided   |
+  | closed_at                  | DATETIME(6)   | YES  | When Admin closed      |
+  | closed_by_id               | BIGINT FK     | YES  | → users.id (Admin)     |
+  | closed_reason              | VARCHAR(2000) | YES  | Why Admin closed       |
+  |                            |               |      |                        |
+  | --- CERTIFICATE LINK ---   |               |      |                        |
+  | certificate_id             | BIGINT FK     | YES  | → certificates.id      |
+  |                            |               |      | (after issuance)       |
+  |                            |               |      |                        |
+  | --- AUDIT ---              |               |      |                        |
+  | created_at                 | DATETIME(6)   | NO   | Request received time  |
+  | created_by                 | VARCHAR(100)  | NO   | Who/what submitted     |
+  | updated_at                 | DATETIME(6)   | NO   | Last update time       |
+  | updated_by                 | VARCHAR(100)  | NO   | Who last updated       |
+  +----------------------------+---------------+------+------------------------+
+
+  INDEXES:
+    uq_request_id         UNIQUE (request_id)
+    uq_client_txn_id      UNIQUE (client_txn_id)
+    idx_csr_status         (status)
+    idx_csr_profile        (csr_profile)
+    idx_csr_priority       (priority)
+    idx_csr_subject        (subject_dn(255))
+    idx_csr_hash           (csr_hash)
+    idx_csr_requestor      (requestor_email)
+    idx_csr_created        (created_at)
+    idx_csr_assigned       (assigned_to_id)
+
+
+  1.3 INITIAL TRANSITION STATUSES (before approval workflow)
+  ================================================================
+
+  When a CSR request arrives, it goes through these statuses
+  BEFORE the approval workflow even starts:
+
+    Client sends CSR
+         |
+         v
+    [RECEIVED]  ← request saved to DB, raw CSR stored
+         |
+         v
+    7-Layer Validation runs
+         |
+         +----------+----------+
+         |                     |
+         v                     v
+    [VALIDATED]           [VALIDATION_FAILED]
+    All 7 layers passed   One or more layers failed
+         |                     |
+         v                     v
+    [SUBMITTED]           Request saved with
+    Ready for approval    failure reason.
+    workflow to start     Admin/operator can see
+         |                why it failed.
+         v
+    Approval workflow
+    begins here
+    (SUBMITTED → IN_REVIEW → ...)
+
+
+  STATUS DEFINITIONS (pre-approval):
+
+  +-----------------------+-----------------------------------------------+
+  | Status                | Description                                   |
+  +-----------------------+-----------------------------------------------+
+  | RECEIVED              | CSR received by RA endpoint. Raw request      |
+  |                       | saved to csr_requests table. Validation       |
+  |                       | has NOT started yet.                          |
+  +-----------------------+-----------------------------------------------+
+  | VALIDATED             | 7-layer validation PASSED. CSR is technically |
+  |                       | correct, cryptographically valid, and         |
+  |                       | policy-compliant. Transitions immediately     |
+  |                       | to SUBMITTED.                                 |
+  +-----------------------+-----------------------------------------------+
+  | VALIDATION_FAILED     | 7-layer validation FAILED. CSR has issues     |
+  |                       | (weak key, invalid DN, policy violation,      |
+  |                       | duplicate, etc.). Stored with failure reason.  |
+  |                       | Does NOT enter approval workflow.              |
+  |                       | Client must fix and resubmit new CSR.          |
+  +-----------------------+-----------------------------------------------+
+  | SUBMITTED             | Validation passed. Request is now in the       |
+  |                       | approval pool. This is where the approval      |
+  |                       | workflow BEGINS. Operators can pick up.        |
+  |                       | Admin can assign. Status visible to everyone.  |
+  +-----------------------+-----------------------------------------------+
+
+  IMPORTANT:
+    The approval workflow (Maker-Checker process) only operates on
+    requests that have reached SUBMITTED status. Requests stuck in
+    RECEIVED or VALIDATION_FAILED never enter the approval pipeline.
+
+
+  1.4 COMPLETE STATUS FLOW (intake + approval combined)
+  ================================================================
+
+    [RECEIVED] → [VALIDATED] → [SUBMITTED] → [IN_REVIEW] → ...
+                       |
+                       v
+              [VALIDATION_FAILED]
+              (dead end — resubmit)
+
+    Full chain:
+      RECEIVED → VALIDATED → SUBMITTED → IN_REVIEW →
+        SINGLE: → APPROVED → ISSUED
+                → REJECTED → (Admin: reassign or close)
+                → RETURNED → (Admin: reassign or close)
+        DUAL:   → REVIEWED → APPROVED → ISSUED
+                            → REJECTED → (Admin: reassign or close)
+                → RETURNED → (Admin: reassign or close)
+
+
+  1.5 API RESPONSE — after CSR submission
+  ================================================================
+
+    Response: 201 Created
+    {
+      "requestId": "RA-REQ-2026-000042",
+      "clientTxnId": "TXN-2026-06-25-00042",
+      "status": "RECEIVED",
+      "subjectDn": "CN=api.acme.com,O=Acme Corp,C=IN",
+      "csrProfile": "TLS_SERVER",
+      "keyAlgorithm": "RSA",
+      "keySize": 4096,
+      "priority": "NORMAL",
+      "message": "CSR received. Validation in progress.",
+      "createdAt": "2026-06-25T10:00:00Z"
+    }
+
+    After validation completes (async or sync):
+
+    Status update webhook/poll:
+    {
+      "requestId": "RA-REQ-2026-000042",
+      "clientTxnId": "TXN-2026-06-25-00042",
+      "status": "SUBMITTED",
+      "message": "Validation passed. Request queued for approval.",
+      "validationResult": {
+        "passed": true,
+        "warnings": [],
+        "flags": []
+      }
+    }
+
+    OR if validation fails:
+    {
+      "requestId": "RA-REQ-2026-000042",
+      "clientTxnId": "TXN-2026-06-25-00042",
+      "status": "VALIDATION_FAILED",
+      "message": "CSR validation failed.",
+      "validationResult": {
+        "passed": false,
+        "errors": [
+          {"layer": "L5", "code": "PKI_CRYPTO_002",
+           "message": "Key size too small: RSA-1024, minimum 2048"}
+        ]
+      }
+    }
+
+    Client can track status using either ID:
+      GET /api/ra/requests/by-request-id/RA-REQ-2026-000042
+      GET /api/ra/requests/by-txn-id/TXN-2026-06-25-00042
+
+
+================================================================================
+  2. APPROVAL WORKFLOW — OVERVIEW (starts from SUBMITTED status)
+================================================================================
+
+  The approval workflow is FULLY CONFIGURABLE by Admin:
 
   MODE 1 — SINGLE OPERATOR (Maker only):
     Admin configures: approval_mode = SINGLE
