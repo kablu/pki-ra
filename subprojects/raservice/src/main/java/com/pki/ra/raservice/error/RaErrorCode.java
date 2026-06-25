@@ -61,6 +61,21 @@ public enum RaErrorCode implements ErrorCodeKey {
     CA_UNREACHABLE       ("PKI_NET_001"),
     LDAP_UNREACHABLE     ("PKI_NET_002"),
 
+    // ── Approval Workflow ──────────────────────────────────────────────────
+    APR_INVALID_STATUS         ("PKI_APR_001"),
+    APR_SELF_PROCESS           ("PKI_APR_002"),
+    APR_ADMIN_ONLY             ("PKI_APR_003"),
+    APR_NOT_ASSIGNED           ("PKI_APR_004"),
+    APR_MAKER_IS_CHECKER       ("PKI_APR_005"),
+    APR_REQUESTOR_IS_OPERATOR  ("PKI_APR_006"),
+    APR_OPERATOR_NOT_FOUND     ("PKI_APR_007"),
+    APR_REMARKS_REQUIRED       ("PKI_APR_008"),
+    APR_ALREADY_PICKED_UP      ("PKI_APR_009"),
+    APR_RETURN_REASON_REQUIRED ("PKI_APR_010"),
+    APR_INVALID_CONFIG         ("PKI_APR_011"),
+    APR_MODE_BLOCKED           ("PKI_APR_012"),
+    APR_MAX_PENDING_REACHED    ("PKI_APR_013"),
+
     // ── System ───────────────────────────────────────────────────────────────
     SYSTEM_ERROR         ("PKI_SYS_001"),
     SERVICE_UNAVAILABLE  ("PKI_SYS_002");
