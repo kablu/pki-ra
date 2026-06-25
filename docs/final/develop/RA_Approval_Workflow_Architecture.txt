@@ -1,0 +1,601 @@
+
+================================================================================
+     RA APPROVAL WORKFLOW — CONFIGURABLE MAKER-CHECKER MODEL
+     Project  : pki-ra (Enterprise Registration Authority)
+     Module   : raservice
+     Date     : 2026-06-25
+     Model    : Configurable Maker-Checker (1 or 2 operators)
+================================================================================
+
+
+================================================================================
+  1. OVERVIEW
+================================================================================
+
+  The RA approval workflow is FULLY CONFIGURABLE by Admin:
+
+  MODE 1 — SINGLE OPERATOR (Maker only):
+    Admin configures: approval_mode = SINGLE
+    One operator reviews, verifies, and approves/rejects the CSR.
+    No second operator (Checker) needed.
+
+  MODE 2 — DUAL OPERATOR (Maker + Checker):
+    Admin configures: approval_mode = DUAL
+    Maker reviews and submits remarks.
+    Checker (different operator) accepts or rejects.
+    Separation of duties enforced — Maker cannot be Checker.
+
+  KEY DESIGN PRINCIPLES:
+    - Admin CONFIGURES the process (how many operators needed)
+    - Admin MONITORS all records and their status
+    - Operators work INDEPENDENTLY (pick up CSR requests themselves)
+    - Admin CAN optionally assign a specific request to a specific operator
+    - All records visible to Admin AND all operators (with status)
+    - Every record maintains full TRANSITION STATUS history
+    - Admin can FILTER any record by any criteria at any time
+    - Configuration is changeable at any time via Admin dashboard
+
+
+================================================================================
+  2. ADMIN CONFIGURATION MATRIX
+================================================================================
+
+  Admin configures the approval process from the dashboard.
+  Configuration stored in app_config table (hot-reloadable).
+
+  +====================================================================+
+  |                ADMIN CONFIGURATION DASHBOARD                       |
+  +====================================================================+
+  |                                                                    |
+  |  APPROVAL MODE:                                                   |
+  |  +------------------------------------------------------------+   |
+  |  |  ( ) SINGLE OPERATOR — one operator verifies + approves    |   |
+  |  |  (•) DUAL OPERATOR   — Maker reviews, Checker approves    |   |
+  |  +------------------------------------------------------------+   |
+  |                                                                    |
+  |  ASSIGNMENT MODE:                                                 |
+  |  +------------------------------------------------------------+   |
+  |  |  (•) SELF-PICKUP — operators pick requests from pool       |   |
+  |  |  ( ) ADMIN-ASSIGN — Admin assigns each request manually    |   |
+  |  |  ( ) HYBRID — operators can self-pickup, Admin can also    |   |
+  |  |               assign specific requests to specific operators|   |
+  |  +------------------------------------------------------------+   |
+  |                                                                    |
+  |  AUTO-ASSIGNMENT (optional, for SELF-PICKUP mode):                |
+  |  +------------------------------------------------------------+   |
+  |  |  [ ] Round-robin among active operators                    |   |
+  |  |  [ ] Least-loaded operator first                           |   |
+  |  |  [x] Manual pickup (no auto-assignment)                    |   |
+  |  +------------------------------------------------------------+   |
+  |                                                                    |
+  +====================================================================+
+
+  CONFIGURATION TABLE (app_config):
+
+  +----------------------------+------------------+------------------------+
+  | config_key                 | config_type      | Example value          |
+  +----------------------------+------------------+------------------------+
+  | approval_mode              | CSR_WORKFLOW     | SINGLE or DUAL         |
+  | assignment_mode            | CSR_WORKFLOW     | SELF_PICKUP or         |
+  |                            |                  | ADMIN_ASSIGN or HYBRID |
+  | auto_assignment_strategy   | CSR_WORKFLOW     | NONE or ROUND_ROBIN    |
+  |                            |                  | or LEAST_LOADED        |
+  | max_pending_per_operator   | CSR_WORKFLOW     | 10                     |
+  | maker_can_return_to_admin  | CSR_WORKFLOW     | true                   |
+  | require_remarks            | CSR_WORKFLOW     | true                   |
+  +----------------------------+------------------+------------------------+
+
+  API to update configuration:
+    PUT /api/ra/admin/config/workflow
+    Auth: ROLE_ADMIN only
+    Body: {
+      "approvalMode": "DUAL",
+      "assignmentMode": "HYBRID",
+      "autoAssignmentStrategy": "NONE",
+      "maxPendingPerOperator": 10,
+      "makerCanReturnToAdmin": true,
+      "requireRemarks": true
+    }
+
+  API to read current configuration:
+    GET /api/ra/admin/config/workflow
+    Auth: ROLE_ADMIN only
+
+
+================================================================================
+  3. ACTORS & ROLES
+================================================================================
+
+  +------------------+--------------------------------------------------+
+  | Role             | Responsibilities                                 |
+  +------------------+--------------------------------------------------+
+  | CLIENT / USER    | Submits CSR                                      |
+  |                  | Downloads issued certificate                     |
+  +------------------+--------------------------------------------------+
+  | ROLE_ADMIN       | Configures approval mode (SINGLE/DUAL)           |
+  |                  | Configures assignment mode                       |
+  |                  | Monitors ALL records with status                 |
+  |                  | Can optionally assign request to operator         |
+  |                  | Can close requests permanently                   |
+  |                  | Can filter/search any record                     |
+  +------------------+--------------------------------------------------+
+  | ROLE_OPERATOR    | In SINGLE mode: reviews + approves/rejects       |
+  |                  | In DUAL mode:                                    |
+  |                  |   As Maker: reviews + submits remarks             |
+  |                  |   As Checker: accepts or rejects                  |
+  |                  | Can self-pickup requests from pool               |
+  |                  | Views all requests and their status              |
+  +------------------+--------------------------------------------------+
+  | ROLE_AUDITOR     | Read-only access to all requests + audit logs    |
+  +------------------+--------------------------------------------------+
+
+
+================================================================================
+  4. STATE MACHINE
+================================================================================
+
+  MODE 1 — SINGLE OPERATOR:
+
+    [SUBMITTED] → Operator picks up (or Admin assigns)
+         |
+         v
+    [IN_REVIEW] → Operator reviewing
+         |
+         +----------+----------+----------+
+         |                     |          |
+         v                     v          v
+    [APPROVED]            [REJECTED]  [RETURNED]
+         |                     |          |
+         v                     v          v
+    Send to CA           Admin sees   Admin sees
+         |               (reassign    (reassign
+         +--------+       or close)    or close)
+         |        |
+         v        v
+    [ISSUED]  [FAILED]
+
+
+  MODE 2 — DUAL OPERATOR (Maker + Checker):
+
+    [SUBMITTED] → Maker picks up (or Admin assigns)
+         |
+         v
+    [IN_REVIEW] → Maker reviewing
+         |
+         +----------------+--------------------+
+         |                                     |
+         v                                     v
+    [REVIEWED]                            [RETURNED]
+    Maker submitted remarks               Maker sent back to Admin
+         |                                     |
+         v                                     v
+    Checker picks up                      Admin (reassign or close)
+         |
+         +----------+----------+
+         |                     |
+         v                     v
+    [APPROVED]            [REJECTED]
+         |                     |
+         v                     v
+    Send to CA            Admin sees
+         |                (reassign or close)
+         +--------+
+         |        |
+         v        v
+    [ISSUED]  [FAILED]
+
+
+  STATE DEFINITIONS:
+
+  +-----------------+---------------------------------------------------+
+  | State           | Description                                       |
+  +-----------------+---------------------------------------------------+
+  | SUBMITTED       | CSR received, validation passed.                  |
+  |                 | Visible to all operators and Admin.               |
+  |                 | Available for pickup or assignment.                |
+  +-----------------+---------------------------------------------------+
+  | IN_REVIEW       | An operator has picked up / been assigned this     |
+  |                 | request and is currently reviewing it.             |
+  |                 | In SINGLE mode: this operator will approve/reject.|
+  |                 | In DUAL mode: this is the Maker.                  |
+  +-----------------+---------------------------------------------------+
+  | REVIEWED        | DUAL mode only. Maker submitted review with        |
+  |                 | remarks. Waiting for Checker to pick up.          |
+  +-----------------+---------------------------------------------------+
+  | RETURNED        | Maker/Operator sent request back to Admin.         |
+  |                 | Admin can reassign or close permanently.           |
+  +-----------------+---------------------------------------------------+
+  | APPROVED        | Approved (by single operator or Checker).           |
+  |                 | Sending to CA for signing.                         |
+  +-----------------+---------------------------------------------------+
+  | REJECTED        | Rejected (by single operator or Checker).           |
+  |                 | Goes back to Admin for reassign or close.          |
+  +-----------------+---------------------------------------------------+
+  | CLOSED          | Permanently closed by Admin. True final state.     |
+  +-----------------+---------------------------------------------------+
+  | ISSUED          | CA signed successfully. Certificate active.        |
+  +-----------------+---------------------------------------------------+
+  | FAILED          | CA signing failed. Admin can retry.                |
+  +-----------------+---------------------------------------------------+
+
+  VALID TRANSITIONS:
+
+  +-------------------+---> +-------------------+--- Who / When --------+
+  | From              |     | To                |                        |
+  +-------------------+     +-------------------+------------------------+
+  | SUBMITTED         | --> | IN_REVIEW         | Operator picks up      |
+  |                   |     |                   | or Admin assigns       |
+  | IN_REVIEW         | --> | APPROVED          | SINGLE mode: operator  |
+  |                   |     |                   | approves directly      |
+  | IN_REVIEW         | --> | REJECTED          | SINGLE mode: operator  |
+  |                   |     |                   | rejects directly       |
+  | IN_REVIEW         | --> | REVIEWED          | DUAL mode: Maker       |
+  |                   |     |                   | submits remarks        |
+  | IN_REVIEW         | --> | RETURNED          | Operator returns to    |
+  |                   |     |                   | Admin (any mode)       |
+  | REVIEWED          | --> | APPROVED          | DUAL: Checker accepts  |
+  | REVIEWED          | --> | REJECTED          | DUAL: Checker rejects  |
+  | RETURNED          | --> | IN_REVIEW         | Admin reassigns        |
+  | RETURNED          | --> | CLOSED            | Admin closes           |
+  | REJECTED          | --> | IN_REVIEW         | Admin reassigns        |
+  | REJECTED          | --> | CLOSED            | Admin closes           |
+  | APPROVED          | --> | ISSUED            | CA signs OK            |
+  | APPROVED          | --> | FAILED            | CA error               |
+  | FAILED            | --> | APPROVED          | Admin retries          |
+  +-------------------+     +-------------------+------------------------+
+
+
+================================================================================
+  5. FLOW — SINGLE OPERATOR MODE
+================================================================================
+
+  Step 1: Client submits CSR
+    API: POST /api/ra/requests
+    → status = SUBMITTED
+    → visible to ALL operators + Admin
+
+  Step 2: Operator picks up request (SELF-PICKUP)
+    API: POST /api/ra/requests/{id}/pickup
+    Auth: ROLE_OPERATOR
+    → status = IN_REVIEW
+    → picked_up_by = current operator
+    → Other operators see: "In review by priya.patel"
+
+    OR Admin assigns (ADMIN-ASSIGN / HYBRID):
+    API: POST /api/ra/requests/{id}/assign
+    Auth: ROLE_ADMIN
+    Body: { "operatorId": 5 }
+    → status = IN_REVIEW, assigned_to_id = 5
+
+  Step 3: Operator reviews and decides
+    API: POST /api/ra/requests/{id}/approve
+    Body: { "remarks": "CSR verified. All checks passed." }
+    → status = APPROVED → auto-issue via CA
+
+    OR
+    API: POST /api/ra/requests/{id}/reject
+    Body: { "remarks": "Domain not in approved list." }
+    → status = REJECTED → goes to Admin dashboard
+
+    OR
+    API: POST /api/ra/requests/{id}/return
+    Body: { "reason": "Key size too small, need clarification." }
+    → status = RETURNED → goes to Admin dashboard
+
+
+================================================================================
+  6. FLOW — DUAL OPERATOR MODE (Maker + Checker)
+================================================================================
+
+  Step 1: Client submits CSR
+    → status = SUBMITTED
+
+  Step 2: Maker picks up or Admin assigns
+    API: POST /api/ra/requests/{id}/pickup (or /assign)
+    → status = IN_REVIEW (Maker = current operator)
+
+  Step 3: Maker reviews and submits remarks
+    API: POST /api/ra/requests/{id}/review
+    Body: { "remarks": "CSR verified. Recommend approval." }
+    → status = REVIEWED
+    → Visible to all operators EXCEPT Maker (for Checker pickup)
+
+    OR Maker returns:
+    API: POST /api/ra/requests/{id}/return
+    → status = RETURNED → Admin dashboard
+
+  Step 4: Checker picks up reviewed request
+    API: POST /api/ra/requests/{id}/pickup-check
+    Auth: ROLE_OPERATOR (must NOT be the Maker)
+    → Checker sees Maker's remarks
+
+  Step 5: Checker decides
+    API: POST /api/ra/requests/{id}/accept
+    Body: { "remarks": "Agreed with Maker." }
+    → status = APPROVED → auto-issue
+
+    OR
+    API: POST /api/ra/requests/{id}/reject
+    Body: { "remarks": "Domain issue found." }
+    → status = REJECTED → Admin dashboard
+
+  SEPARATION OF DUTIES (DUAL mode):
+    The RA Operator who acts as Maker is STRICTLY PROHIBITED
+    from acting as Checker for the same request. This is enforced
+    at the API level. Violation returns 403 PKI_APR_005.
+
+
+================================================================================
+  7. RECORD VISIBILITY — WHO SEES WHAT
+================================================================================
+
+  +-------------------+------------------------------------------+
+  | Role              | What They See                            |
+  +-------------------+------------------------------------------+
+  | ADMIN             | ALL records, ALL statuses                |
+  |                   | Full transition history per record       |
+  |                   | Who picked up, who reviewed, who decided |
+  |                   | Filter by: status, operator, date, DN    |
+  |                   | Configuration dashboard                  |
+  +-------------------+------------------------------------------+
+  | OPERATOR          | ALL records with current status           |
+  |                   | SUBMITTED: available for pickup           |
+  |                   | IN_REVIEW: who is reviewing it            |
+  |                   | REVIEWED: available for Checker pickup    |
+  |                   |   (only if not the Maker)                |
+  |                   | Own assigned/picked-up requests           |
+  +-------------------+------------------------------------------+
+  | AUDITOR           | ALL records (read-only) + audit logs      |
+  +-------------------+------------------------------------------+
+
+
+================================================================================
+  8. TRANSITION STATUS HISTORY (per record)
+================================================================================
+
+  Every status change creates a history entry.
+  Admin and Auditor can see the full trail.
+
+  Table: certificate_request_transitions
+
+  +----------------------------+---------------+-----+-----------------------+
+  | Column                     | Type          | Null| Purpose               |
+  +----------------------------+---------------+-----+-----------------------+
+  | id                         | BIGINT PK     | NO  | Auto-increment        |
+  | request_id                 | BIGINT FK     | NO  | → certificate_requests|
+  | from_status                | VARCHAR(20)   | YES | Previous status       |
+  |                            |               |     | (NULL for first entry)|
+  | to_status                  | VARCHAR(20)   | NO  | New status            |
+  | changed_by_id              | BIGINT FK     | NO  | → users.id            |
+  | changed_by_role            | VARCHAR(20)   | NO  | ADMIN / OPERATOR /    |
+  |                            |               |     | SYSTEM                |
+  | remarks                    | VARCHAR(2000) | YES | Remarks / reason      |
+  | created_at                 | DATETIME(6)   | NO  | When transition       |
+  |                            |               |     | occurred              |
+  +----------------------------+---------------+-----+-----------------------+
+
+  Example history for one record:
+
+  +----+--------+-----------+-----------+-------------+--------------------+
+  | #  | From   | To        | By        | Role        | Remarks            |
+  +----+--------+-----------+-----------+-------------+--------------------+
+  | 1  | NULL   | SUBMITTED | rahul     | USER        | CSR submitted      |
+  | 2  | SUBMIT | IN_REVIEW | priya     | OPERATOR    | Picked up          |
+  | 3  | IN_REV | REVIEWED  | priya     | OPERATOR    | CSR verified. OK.  |
+  | 4  | REVIEW | APPROVED  | vikram    | OPERATOR    | Agreed. Approved.  |
+  | 5  | APPROV | ISSUED    | system    | SYSTEM      | Cert: 4F2A1B3C...  |
+  +----+--------+-----------+-----------+-------------+--------------------+
+
+  API to view transition history:
+    GET /api/ra/requests/{id}/history
+    Auth: ROLE_ADMIN or ROLE_AUDITOR
+
+
+================================================================================
+  9. REST API ENDPOINTS
+================================================================================
+
+  +--------+---------------------------------------+-----------------------+--------+
+  | Method | Path                                  | Purpose               | Auth   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === CONFIGURATION ===                  |                       |        |
+  | GET    | /api/ra/admin/config/workflow          | Get current config    | ADMIN  |
+  | PUT    | /api/ra/admin/config/workflow          | Update config         | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === CSR SUBMISSION ===                 |                       |        |
+  | POST   | /api/ra/requests                      | Submit CSR            | Any    |
+  | GET    | /api/ra/requests/{id}                 | Get request details   | Any    |
+  | GET    | /api/ra/requests/{id}/history          | Transition history    | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === ADMIN DASHBOARD ===                |                       |        |
+  | GET    | /api/ra/requests/summary              | Status-wise counts    | ADMIN  |
+  | GET    | /api/ra/requests?status={s}            | Filter by status      | ADMIN  |
+  | GET    | /api/ra/requests?operator={id}         | Filter by operator    | ADMIN  |
+  | GET    | /api/ra/requests?from={date}&to={date} | Filter by date range  | ADMIN  |
+  | GET    | /api/ra/requests?subjectDn={dn}        | Filter by subject DN  | ADMIN  |
+  | GET    | /api/ra/operators                     | List operators        | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === ADMIN ACTIONS ===                  |                       |        |
+  | POST   | /api/ra/requests/{id}/assign          | Assign to operator    | ADMIN  |
+  | POST   | /api/ra/requests/{id}/close           | Close permanently     | ADMIN  |
+  | POST   | /api/ra/requests/{id}/retry           | Retry failed CA call  | ADMIN  |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === OPERATOR — COMMON ===              |                       |        |
+  | GET    | /api/ra/requests/pool                 | Available for pickup  | OPER   |
+  | GET    | /api/ra/requests/my-work              | My picked-up requests | OPER   |
+  | POST   | /api/ra/requests/{id}/pickup          | Pick up from pool     | OPER   |
+  | POST   | /api/ra/requests/{id}/return          | Return to Admin       | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === SINGLE MODE — OPERATOR ===         |                       |        |
+  | POST   | /api/ra/requests/{id}/approve         | Approve directly      | OPER   |
+  | POST   | /api/ra/requests/{id}/reject          | Reject directly       | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === DUAL MODE — MAKER ===              |                       |        |
+  | POST   | /api/ra/requests/{id}/review          | Submit remarks        | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === DUAL MODE — CHECKER ===            |                       |        |
+  | GET    | /api/ra/requests/pending-check        | Reviewed, not by me   | OPER   |
+  | POST   | /api/ra/requests/{id}/pickup-check    | Pick up as Checker    | OPER   |
+  | POST   | /api/ra/requests/{id}/accept          | Accept                | OPER   |
+  | POST   | /api/ra/requests/{id}/reject          | Reject                | OPER   |
+  +--------+---------------------------------------+-----------------------+--------+
+  |        | === CERTIFICATE ===                    |                       |        |
+  | GET    | /api/ra/certificates/{serial}         | Get cert details      | Any    |
+  | GET    | /api/ra/certificates/{serial}/download| Download PEM          | Any    |
+  +--------+---------------------------------------+-----------------------+--------+
+
+
+================================================================================
+  10. ADMIN DASHBOARD — MONITORING VIEW
+================================================================================
+
+  +====================================================================+
+  |                    CSR REQUEST DASHBOARD                            |
+  +====================================================================+
+  |  Config: DUAL mode | HYBRID assignment | Remarks: required         |
+  +====================================================================+
+  |                                                                    |
+  |  [POOL]          [IN PROGRESS]    [COMPLETED]     [ISSUES]        |
+  |  SUBMITTED: 5    IN_REVIEW: 3    ISSUED: 28      REJECTED: 4     |
+  |                  REVIEWED: 2     CLOSED: 3       RETURNED: 2     |
+  |                  APPROVED: 1                     FAILED: 0       |
+  +====================================================================+
+  |                                                                    |
+  |  FILTERS:                                                         |
+  |  [Status ▼] [Operator ▼] [Date From] [Date To] [Subject DN]     |
+  |  [Search]                                                         |
+  |                                                                    |
+  +====================================================================+
+  |                                                                    |
+  |  Recent Activity:                                                 |
+  |  10:15 priya.patel picked up CSR #101 (CN=api.example.com)       |
+  |  10:20 priya.patel reviewed CSR #101 — "Verified OK"             |
+  |  10:45 vikram.singh accepted CSR #101 — ISSUED (serial: 4F2A..)  |
+  |  11:00 amit.kumar picked up CSR #102 (CN=billing.acme.com)       |
+  |                                                                    |
+  +====================================================================+
+
+  Admin can see for EACH record:
+    - Current status
+    - Who submitted it (requester)
+    - Who picked it up (operator / Maker)
+    - Who is currently processing it
+    - Maker's remarks (if reviewed)
+    - Checker's decision and remarks (if decided)
+    - Full transition history (click to expand)
+    - Time spent in each status
+
+
+================================================================================
+  11. ROLE & PERMISSION MATRIX
+================================================================================
+
+  +-------------------------------+--------+--------+--------+--------+
+  | Action                        | ADMIN  | OPER   | AUDITOR| VIEWER |
+  +-------------------------------+--------+--------+--------+--------+
+  | Configure workflow settings   |  YES   |   NO   |   NO   |   NO   |
+  | View all requests + status    |  YES   |  YES   |  YES   |   NO   |
+  | View transition history       |  YES   |   NO   |  YES   |   NO   |
+  | Filter/search requests        |  YES   |  YES   |  YES   |   NO   |
+  | Assign request to operator    |  YES   |   NO   |   NO   |   NO   |
+  | Close request permanently     |  YES   |   NO   |   NO   |   NO   |
+  | Pick up request from pool     |   NO   |  YES   |   NO   |   NO   |
+  | Review (Maker — DUAL)         |   NO   |  YES   |   NO   |   NO   |
+  | Approve (SINGLE mode)         |   NO   |  YES   |   NO   |   NO   |
+  | Accept (Checker — DUAL)       |   NO   |  YES*  |   NO   |   NO   |
+  |   * must NOT be the Maker     |        |        |        |        |
+  | Reject                        |   NO   |  YES   |   NO   |   NO   |
+  | Return to Admin               |   NO   |  YES   |   NO   |   NO   |
+  | Retry failed issuance         |  YES   |   NO   |   NO   |   NO   |
+  +-------------------------------+--------+--------+--------+--------+
+
+
+================================================================================
+  12. AUDIT LOG ENTRIES
+================================================================================
+
+  +----------------------------+----------------------------+---------------+
+  | Action                     | Description                | Who           |
+  +----------------------------+----------------------------+---------------+
+  | CSR_SUBMIT                 | "CSR submitted for {DN}"   | Requester     |
+  | CSR_PICKUP                 | "Picked up by {operator}"  | Operator      |
+  | CSR_ASSIGN                 | "Assigned to {operator}"   | Admin         |
+  | CSR_REVIEW                 | "Maker reviewed: {remarks}"| Maker         |
+  | CSR_APPROVE                | "Approved: {remarks}"      | Operator      |
+  | CSR_ACCEPT                 | "Checker accepted: {rmks}" | Checker       |
+  | CSR_REJECT                 | "Rejected: {remarks}"      | Oper/Checker  |
+  | CSR_RETURN                 | "Returned to Admin: {rsn}" | Operator      |
+  | CSR_REASSIGN               | "Reassigned to {operator}" | Admin         |
+  | CSR_CLOSED                 | "Closed: {reason}"         | Admin         |
+  | CERT_ISSUE                 | "Cert issued: {serial}"    | System        |
+  | CERT_ISSUE_FAIL            | "Issuance failed: {error}" | System        |
+  | CONFIG_CHANGE              | "Workflow config changed"  | Admin         |
+  +----------------------------+----------------------------+---------------+
+
+
+================================================================================
+  13. ERROR CODES
+================================================================================
+
+  +-------------------+-----+--------------------------------------------+
+  | Code              | HTTP| Message                                    |
+  +-------------------+-----+--------------------------------------------+
+  | PKI_APR_001       | 400 | Request is not in correct status            |
+  | PKI_APR_002       | 403 | Cannot process your own request             |
+  | PKI_APR_003       | 403 | Only Admin can perform this action          |
+  | PKI_APR_004       | 403 | Only the assigned operator can do this      |
+  | PKI_APR_005       | 403 | Maker cannot act as Checker (separation     |
+  |                   |     | of duties). A different operator must       |
+  |                   |     | perform the Checker role.                   |
+  | PKI_APR_006       | 403 | Requester cannot be Maker or Checker        |
+  | PKI_APR_007       | 404 | Operator not found                          |
+  | PKI_APR_008       | 400 | Remarks are required                        |
+  | PKI_APR_009       | 409 | Request already picked up by another oper   |
+  | PKI_APR_010       | 400 | Return reason is required                   |
+  | PKI_APR_011       | 400 | Invalid workflow configuration              |
+  | PKI_APR_012       | 400 | DUAL mode required but configured as SINGLE |
+  | PKI_APR_013       | 400 | Operator has reached max pending limit      |
+  +-------------------+-----+--------------------------------------------+
+
+
+================================================================================
+  14. TESTING PLAN
+================================================================================
+
+  SINGLE MODE TESTS:
+
+  TEST-S01: Submit → Pickup → Approve → Issue
+  TEST-S02: Submit → Pickup → Reject → Admin reassigns → Approve
+  TEST-S03: Submit → Pickup → Return → Admin closes
+  TEST-S04: Submit → Admin assigns → Approve → Issue
+  TEST-S05: Requester cannot pickup own request
+
+  DUAL MODE TESTS:
+
+  TEST-D01: Submit → Maker pickup → Review → Checker pickup → Accept
+  TEST-D02: Submit → Maker pickup → Review → Checker rejects → Admin reassigns
+  TEST-D03: Maker cannot be Checker (403 PKI_APR_005)
+  TEST-D04: Requester cannot be Maker or Checker
+  TEST-D05: Submit → Maker returns → Admin closes
+  TEST-D06: Admin assigns Maker → Review → Different operator checks
+
+  CONFIGURATION TESTS:
+
+  TEST-C01: Switch SINGLE → DUAL (in-progress requests unaffected)
+  TEST-C02: Switch DUAL → SINGLE (REVIEWED requests still need Checker)
+  TEST-C03: Change assignment mode (self-pickup ↔ admin-assign)
+  TEST-C04: Max pending limit enforced per operator
+
+  FILTER / MONITORING TESTS:
+
+  TEST-F01: Admin filters by status
+  TEST-F02: Admin filters by operator
+  TEST-F03: Admin filters by date range
+  TEST-F04: Admin filters by subject DN
+  TEST-F05: Transition history shows full trail per record
+  TEST-F06: All operators see all records with current status
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================
