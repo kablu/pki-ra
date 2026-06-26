@@ -10,7 +10,6 @@ import com.pki.ra.common.model.User;
 import com.pki.ra.common.model.enums.ApprovalMode;
 import com.pki.ra.common.model.enums.CsrStatus;
 import com.pki.ra.common.user.UserRepository;
-import com.pki.ra.common.util.AuditLogService;
 import com.pki.ra.raservice.error.RaErrorCode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -34,7 +33,6 @@ public class ApprovalWorkflowService {
     private final CsrTransitionService transitionService;
     private final WorkflowConfigService workflowConfig;
     private final ApprovalMatrixService matrixService;
-    private final AuditLogService auditLogService;
     private final ExceptionFactory exceptionFactory;
 
     public ApprovalWorkflowService(CsrRequestRepository csrRepo,
@@ -43,7 +41,6 @@ public class ApprovalWorkflowService {
                                     CsrTransitionService transitionService,
                                     WorkflowConfigService workflowConfig,
                                     ApprovalMatrixService matrixService,
-                                    AuditLogService auditLogService,
                                     ExceptionFactory exceptionFactory) {
         this.csrRepo = csrRepo;
         this.transitionRepo = transitionRepo;
@@ -51,7 +48,6 @@ public class ApprovalWorkflowService {
         this.transitionService = transitionService;
         this.workflowConfig = workflowConfig;
         this.matrixService = matrixService;
-        this.auditLogService = auditLogService;
         this.exceptionFactory = exceptionFactory;
     }
 
@@ -73,12 +69,9 @@ public class ApprovalWorkflowService {
 
         String role = matrixService.getMakerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.IN_REVIEW,
-                operator, role, "Picked up from pool");
+                operator, role, "Picked up from pool", ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(username, "CSR_PICKUP",
-                request.getRequestId(), "Picked up by " + username, ip);
-
         return toDto(request);
     }
 
@@ -105,12 +98,9 @@ public class ApprovalWorkflowService {
         }
 
         transitionService.transition(request, CsrStatus.IN_REVIEW,
-                admin, "ADMIN", "Assigned to " + operator.getUsername());
+                admin, "ADMIN", "Assigned to " + operator.getUsername(), ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(adminUsername, "CSR_ASSIGN",
-                request.getRequestId(), "Assigned to " + operator.getUsername(), ip);
-
         return toDto(request);
     }
 
@@ -132,13 +122,11 @@ public class ApprovalWorkflowService {
         request.setMakerRemarks(remarks);
         request.setMakerReviewedAt(Instant.now());
 
+        String role = matrixService.getMakerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.APPROVED,
-                operator, "OPERATOR", remarks);
+                operator, role, remarks, ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(username, "CSR_APPROVE",
-                request.getRequestId(), "Approved: " + remarks, ip);
-
         return toDto(request);
     }
 
@@ -160,13 +148,11 @@ public class ApprovalWorkflowService {
         request.setMakerRemarks(remarks);
         request.setStatusReason(remarks);
 
+        String role = matrixService.getMakerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.REJECTED,
-                operator, "OPERATOR", remarks);
+                operator, role, remarks, ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(username, "CSR_REJECT",
-                request.getRequestId(), "Rejected: " + remarks, ip);
-
         return toDto(request);
     }
 
@@ -188,13 +174,11 @@ public class ApprovalWorkflowService {
         request.setMakerRemarks(remarks);
         request.setMakerReviewedAt(Instant.now());
 
+        String role = matrixService.getMakerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.REVIEWED,
-                maker, "OPERATOR", "Maker reviewed: " + remarks);
+                maker, role, "Maker reviewed: " + remarks, ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(username, "CSR_REVIEW",
-                request.getRequestId(), "Maker reviewed: " + remarks, ip);
-
         return toDto(request);
     }
 
@@ -218,13 +202,11 @@ public class ApprovalWorkflowService {
         request.setCheckerRemarks(remarks);
         request.setCheckerDecidedAt(Instant.now());
 
+        String role = matrixService.getCheckerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.APPROVED,
-                checker, "OPERATOR", "Checker accepted: " + remarks);
+                checker, role, "Checker accepted: " + remarks, ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(username, "CSR_ACCEPT",
-                request.getRequestId(), "Checker accepted: " + remarks, ip);
-
         return toDto(request);
     }
 
@@ -249,13 +231,11 @@ public class ApprovalWorkflowService {
         request.setCheckerDecidedAt(Instant.now());
         request.setStatusReason(remarks);
 
+        String checkerRole = matrixService.getCheckerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.REJECTED,
-                checker, "OPERATOR", "Checker rejected: " + remarks);
+                checker, checkerRole, "Checker rejected: " + remarks, ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(username, "CSR_REJECT",
-                request.getRequestId(), "Checker rejected: " + remarks, ip);
-
         return toDto(request);
     }
 
@@ -275,13 +255,11 @@ public class ApprovalWorkflowService {
         request.setMakerRemarks(reason);
         request.setStatusReason(reason);
 
+        String role = matrixService.getMakerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.RETURNED,
-                operator, "OPERATOR", "Returned: " + reason);
+                operator, role, "Returned: " + reason, ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(username, "CSR_RETURN",
-                request.getRequestId(), "Returned: " + reason, ip);
-
         return toDto(request);
     }
 
@@ -302,12 +280,9 @@ public class ApprovalWorkflowService {
         request.setClosedReason(reason);
 
         transitionService.transition(request, CsrStatus.CLOSED,
-                admin, "ADMIN", "Closed: " + reason);
+                admin, "ADMIN", "Closed: " + reason, ip);
 
         csrRepo.save(request);
-        auditLogService.logSuccess(adminUsername, "CSR_CLOSED",
-                request.getRequestId(), "Closed: " + reason, ip);
-
         return toDto(request);
     }
 
