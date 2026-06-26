@@ -31,8 +31,9 @@ public final class CsrStatusTransition {
         allow(CsrStatus.RETURNED,          CsrStatus.IN_REVIEW, CsrStatus.CLOSED);
         allow(CsrStatus.REJECTED,          CsrStatus.IN_REVIEW, CsrStatus.CLOSED);
 
-        // Post-approval transitions
-        allow(CsrStatus.APPROVED,          CsrStatus.ISSUED, CsrStatus.FAILED);
+        // Post-approval transitions (async CA flow)
+        allow(CsrStatus.APPROVED,          CsrStatus.SENT_TO_CA, CsrStatus.FAILED);
+        allow(CsrStatus.SENT_TO_CA,        CsrStatus.ISSUED, CsrStatus.FAILED);
         allow(CsrStatus.FAILED,            CsrStatus.APPROVED);
     }
 

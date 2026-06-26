@@ -26,7 +26,8 @@ public enum CsrStatus {
     CLOSED("Permanently closed by Admin — true final state"),
 
     // --- Post-approval ---
-    ISSUED("CA signed — certificate active"),
+    SENT_TO_CA("CSR sent to external CA (WLCA) — awaiting callback"),
+    ISSUED("CA signed — certificate received via callback"),
     FAILED("CA signing failed — Admin can retry");
 
     private final String description;

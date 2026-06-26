@@ -159,6 +159,20 @@ public class CsrRequest extends BaseAuditEntity {
     @Column(name = "approval_mode_at_pickup", length = 10)
     private ApprovalMode approvalModeAtPickup;
 
+    // --- CA integration (async) ---
+
+    @Column(name = "ca_transaction_id", length = 100)
+    private String caTransactionId;
+
+    @Column(name = "sent_to_ca_at")
+    private Instant sentToCaAt;
+
+    @Column(name = "post_back_url", length = 500)
+    private String postBackUrl;
+
+    @Column(name = "ca_response_received_at")
+    private Instant caResponseReceivedAt;
+
     // --- Certificate link ---
 
     @Column(name = "certificate_id")

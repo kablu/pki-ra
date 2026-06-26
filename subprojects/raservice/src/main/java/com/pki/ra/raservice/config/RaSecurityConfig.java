@@ -97,6 +97,10 @@ public class RaSecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/ra/requests/**")
                     .hasAnyRole("ADMIN", "OPERATOR", "AUDITOR")
 
+                // --- CA Callback: machine-to-machine (permitAll — secured by API key/mTLS) ---
+                .requestMatchers("/api/ra/callback/**")
+                    .permitAll()
+
                 // --- Any authenticated: submit CSR ---
                 .requestMatchers(HttpMethod.POST, "/api/ra/requests")
                     .authenticated()

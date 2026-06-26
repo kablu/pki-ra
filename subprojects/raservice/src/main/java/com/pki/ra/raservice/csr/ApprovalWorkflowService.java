@@ -343,6 +343,7 @@ public class ApprovalWorkflowService {
                 .inReview(counts.get(CsrStatus.IN_REVIEW))
                 .reviewed(counts.get(CsrStatus.REVIEWED))
                 .approved(counts.get(CsrStatus.APPROVED))
+                .sentToCa(counts.get(CsrStatus.SENT_TO_CA))
                 .issued(counts.get(CsrStatus.ISSUED))
                 .closed(counts.get(CsrStatus.CLOSED))
                 .rejected(counts.get(CsrStatus.REJECTED))

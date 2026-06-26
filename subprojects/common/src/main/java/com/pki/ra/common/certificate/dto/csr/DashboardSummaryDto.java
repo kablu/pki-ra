@@ -18,6 +18,7 @@ public class DashboardSummaryDto {
     private long inReview;
     private long reviewed;
     private long approved;
+    private long sentToCa;
 
     // Completed
     private long issued;

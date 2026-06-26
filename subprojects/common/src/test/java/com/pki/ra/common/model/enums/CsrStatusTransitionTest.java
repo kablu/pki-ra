@@ -45,9 +45,11 @@ class CsrStatusTransitionTest {
                     Arguments.of(REJECTED, IN_REVIEW),
                     Arguments.of(REJECTED, CLOSED),
 
-                    // Post-approval
-                    Arguments.of(APPROVED, ISSUED),
+                    // Post-approval (async CA flow)
+                    Arguments.of(APPROVED, SENT_TO_CA),
                     Arguments.of(APPROVED, FAILED),
+                    Arguments.of(SENT_TO_CA, ISSUED),
+                    Arguments.of(SENT_TO_CA, FAILED),
                     Arguments.of(FAILED, APPROVED)
             );
         }
@@ -83,6 +85,7 @@ class CsrStatusTransitionTest {
 
                     // Cannot skip Maker review
                     Arguments.of(IN_REVIEW, ISSUED),
+                    Arguments.of(IN_REVIEW, SENT_TO_CA),
                     Arguments.of(IN_REVIEW, CLOSED),
 
                     // Cannot go backwards
@@ -163,7 +166,7 @@ class CsrStatusTransitionTest {
 
         @ParameterizedTest
         @EnumSource(value = CsrStatus.class, names = {"SUBMITTED", "IN_REVIEW", "REVIEWED",
-                "APPROVED", "REJECTED", "RETURNED", "FAILED", "RECEIVED", "VALIDATED"})
+                "APPROVED", "REJECTED", "RETURNED", "FAILED", "RECEIVED", "VALIDATED", "SENT_TO_CA"})
         void nonTerminalStatesAreNotTerminal(CsrStatus status) {
             assertFalse(status.isTerminal());
         }
@@ -215,8 +218,14 @@ class CsrStatusTransitionTest {
 
         @Test
         void approvedTargets() {
-            assertEquals(Set.of(ISSUED, FAILED),
+            assertEquals(Set.of(SENT_TO_CA, FAILED),
                     CsrStatusTransition.validTargets(APPROVED));
+        }
+
+        @Test
+        void sentToCaTargets() {
+            assertEquals(Set.of(ISSUED, FAILED),
+                    CsrStatusTransition.validTargets(SENT_TO_CA));
         }
 
         @Test
@@ -255,9 +264,9 @@ class CsrStatusTransitionTest {
     // =========================================================================
 
     @Test
-    @DisplayName("All 12 statuses defined")
+    @DisplayName("All 13 statuses defined")
     void allStatusesDefined() {
-        assertEquals(12, CsrStatus.values().length);
+        assertEquals(13, CsrStatus.values().length);
     }
 
     @Test
