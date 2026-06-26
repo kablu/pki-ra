@@ -33,6 +33,7 @@ public class ApprovalWorkflowService {
     private final UserRepository userRepo;
     private final CsrTransitionService transitionService;
     private final WorkflowConfigService workflowConfig;
+    private final ApprovalMatrixService matrixService;
     private final AuditLogService auditLogService;
     private final ExceptionFactory exceptionFactory;
 
@@ -41,6 +42,7 @@ public class ApprovalWorkflowService {
                                     UserRepository userRepo,
                                     CsrTransitionService transitionService,
                                     WorkflowConfigService workflowConfig,
+                                    ApprovalMatrixService matrixService,
                                     AuditLogService auditLogService,
                                     ExceptionFactory exceptionFactory) {
         this.csrRepo = csrRepo;
@@ -48,6 +50,7 @@ public class ApprovalWorkflowService {
         this.userRepo = userRepo;
         this.transitionService = transitionService;
         this.workflowConfig = workflowConfig;
+        this.matrixService = matrixService;
         this.auditLogService = auditLogService;
         this.exceptionFactory = exceptionFactory;
     }
@@ -66,10 +69,11 @@ public class ApprovalWorkflowService {
 
         request.setAssignedTo(operator);
         request.setAssignedAt(Instant.now());
-        request.setApprovalModeAtPickup(workflowConfig.getApprovalMode());
+        request.setApprovalModeAtPickup(matrixService.getApprovalMode(request.getCsrProfile()));
 
+        String role = matrixService.getMakerRole(request.getCsrProfile());
         transitionService.transition(request, CsrStatus.IN_REVIEW,
-                operator, "OPERATOR", "Picked up from pool");
+                operator, role, "Picked up from pool");
 
         csrRepo.save(request);
         auditLogService.logSuccess(username, "CSR_PICKUP",
@@ -123,7 +127,7 @@ public class ApprovalWorkflowService {
 
         requireStatus(request, CsrStatus.IN_REVIEW);
         requireAssignedOperator(request, operator);
-        requireRemarksIfConfigured(remarks);
+        requireRemarks(request, remarks);
 
         request.setMakerRemarks(remarks);
         request.setMakerReviewedAt(Instant.now());
@@ -151,7 +155,7 @@ public class ApprovalWorkflowService {
 
         requireStatus(request, CsrStatus.IN_REVIEW);
         requireAssignedOperator(request, operator);
-        requireRemarksIfConfigured(remarks);
+        requireRemarks(request, remarks);
 
         request.setMakerRemarks(remarks);
         request.setStatusReason(remarks);
@@ -179,7 +183,7 @@ public class ApprovalWorkflowService {
 
         requireStatus(request, CsrStatus.IN_REVIEW);
         requireAssignedOperator(request, maker);
-        requireRemarksIfConfigured(remarks);
+        requireRemarks(request, remarks);
 
         request.setMakerRemarks(remarks);
         request.setMakerReviewedAt(Instant.now());
@@ -237,7 +241,7 @@ public class ApprovalWorkflowService {
 
         requireStatus(request, CsrStatus.REVIEWED);
         requireNotMaker(request, checker);
-        requireRemarksIfConfigured(remarks);
+        requireRemarks(request, remarks);
 
         request.setChecker(checker);
         request.setCheckerDecision("REJECTED");
@@ -433,33 +437,41 @@ public class ApprovalWorkflowService {
         }
     }
 
+    private ApprovalMode resolveMode(CsrRequest request) {
+        if (request.getApprovalModeAtPickup() != null) {
+            return request.getApprovalModeAtPickup();
+        }
+        return matrixService.getApprovalMode(request.getCsrProfile());
+    }
+
     private void requireSingleMode(Long requestId) {
         CsrRequest request = findRequest(requestId);
-        ApprovalMode mode = request.getApprovalModeAtPickup() != null
-                ? request.getApprovalModeAtPickup()
-                : workflowConfig.getApprovalMode();
-        if (mode == ApprovalMode.DUAL) {
+        if (resolveMode(request) == ApprovalMode.DUAL) {
             throw exceptionFactory.create(RaErrorCode.VALIDATION_INVALID_CSR,
-                    "DUAL mode active — use /review first, then Checker /accept");
+                    "DUAL mode active for profile " + request.getCsrProfile() +
+                    " — use /review first, then Checker /accept");
         }
     }
 
     private void requireDualMode(Long requestId) {
         CsrRequest request = findRequest(requestId);
-        ApprovalMode mode = request.getApprovalModeAtPickup() != null
-                ? request.getApprovalModeAtPickup()
-                : workflowConfig.getApprovalMode();
-        if (mode == ApprovalMode.SINGLE) {
+        if (resolveMode(request) == ApprovalMode.SINGLE) {
             throw exceptionFactory.create(RaErrorCode.VALIDATION_INVALID_CSR,
-                    "SINGLE mode active — use /approve or /reject directly");
+                    "SINGLE mode active for profile " + request.getCsrProfile() +
+                    " — use /approve or /reject directly");
         }
     }
 
-    private void requireRemarksIfConfigured(String remarks) {
+    private void requireRemarks(CsrRequest request, String remarks) {
+        int minLength = matrixService.getMinRemarksLength(request.getCsrProfile());
         if (workflowConfig.isRequireRemarks() &&
                 (remarks == null || remarks.isBlank())) {
             throw exceptionFactory.create(RaErrorCode.VALIDATION_REQUIRED_FIELD,
                     "Remarks are required");
+        }
+        if (minLength > 0 && remarks != null && remarks.length() < minLength) {
+            throw exceptionFactory.create(RaErrorCode.VALIDATION_REQUIRED_FIELD,
+                    "Remarks must be at least " + minLength + " characters");
         }
     }
 

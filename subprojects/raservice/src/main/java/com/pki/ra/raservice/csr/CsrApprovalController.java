@@ -2,6 +2,7 @@ package com.pki.ra.raservice.csr;
 
 import com.pki.ra.common.certificate.dto.csr.*;
 import com.pki.ra.common.model.enums.CsrStatus;
+import java.util.Map;
 import com.pki.ra.common.user.service.UserLookupService;
 import com.pki.ra.common.util.AuditLogService;
 import com.pki.ra.common.web.AbstractSecuredController;
@@ -24,14 +25,17 @@ public class CsrApprovalController extends AbstractSecuredController {
 
     private final ApprovalWorkflowService workflowService;
     private final WorkflowConfigService configService;
+    private final ApprovalMatrixService matrixService;
 
     public CsrApprovalController(AuditLogService auditLogService,
                                   UserLookupService userLookupService,
                                   ApprovalWorkflowService workflowService,
-                                  WorkflowConfigService configService) {
+                                  WorkflowConfigService configService,
+                                  ApprovalMatrixService matrixService) {
         super(auditLogService, userLookupService);
         this.workflowService = workflowService;
         this.configService = configService;
+        this.matrixService = matrixService;
     }
 
     // =========================================================================
@@ -53,6 +57,41 @@ public class CsrApprovalController extends AbstractSecuredController {
         auditLogService.logSuccess(ctx.username(), "CONFIG_CHANGE",
                 "workflow_config", "Workflow config updated: " + body.getApprovalMode(), ctx.ip());
         return configService.getCurrentConfig();
+    }
+
+    // =========================================================================
+    // APPROVAL MATRIX (per-profile configuration)
+    // =========================================================================
+
+    @GetMapping("/admin/approval-matrix")
+    @Operation(summary = "Get all approval matrix rules")
+    public List<ApprovalMatrixDto> getApprovalMatrix() {
+        return matrixService.getAllRules();
+    }
+
+    @PostMapping("/admin/approval-matrix")
+    @Operation(summary = "Create a new approval matrix rule for a profile")
+    public ApprovalMatrixDto createMatrixRule(@RequestBody ApprovalMatrixDto body,
+                                              HttpServletRequest httpRequest) {
+        AuditContext ctx = resolveAuditContext(httpRequest);
+        ApprovalMatrixDto result = matrixService.createRule(body);
+        auditLogService.logSuccess(ctx.username(), "MATRIX_CREATE",
+                "approval_matrix:" + body.getCsrProfile(),
+                "Matrix rule created for " + body.getCsrProfile(), ctx.ip());
+        return result;
+    }
+
+    @PutMapping("/admin/approval-matrix/{id}")
+    @Operation(summary = "Update an approval matrix rule")
+    public ApprovalMatrixDto updateMatrixRule(@PathVariable Long id,
+                                              @RequestBody ApprovalMatrixDto body,
+                                              HttpServletRequest httpRequest) {
+        AuditContext ctx = resolveAuditContext(httpRequest);
+        ApprovalMatrixDto result = matrixService.updateRule(id, body);
+        auditLogService.logSuccess(ctx.username(), "MATRIX_UPDATE",
+                "approval_matrix:" + id,
+                "Matrix rule updated: mode=" + body.getApprovalMode(), ctx.ip());
+        return result;
     }
 
     // =========================================================================
