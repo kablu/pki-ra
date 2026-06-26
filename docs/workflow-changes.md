@@ -24,13 +24,15 @@
 |---|-------|-----------|
 | 7 | `CsrRequest` | `subprojects/common/src/main/java/com/pki/ra/common/model/CsrRequest.java` |
 | 8 | `CsrRequestTransition` | `subprojects/common/src/main/java/com/pki/ra/common/model/CsrRequestTransition.java` |
+| 9 | `WorkflowConfig` | `subprojects/common/src/main/java/com/pki/ra/common/model/WorkflowConfig.java` |
 
 ## 3. Repositories (common module)
 
 | # | Class | Full Path |
 |---|-------|-----------|
-| 9 | `CsrRequestRepository` | `subprojects/common/src/main/java/com/pki/ra/common/certificate/CsrRequestRepository.java` |
-| 10 | `CsrRequestTransitionRepository` | `subprojects/common/src/main/java/com/pki/ra/common/certificate/CsrRequestTransitionRepository.java` |
+| 10 | `CsrRequestRepository` | `subprojects/common/src/main/java/com/pki/ra/common/certificate/CsrRequestRepository.java` |
+| 11 | `CsrRequestTransitionRepository` | `subprojects/common/src/main/java/com/pki/ra/common/certificate/CsrRequestTransitionRepository.java` |
+| 12 | `WorkflowConfigRepository` | `subprojects/common/src/main/java/com/pki/ra/common/certificate/WorkflowConfigRepository.java` |
 
 ## 4. DTOs (common module)
 

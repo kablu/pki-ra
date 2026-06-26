@@ -44,6 +44,17 @@ public class CsrApprovalController extends AbstractSecuredController {
         return configService.getCurrentConfig();
     }
 
+    @PutMapping("/admin/config/workflow")
+    @Operation(summary = "Update workflow configuration")
+    public WorkflowConfigDto updateWorkflowConfig(@RequestBody WorkflowConfigDto body,
+                                                    HttpServletRequest httpRequest) {
+        AuditContext ctx = resolveAuditContext(httpRequest);
+        configService.updateConfig(body);
+        auditLogService.logSuccess(ctx.username(), "CONFIG_CHANGE",
+                "workflow_config", "Workflow config updated: " + body.getApprovalMode(), ctx.ip());
+        return configService.getCurrentConfig();
+    }
+
     // =========================================================================
     // LOOKUP
     // =========================================================================
