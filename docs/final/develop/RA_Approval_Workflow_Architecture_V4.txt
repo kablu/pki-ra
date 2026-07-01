@@ -1,0 +1,1778 @@
+================================================================================
+  RA APPROVAL WORKFLOW ARCHITECTURE
+  Document ID    : PKI-RA-APPR-001
+  Version        : 1.0
+  Status         : Draft -- Revised per Architect Review
+  Date           : 2026-06-30
+  Author         : Kablu Mandal -- Magellan
+  Reviewed By    : Sebastian Reick -- Magellan
+  Project        : pki-ra (Enterprise Registration Authority)
+  Module         : raservice
+  Classification : For Internal Use
+================================================================================
+
+
+================================================================================
+  CHANGE LOG
+================================================================================
+
+  Version  Date          Author        Summary
+  -------  ------------  ------------  -----------------------------------------
+  0.1      2026-06-25    Kablu Mandal  Initial draft
+  1.0      2026-06-30    Kablu Mandal  Revised per architect feedback from
+                                       Sebastian Reick
+
+  Changes in Version 1.0
+  -----------------------
+  All changes in this version are tagged with [CHANGED v1] inline throughout
+  the document. The following areas were revised based on architect feedback:
+
+  Tag    Area                          What Changed
+  -----  ----------------------------  -----------------------------------------
+  C-01   CSR Request Payload           Scope note added -- payload and validation
+                                       are covered in a separate document
+  C-02   Database -- request_id        Sequence widened from 6-digit to 8-digit
+                                       to avoid year-based softlock
+  C-03   Database -- csr_profile       Moved to a dedicated csr_profiles table;
+                                       csr_requests now holds a FK reference
+  C-04   Database -- assigned_to_id    Renamed to maker_id for symmetry with
+                                       checker_id
+  C-05   Database -- validity days     Replaced with requested_not_before and
+                                       requested_not_after for precise control
+  C-06   Database -- Table split       csr_requests split into three focused
+                                       tables: core request, requestor info,
+                                       approval workflow
+  C-07   Database -- Requestor data    Authenticated user info fetched from
+                                       users table via requestor_user_id; not
+                                       repeated in request body
+  C-08   API -- Lookup endpoints       /by-request-id and /by-txn-id replaced
+                                       with unified query-parameter style
+  C-09   API -- History endpoint       Path param changed from internal DB id
+                                       to requestId; access restricted to ADMIN
+                                       and AUDITOR only
+  C-10   API -- Certificate lookup     /certificates/{serial} replaced with
+                                       query-param style using issuerDn +
+                                       serialNr or requestId
+  C-11   API -- /approve and /accept   Merged into a single server-side-routed
+                                       /approve endpoint; eliminates PKI_APR_012
+  C-12   API -- /pickup endpoints      Merged into a single /pickup endpoint;
+                                       server determines Maker or Checker role
+                                       by request state
+  C-13   Configuration                 Replaced single global config with
+                                       per-profile workflow configurations;
+                                       each profile maps to its own config
+  C-14   CA Integration                Added SENT_TO_CA and PENDING as
+                                       intermediate statuses; async CA callback
+                                       endpoint introduced
+  C-15   Detailed Flows                Full step-by-step flows written:
+                                       SINGLE with Self-Pickup and DUAL with
+                                       Self-Pickup
+
+
+================================================================================
+  ABSTRACT
+================================================================================
+
+  This document describes the approval workflow architecture for the Enterprise
+  Registration Authority (RA) system. It covers the configurable Maker-Checker
+  model, database schema, REST API design, state machine, workflow
+  configuration, and CA integration lifecycle for CSR approval and certificate
+  issuance.
+
+  SCOPE NOTE -- CSR Request Payload and Validation  [CHANGED v1 -- C-01]
+
+  The CSR submission request payload (field definitions, PKCS#10 vs CRMF
+  format support, subjectAltName cross-verification rules, requestor data
+  handling, and additionalAttributes schema validation) are OUT OF SCOPE for
+  this document.
+
+  A separate document -- RA_CSR_Request_Payload_and_Validation.md -- will be
+  provided to cover those topics in detail.
+
+  This document focuses exclusively on the approval workflow that begins after
+  a CSR has been received, validated, and placed in SUBMITTED status.
+
+
+================================================================================
+  TABLE OF CONTENTS
+================================================================================
+
+   1.  Overview and Entry Point
+   2.  Pre-Approval Status Flow
+   3.  Actors and Roles
+   4.  Workflow Configuration -- Per-Profile Model         [CHANGED v1 -- C-13]
+   5.  State Machine
+   6.  Detailed Flow -- SINGLE Mode with Self-Pickup       [CHANGED v1 -- C-15]
+   7.  Detailed Flow -- DUAL Mode with Self-Pickup         [CHANGED v1 -- C-15]
+   8.  Database Schema                                     [CHANGED v1 -- C-06]
+   9.  REST API Reference
+  10.  Record Visibility
+  11.  Transition History
+  12.  CA Integration and Issuance States                  [CHANGED v1 -- C-14]
+  13.  Mode-Switch Rules
+  14.  Role and Permission Matrix
+  15.  Admin Dashboard
+  16.  Audit Log Events
+  17.  Error Codes
+  18.  Testing Plan
+
+
+================================================================================
+  1.  OVERVIEW AND ENTRY POINT
+================================================================================
+
+  The RA approval workflow starts AFTER a CSR request has been received and
+  validated by the validation engine. Requests that fail validation never enter
+  the approval pipeline. The workflow operates only on requests in SUBMITTED
+  status.
+
+  The approval process is fully configurable per certificate profile. An
+  administrator defines one or more workflow configurations (e.g., DUAL mode
+  with Self-Pickup, SINGLE mode with Self-Pickup) and maps each certificate
+  profile to a configuration. When a request arrives, the system resolves the
+  workflow configuration from the request's profile and applies it
+  automatically.
+
+  1.1  Entry Condition
+  --------------------
+
+    CSR received by RA
+          |
+          v
+    Validation Engine runs
+          |
+          +---[PASS]---> status = SUBMITTED  <-- Approval workflow starts here
+          |
+          +---[FAIL]---> status = VALIDATION_FAILED  (does not enter workflow)
+
+  1.2  Workflow Model
+  -------------------
+
+  The system supports two approval modes:
+
+  SINGLE  --  One operator reviews, verifies, and approves or rejects the
+              request. No second operator is needed.
+
+  DUAL    --  Two operators are required. The Maker reviews the request and
+              submits remarks. A different operator (Checker) then makes the
+              final approval or rejection decision. Separation of duties is
+              enforced at the API level.
+
+  The assignment strategy (how requests reach operators) is also configurable
+  per workflow configuration:
+
+  Self-Pickup   --  Operators pick requests from a shared pool.
+  Admin-Assign  --  Admin manually assigns each request to a specific operator.
+
+
+================================================================================
+  2.  PRE-APPROVAL STATUS FLOW
+================================================================================
+
+  These statuses are managed by the system automatically before the workflow
+  begins. They are listed here for completeness.
+
+    [RECEIVED]
+        |
+        v
+    Validation
+        |
+        +---[PASS]---> [VALIDATED] ---> [SUBMITTED]  <-- workflow starts
+        |
+        +---[FAIL]---> [VALIDATION_FAILED]  (terminal for this submission)
+
+  Status              Set By   Description
+  ------------------  -------  -------------------------------------------------
+  RECEIVED            System   CSR received and saved. Validation not started.
+  VALIDATED           System   Validation passed. Transitions immediately
+                               to SUBMITTED.
+  VALIDATION_FAILED   System   One or more validation layers failed. Request
+                               does not enter approval. Client must fix and
+                               resubmit.
+  SUBMITTED           System   Validation passed. Request is in the approval
+                               pool. Available for operator pickup or admin
+                               assignment.
+
+  NOTE: The approval workflow (Maker-Checker process) operates exclusively on
+  requests that have reached SUBMITTED status.
+
+
+================================================================================
+  3.  ACTORS AND ROLES
+================================================================================
+
+  Role              Responsibilities
+  ----------------  -------------------------------------------------------------
+  CLIENT / USER     Submits CSR. Polls for status. Downloads issued certificate.
+
+  ROLE_ADMIN        Defines workflow configurations. Maps profiles to
+                    configurations. Monitors all records. Assigns requests to
+                    operators. Closes requests permanently. Retries failed
+                    CA calls.
+
+  ROLE_OPERATOR     In SINGLE mode: picks up request, reviews, and approves or
+                    rejects directly.
+                    In DUAL mode as Maker: picks up and submits review remarks.
+                    In DUAL mode as Checker: picks up reviewed request and makes
+                    final decision.
+                    Operator cannot be both Maker and Checker for the same
+                    request.
+
+  ROLE_AUDITOR      Read-only access to all requests, transition history,
+                    and audit logs.
+
+
+================================================================================
+  4.  WORKFLOW CONFIGURATION -- PER-PROFILE MODEL       [CHANGED v1 -- C-13]
+================================================================================
+
+  NOTE: This section replaces the previous single system-wide configuration
+  design. In V0.1, there was one global approval_mode setting that applied to
+  all requests regardless of certificate profile. Sebastian's feedback
+  identified this as a significant design constraint -- different profiles
+  carry different risk levels and must be able to follow different approval
+  workflows independently.
+
+  4.1  Design
+  -----------
+
+  The Admin defines one or more Workflow Configurations. Each configuration
+  specifies the approval mode, assignment strategy, and operational settings.
+  Each Certificate Profile (TLS_SERVER, CODE_SIGNING, SMIME, etc.) is then
+  mapped to exactly one workflow configuration.
+
+  When a request arrives, the system resolves the profile, looks up the mapped
+  workflow configuration, and applies it for the entire lifecycle of that
+  request.
+
+    Request arrives with csrProfile = "TLS_SERVER"
+            |
+            v
+    Lookup: csr_profiles --> profile_id = 1 ("TLS_SERVER")
+            |
+            v
+    Lookup: profile_workflow_mapping --> workflow_config_id = 1
+            |
+            v
+    Lookup: workflow_configurations --> id = 1
+            approval_mode   = DUAL
+            assignment_mode = SELF_PICKUP
+            require_remarks = true
+            max_pending     = 10
+            |
+            v
+    Apply this configuration for this request's full lifecycle
+
+  4.2  Database Tables
+  --------------------
+
+  Table: workflow_configurations
+
+  Stores named, reusable workflow configuration objects.
+
+  Column                    Type           Null  Description
+  ------------------------  -------------  ----  ------------------------------
+  id                        BIGINT PK      NO    Auto-increment primary key
+  name                      VARCHAR(100)   NO    Human-readable name
+                                                 e.g. "High Security DUAL"
+  approval_mode             VARCHAR(10)    NO    SINGLE or DUAL
+  assignment_mode           VARCHAR(20)    NO    SELF_PICKUP or ADMIN_ASSIGN
+  require_remarks           BOOLEAN        NO    Whether operator remarks are
+                                                 mandatory
+  max_pending_per_operator  INT            NO    Max requests one operator can
+                                                 hold at a time
+  maker_can_return          BOOLEAN        NO    Whether Maker is allowed to
+                                                 return a request to Admin
+  is_active                 BOOLEAN        NO    Inactive configs cannot be
+                                                 used for new mappings
+  created_at                DATETIME(6)    NO    When this config was created
+  created_by                VARCHAR(100)   NO    Admin who created it
+
+  ----
+
+  Table: csr_profiles  [CHANGED v1 -- C-03]
+
+  Replaces the previous csr_profile VARCHAR(50) column in csr_requests.
+  Profiles are now first-class entities.
+
+  Column       Type           Null  Description
+  -----------  -------------  ----  ------------------------------------------
+  id           BIGINT PK      NO    Auto-increment primary key
+  name         VARCHAR(50)    NO    Profile code: TLS_SERVER, TLS_CLIENT,
+                                    CODE_SIGNING, SMIME, DOCUMENT_SIGNING
+  description  VARCHAR(500)   YES   Human-readable description
+  is_active    BOOLEAN        NO    Whether new requests can use this profile
+  created_at   DATETIME(6)    NO    Creation time
+
+  ----
+
+  Table: profile_workflow_mapping
+
+  Binds each certificate profile to exactly one workflow configuration.
+  This is what the system uses at request time to determine how to process
+  the request.
+
+  Column              Type           Null  Description
+  ------------------  -------------  ----  ------------------------------------
+  id                  BIGINT PK      NO    Auto-increment primary key
+  profile_id          BIGINT FK      NO    --> csr_profiles.id
+  workflow_config_id  BIGINT FK      NO    --> workflow_configurations.id
+  effective_from      DATETIME(6)    NO    When this mapping takes effect
+  effective_until     DATETIME(6)    YES   NULL = currently active
+  created_by          VARCHAR(100)   NO    Admin who created the mapping
+  created_at          DATETIME(6)    NO    When mapping was created
+
+  NOTE: Only one mapping per profile may be active at a time
+  (i.e., effective_until IS NULL). Admin creates a new mapping to override --
+  the old one is closed with effective_until = now.
+
+  4.3  Example Configuration Setup
+  ---------------------------------
+
+  Workflow Configuration 1 -- "High Security DUAL Self-Pickup"
+
+    id              = 1
+    name            = "High Security DUAL Self-Pickup"
+    approval_mode   = DUAL
+    assignment_mode = SELF_PICKUP
+    require_remarks = true
+    max_pending     = 5
+    maker_can_return= true
+
+  Mapped profiles: TLS_SERVER, CODE_SIGNING
+
+  Rationale: These profiles issue certificates for public-facing servers and
+  code signing. Two-operator review reduces the risk of a misconfigured or
+  fraudulent certificate being issued.
+
+  ----
+
+  Workflow Configuration 2 -- "Standard SINGLE Self-Pickup"
+
+    id              = 2
+    name            = "Standard SINGLE Self-Pickup"
+    approval_mode   = SINGLE
+    assignment_mode = SELF_PICKUP
+    require_remarks = true
+    max_pending     = 10
+    maker_can_return= true
+
+  Mapped profiles: TLS_CLIENT, SMIME, DOCUMENT_SIGNING
+
+  Rationale: These profiles are lower risk and internal. A single-operator
+  review is sufficient.
+
+  4.4  Admin API for Configuration Management
+  --------------------------------------------
+
+  # Workflow Configurations
+  POST   /api/ra/admin/workflow-configs          Create a new workflow config
+  GET    /api/ra/admin/workflow-configs          List all workflow configs
+  GET    /api/ra/admin/workflow-configs/{id}     Get a specific config
+  PUT    /api/ra/admin/workflow-configs/{id}     Update a config
+
+  # Profile-to-Config Mappings
+  POST   /api/ra/admin/profile-mappings          Map a profile to a config
+  GET    /api/ra/admin/profile-mappings          List all active mappings
+  PUT    /api/ra/admin/profile-mappings/{id}     Update a mapping
+
+  All endpoints: Auth ROLE_ADMIN only.
+
+  Example -- Create Workflow Configuration:
+
+    POST /api/ra/admin/workflow-configs
+    Authorization: Bearer <admin-token>
+    Content-Type: application/json
+
+    {
+      "name": "High Security DUAL Self-Pickup",
+      "approvalMode": "DUAL",
+      "assignmentMode": "SELF_PICKUP",
+      "requireRemarks": true,
+      "maxPendingPerOperator": 5,
+      "makerCanReturn": true
+    }
+
+    Response 201 Created:
+    {
+      "id": 1,
+      "name": "High Security DUAL Self-Pickup",
+      "approvalMode": "DUAL",
+      "assignmentMode": "SELF_PICKUP",
+      "requireRemarks": true,
+      "maxPendingPerOperator": 5,
+      "isActive": true
+    }
+
+  Example -- Map Profile to Configuration:
+
+    POST /api/ra/admin/profile-mappings
+    Authorization: Bearer <admin-token>
+    Content-Type: application/json
+
+    {
+      "profileId": 1,
+      "workflowConfigId": 1
+    }
+
+    Response 201 Created:
+    {
+      "profileName": "TLS_SERVER",
+      "workflowConfigName": "High Security DUAL Self-Pickup",
+      "effectiveFrom": "2026-06-30T00:00:00Z"
+    }
+
+  4.5  Runtime Resolution
+  -----------------------
+
+  At the time an operator picks up a request, the system:
+
+    1. Reads csr_requests.profile_id
+    2. Queries profile_workflow_mapping for the active mapping
+    3. Loads the associated workflow_configurations row
+    4. Stores workflow_config_id and approval_mode on the request record
+       (approval_mode_at_pickup)
+    5. Applies that configuration for the entire lifecycle of this request --
+       even if the mapping is later changed for future requests
+
+  This ensures a request never changes its approval rules mid-flow.
+
+
+================================================================================
+  5.  STATE MACHINE
+================================================================================
+
+  5.1  SINGLE Mode
+  ----------------
+
+    [SUBMITTED]
+         |
+         | Operator picks up (Self-Pickup) or Admin assigns
+         v
+    [IN_REVIEW]   <-- Operator reviewing
+         |
+         +---[approve]---> [APPROVED] ---> [SENT_TO_CA] ---> [ISSUED]
+         |                                              ----> [PENDING] --> [ISSUED] / [FAILED]
+         |                                              ----> [FAILED]
+         +---[reject]----> [REJECTED] ---> Admin (reassign or close)
+         |
+         +---[return]----> [RETURNED] ---> Admin (reassign or close)
+
+  5.2  DUAL Mode
+  --------------
+
+    [SUBMITTED]
+         |
+         | Maker picks up (Self-Pickup) or Admin assigns as Maker
+         v
+    [IN_REVIEW]   <-- Maker reviewing
+         |
+         +---[review]----> [REVIEWED]   <-- Waiting for Checker
+         |                      |
+         |                      | Checker picks up (must not be Maker)
+         |                      v
+         |                 [Checker reviewing]
+         |                      |
+         |                      +---[approve]--> [APPROVED] ---> [SENT_TO_CA]
+         |                      |                               ----> [ISSUED]
+         |                      |                               ----> [PENDING] --> [ISSUED] / [FAILED]
+         |                      |                               ----> [FAILED]
+         |                      +---[reject]---> [REJECTED] ---> Admin
+         |
+         +---[return]----> [RETURNED] ---> Admin (reassign or close)
+
+  5.3  State Definitions
+  ----------------------
+
+  State          Description
+  -------------  --------------------------------------------------------------
+  SUBMITTED      Validation passed. Visible to all operators and Admin.
+                 Available for pickup or assignment.
+
+  IN_REVIEW      An operator has picked up the request.
+                 SINGLE mode: this operator will approve or reject.
+                 DUAL mode: this is the Maker.
+
+  REVIEWED       DUAL mode only. Maker submitted remarks. Waiting for a
+                 different operator to act as Checker.
+
+  RETURNED       Operator sent request back to Admin -- needs clarification
+                 or reassignment.
+
+  APPROVED       Approved by single operator (SINGLE) or Checker (DUAL).
+                 Request dispatched to CA.
+
+  REJECTED       Rejected by operator or Checker. Goes to Admin for
+                 reassignment or closure.
+
+  CLOSED         Permanently closed by Admin. No further action possible.
+
+  SENT_TO_CA     [CHANGED v1 -- C-14]
+                 Request has been dispatched to the CA. Awaiting response.
+
+  PENDING        [CHANGED v1 -- C-14]
+                 CA acknowledged the request but has not yet issued the
+                 certificate (async CA processing).
+
+  ISSUED         CA signed the certificate successfully. Certificate active.
+
+  FAILED         CA signing failed. Admin can review and retry.
+
+  5.4  Valid Transitions
+  ----------------------
+
+  From           To             Who / When
+  -------------  -------------  -----------------------------------------------
+  SUBMITTED      IN_REVIEW      Operator self-pickup or Admin assigns
+  IN_REVIEW      APPROVED       SINGLE mode: operator approves directly
+  IN_REVIEW      REJECTED       SINGLE mode: operator rejects directly
+  IN_REVIEW      REVIEWED       DUAL mode: Maker submits remarks
+  IN_REVIEW      RETURNED       Operator returns to Admin (any mode)
+  REVIEWED       APPROVED       DUAL mode: Checker approves
+  REVIEWED       REJECTED       DUAL mode: Checker rejects
+  RETURNED       IN_REVIEW      Admin reassigns to another operator
+  RETURNED       CLOSED         Admin permanently closes
+  REJECTED       IN_REVIEW      Admin reassigns
+  REJECTED       CLOSED         Admin permanently closes
+  APPROVED       SENT_TO_CA     System dispatches to CA [CHANGED v1 -- C-14]
+  SENT_TO_CA     ISSUED         CA responded synchronously with certificate
+  SENT_TO_CA     PENDING        CA acknowledged, processing async [C-14]
+  SENT_TO_CA     FAILED         CA returned an error
+  PENDING        ISSUED         CA callback received with certificate [C-14]
+  PENDING        FAILED         CA callback received with failure [C-14]
+  FAILED         SENT_TO_CA     Admin retries
+
+
+================================================================================
+  6.  DETAILED FLOW -- SINGLE MODE WITH SELF-PICKUP     [CHANGED v1 -- C-15]
+================================================================================
+
+  This flow applies when a certificate profile (e.g., TLS_CLIENT, SMIME) is
+  mapped to a workflow configuration with approval_mode = SINGLE and
+  assignment_mode = SELF_PICKUP.
+
+  One operator picks the request from the shared pool and is solely responsible
+  for reviewing and deciding.
+
+  Step 1 -- Client Submits CSR
+  ----------------------------
+
+    POST /api/ra/requests
+    Auth: Any authenticated user or system
+
+  The system receives the request, runs the validation, and if all checks pass,
+  places the request in SUBMITTED status.
+
+  System resolves the workflow configuration:
+    Profile = TLS_CLIENT --> mapped to workflow config: SINGLE Self-Pickup
+    approval_mode_at_pickup = SINGLE stored when operator picks up
+
+  Response to client:
+    {
+      "requestId": "RA-REQ-2026-00000042",
+      "status": "SUBMITTED",
+      "message": "Validation passed. Request is in the approval queue."
+    }
+
+  The request is now visible in the shared operator pool.
+
+  Step 2 -- Operator Views the Pool
+  ----------------------------------
+
+    GET /api/ra/requests/pool
+    Auth: ROLE_OPERATOR
+
+  Returns all requests in SUBMITTED status that are unclaimed.
+
+  Response example:
+    [
+      {
+        "requestId": "RA-REQ-2026-00000042",
+        "subjectDn": "CN=client.acme.com, O=Acme Corp, C=IN",
+        "csrProfile": "TLS_CLIENT",
+        "priority": "NORMAL",
+        "status": "SUBMITTED",
+        "submittedAt": "2026-06-30T10:00:00Z",
+        "workflowMode": "SINGLE"
+      }
+    ]
+
+  Step 3 -- Operator Picks Up the Request
+  ----------------------------------------
+
+    POST /api/ra/requests/{requestId}/pickup
+    Auth: ROLE_OPERATOR
+
+  Server-side checks before pickup:
+    - Request must be in SUBMITTED status
+    - Operator must not be the original requestor
+    - Operator must not exceed max_pending_per_operator
+
+  On success:
+    - status             --> IN_REVIEW
+    - maker_id           --> current operator's user ID
+    - assigned_at        --> current timestamp
+    - approval_mode_at_pickup --> SINGLE
+    - Transition history entry created
+
+  All other operators now see this request as IN_REVIEW. They cannot pick it up.
+
+  Response:
+    {
+      "requestId": "RA-REQ-2026-00000042",
+      "status": "IN_REVIEW",
+      "pickedUpBy": "priya.patel",
+      "pickedUpAt": "2026-06-30T10:15:00Z",
+      "workflowMode": "SINGLE",
+      "message": "Request is now assigned to you. Review and approve or reject."
+    }
+
+  Step 4a -- Operator Approves
+  -----------------------------
+
+    POST /api/ra/requests/{requestId}/approve
+    Auth: ROLE_OPERATOR
+    Content-Type: application/json
+
+    {
+      "remarks": "CSR verified. Subject DN matches registered domain.
+                  Key size 4096 RSA. Approved."
+    }
+
+  Server-side checks:
+    - Caller must be the operator who picked up (maker_id == currentUser.id)
+    - approval_mode_at_pickup must be SINGLE
+    - Remarks required if require_remarks = true in workflow config
+
+  On success:
+    - status             --> APPROVED
+    - maker_remarks      --> saved
+    - maker_reviewed_at  --> current timestamp
+    - System dispatches to CA --> status --> SENT_TO_CA
+
+  Response:
+    {
+      "requestId": "RA-REQ-2026-00000042",
+      "status": "SENT_TO_CA",
+      "message": "Request approved and dispatched to CA for signing."
+    }
+
+  Flow continues at Step 6 (CA issuance).
+
+  Step 4b -- Operator Rejects
+  ----------------------------
+
+    POST /api/ra/requests/{requestId}/approve
+    Auth: ROLE_OPERATOR
+    Content-Type: application/json
+
+    {
+      "decision": "REJECT",
+      "remarks": "Subject DN does not match the registered domain. Resubmit."
+    }
+
+  NOTE: The same /approve endpoint handles both approve and reject decisions.
+  The server routes based on the "decision" field.  [CHANGED v1 -- C-11]
+
+  On success:
+    - status         --> REJECTED
+    - maker_remarks  --> saved
+    - Request appears in Admin dashboard under the REJECTED bucket
+
+  Admin then either:
+    - Reassigns to a different operator --> status back to IN_REVIEW
+    - Closes the request permanently --> status --> CLOSED
+
+  Step 4c -- Operator Returns to Admin
+  -------------------------------------
+
+    POST /api/ra/requests/{requestId}/return
+    Auth: ROLE_OPERATOR
+    Content-Type: application/json
+
+    {
+      "reason": "Requestor's domain is not in the approved domain list.
+                 Needs Admin verification before I can approve."
+    }
+
+  On success:
+    - status    --> RETURNED
+    - maker_id  remains (audit trail)
+
+  Admin options:
+    - Reassign to same or different operator --> status back to IN_REVIEW
+    - Close permanently --> status --> CLOSED
+
+  Step 5 -- Admin Actions on REJECTED or RETURNED
+  -------------------------------------------------
+
+    # Reassign to a different operator
+    POST /api/ra/requests/{requestId}/assign
+    Auth: ROLE_ADMIN
+
+    {
+      "operatorId": 7,
+      "remarks": "Reassigned -- previous operator unavailable."
+    }
+
+    On success:
+      - status      --> IN_REVIEW
+      - maker_id    --> new operator ID
+      - assigned_at --> current timestamp
+      - Transition history entry created
+
+    # Or permanently close
+    POST /api/ra/requests/{requestId}/close
+    Auth: ROLE_ADMIN
+
+    {
+      "reason": "Request withdrawn by requestor."
+    }
+
+    On success:
+      - status        --> CLOSED
+      - closed_by_id  --> Admin user ID
+      - closed_at     --> current timestamp
+      - closed_reason --> saved
+      - No further actions possible on this request
+
+  Step 6 -- CA Issuance (SINGLE and DUAL, all paths)
+  ---------------------------------------------------
+
+  See Section 12 for full detail. The possible outcomes after SENT_TO_CA are:
+
+    [SENT_TO_CA]
+         |
+         +---> [ISSUED]   CA responded synchronously with a signed certificate
+         |
+         +---> [PENDING]  CA acknowledged but is processing asynchronously
+         |          |
+         |          +---> [ISSUED]   CA callback arrives with certificate
+         |          +---> [FAILED]   CA callback arrives with error
+         |
+         +---> [FAILED]   CA returned an error immediately
+                     |
+                     +---> Admin retries --> back to [SENT_TO_CA]
+                     +---> Admin closes  --> [CLOSED]
+
+  Complete SINGLE Self-Pickup -- Status Lifecycle Summary
+  -------------------------------------------------------
+
+    SUBMITTED
+      --> IN_REVIEW            (operator self-pickup)
+            --> APPROVED       (operator approves)
+                --> SENT_TO_CA (system dispatches to CA)
+                    --> ISSUED
+                    --> PENDING --> ISSUED / FAILED
+                    --> FAILED  --> Admin retries --> SENT_TO_CA
+            --> REJECTED       (operator rejects)
+                --> IN_REVIEW  (Admin reassigns)
+                --> CLOSED     (Admin closes)
+            --> RETURNED       (operator returns)
+                --> IN_REVIEW  (Admin reassigns)
+                --> CLOSED     (Admin closes)
+
+
+================================================================================
+  7.  DETAILED FLOW -- DUAL MODE WITH SELF-PICKUP       [CHANGED v1 -- C-15]
+================================================================================
+
+  This flow applies when a certificate profile (e.g., TLS_SERVER, CODE_SIGNING)
+  is mapped to a workflow configuration with approval_mode = DUAL and
+  assignment_mode = SELF_PICKUP.
+
+  Two operators are required. The Maker reviews the request first and submits a
+  recommendation. A different operator (the Checker) then makes the final
+  approval or rejection decision. The same person cannot be both Maker and
+  Checker for the same request -- separation of duties enforced at the API level.
+
+  Step 1 -- Client Submits CSR
+  ----------------------------
+
+  Same as SINGLE mode Step 1. On successful validation:
+    - status --> SUBMITTED
+    - Workflow config resolved: DUAL Self-Pickup
+    - Request visible in shared pool to all operators
+
+  Response to client:
+    {
+      "requestId": "RA-REQ-2026-00000043",
+      "status": "SUBMITTED",
+      "message": "Validation passed. Request is in the approval queue.",
+      "workflowMode": "DUAL"
+    }
+
+  Step 2 -- Maker Views the Pool
+  --------------------------------
+
+    GET /api/ra/requests/pool
+    Auth: ROLE_OPERATOR
+
+  Returns requests in SUBMITTED status. Response includes workflowMode: DUAL
+  so the operator knows a second operator will be required after review.
+
+  Step 3 -- Maker Picks Up the Request
+  --------------------------------------
+
+    POST /api/ra/requests/{requestId}/pickup
+    Auth: ROLE_OPERATOR
+
+  Server-side checks:
+    - Request must be in SUBMITTED status
+    - Operator must not be the original requestor
+    - Operator must not exceed max pending limit
+
+  On success:
+    - status                   --> IN_REVIEW
+    - maker_id                 --> current operator's user ID
+    - assigned_at              --> current timestamp
+    - approval_mode_at_pickup  --> DUAL
+    - Transition history entry created
+
+  Response:
+    {
+      "requestId": "RA-REQ-2026-00000043",
+      "status": "IN_REVIEW",
+      "yourRole": "MAKER",
+      "pickedUpBy": "priya.patel",
+      "pickedUpAt": "2026-06-30T10:15:00Z",
+      "workflowMode": "DUAL",
+      "message": "You are the Maker. Review the request and submit your
+                  remarks. A Checker will make the final decision."
+    }
+
+  Step 4 -- Maker Reviews and Submits Remarks
+  --------------------------------------------
+
+  The Maker carefully reviews:
+    - Subject DN correctness
+    - SAN entries (if present)
+    - Key algorithm and key size against profile policy
+    - Validity period against profile constraints
+    - Requestor identity and purpose
+    - Validation flags and warnings
+
+  The Maker does NOT make the final approval decision -- they submit a
+  recommendation with remarks.
+
+    POST /api/ra/requests/{requestId}/review
+    Auth: ROLE_OPERATOR
+    Content-Type: application/json
+
+    {
+      "remarks": "CSR reviewed. Subject DN CN=api.acme.com matches registered
+                  domain. RSA-4096 key meets policy. SAN dns:api.acme.com
+                  verified. No validation flags. Recommend approval."
+    }
+
+  Server-side checks:
+    - Caller must be the Maker (maker_id == currentUser.id)
+    - approval_mode_at_pickup must be DUAL
+    - Remarks required if require_remarks = true
+
+  On success:
+    - status            --> REVIEWED
+    - maker_remarks     --> saved
+    - maker_reviewed_at --> current timestamp
+    - Transition history entry created
+
+  The request now appears in the Checker pool -- visible to all operators
+  EXCEPT the Maker. This ensures the Checker is always a different person.
+
+  Response:
+    {
+      "requestId": "RA-REQ-2026-00000043",
+      "status": "REVIEWED",
+      "message": "Your review has been submitted. Request is now awaiting
+                  Checker decision."
+    }
+
+  Step 4 (alternate) -- Maker Returns to Admin
+  ---------------------------------------------
+
+    POST /api/ra/requests/{requestId}/return
+    Auth: ROLE_OPERATOR
+
+    {
+      "reason": "Domain api-legacy.acme.com is flagged as decommissioned.
+                 Needs Admin verification before Maker can recommend."
+    }
+
+  On success:
+    - status    --> RETURNED
+    - maker_id  remains for audit trail
+    - Request appears in Admin dashboard RETURNED bucket
+
+  Admin can reassign to a different Maker or close permanently.
+
+  Step 5 -- Checker Views the Checker Pool
+  -----------------------------------------
+
+    GET /api/ra/requests/pool?forChecker=true
+    Auth: ROLE_OPERATOR
+
+  Returns all requests in REVIEWED status where maker_id != currentUser.id.
+
+  The Checker can see:
+    - The request details (CSR, subject DN, profile, validity)
+    - The Maker's remarks and recommendation
+    - The Maker's name
+    - Validation results
+
+  Response example:
+    [
+      {
+        "requestId": "RA-REQ-2026-00000043",
+        "subjectDn": "CN=api.acme.com, O=Acme Corp, C=IN",
+        "csrProfile": "TLS_SERVER",
+        "status": "REVIEWED",
+        "makerName": "priya.patel",
+        "makerRemarks": "CSR reviewed. RSA-4096. Recommend approval.",
+        "makerReviewedAt": "2026-06-30T10:45:00Z",
+        "workflowMode": "DUAL"
+      }
+    ]
+
+  Step 6 -- Checker Picks Up the Reviewed Request
+  -------------------------------------------------
+
+    POST /api/ra/requests/{requestId}/pickup
+    Auth: ROLE_OPERATOR
+
+  Server-side checks:
+    - Request must be in REVIEWED status
+    - Caller MUST NOT be the Maker (maker_id != currentUser.id)
+      Separation of duties enforced.
+    - If violation: 403 PKI_APR_005
+
+  On success:
+    - checker_id --> current operator's user ID
+    - No status change -- request stays in REVIEWED
+    - Transition history entry: "Checker picked up"
+
+  Response:
+    {
+      "requestId": "RA-REQ-2026-00000043",
+      "status": "REVIEWED",
+      "yourRole": "CHECKER",
+      "checkerPickedUpBy": "vikram.singh",
+      "makerName": "priya.patel",
+      "makerRemarks": "CSR reviewed. RSA-4096. Recommend approval.",
+      "message": "You are the Checker. Review the Maker's remarks and the
+                  request, then approve or reject."
+    }
+
+  Step 7a -- Checker Approves
+  ----------------------------
+
+    POST /api/ra/requests/{requestId}/approve
+    Auth: ROLE_OPERATOR
+    Content-Type: application/json
+
+    {
+      "remarks": "Agreed with Maker's assessment. Domain verified.Approving."
+    }
+
+  Server-side routing  [CHANGED v1 -- C-11]:
+    - Server checks checker_id == currentUser.id
+    - approval_mode_at_pickup == DUAL
+    - Routes this as a Checker approval decision
+
+  On success:
+    - status            --> APPROVED
+    - checker_decision  --> APPROVED
+    - checker_remarks   --> saved
+    - checker_decided_at --> current timestamp
+    - System dispatches to CA --> status --> SENT_TO_CA
+
+  Response:
+    {
+      "requestId": "RA-REQ-2026-00000043",
+      "status": "SENT_TO_CA",
+      "message": "Request approved by Checker and dispatched to CA."
+    }
+
+  Step 7b -- Checker Rejects
+  ---------------------------
+
+    POST /api/ra/requests/{requestId}/approve
+    Auth: ROLE_OPERATOR
+    Content-Type: application/json
+
+    {
+      "decision": "REJECT",
+      "remarks": "Domain api.acme.com is scheduled for retirement next month.
+                  Certificate issuance at this time is not appropriate."
+    }
+
+  On success:
+    - status             --> REJECTED
+    - checker_decision   --> REJECTED
+    - checker_remarks    --> saved
+    - checker_decided_at --> current timestamp
+    - Request appears in Admin dashboard REJECTED bucket
+
+  Step 8 -- CA Issuance
+  ----------------------
+
+  Same as SINGLE mode Step 6. See Section 12 for full detail.
+
+  Complete DUAL Self-Pickup -- Status Lifecycle Summary
+  ------------------------------------------------------
+
+    SUBMITTED
+      --> IN_REVIEW                  (Maker self-pickup)
+            --> REVIEWED             (Maker submits remarks)
+                --> [Checker picks up -- checker_id assigned]
+                      --> APPROVED   (Checker approves)
+                          --> SENT_TO_CA
+                              --> ISSUED
+                              --> PENDING --> ISSUED / FAILED
+                              --> FAILED  --> Admin retry --> SENT_TO_CA
+                      --> REJECTED   (Checker rejects)
+                          --> IN_REVIEW  (Admin reassigns new Maker)
+                          --> CLOSED    (Admin closes)
+            --> RETURNED             (Maker returns)
+                --> IN_REVIEW        (Admin reassigns new Maker)
+                --> CLOSED           (Admin closes)
+
+  Separation of Duties -- Enforcement Rules (DUAL mode)
+  -------------------------------------------------------
+
+  Rule                                      Enforcement
+  ----------------------------------------  ------------------------------------
+  Maker cannot be Checker for same request  maker_id != currentUser.id checked
+                                            at Checker pickup; 403 PKI_APR_005
+                                            if violated
+
+  Requestor cannot be Maker or Checker      requestor_user_id != currentUser.id
+                                            checked at pickup; 403 PKI_APR_006
+                                            if violated
+
+  Checker cannot approve without being      checker_id == currentUser.id
+  assigned                                  required at approve; 403 PKI_APR_004
+                                            if violated
+
+  Maker cannot skip review and approve      Server rejects /approve if called by
+  directly in DUAL mode                     maker_id when mode == DUAL and
+                                            status == IN_REVIEW
+
+
+================================================================================
+  8.  DATABASE SCHEMA                                   [CHANGED v1 -- C-06]
+================================================================================
+
+  NOTE: The previous design stored all data -- CSR content, requestor info,
+  and approval workflow columns -- in a single csr_requests table. As
+  recommended, this has been split into three focused tables with clean
+  separation of concerns.
+
+  8.1  Table: csr_requests  (Core Request Data)
+  -----------------------------------------------
+
+  Column                     Type           Null  Description
+  -------------------------  -------------  ----  ------------------------------
+  id                         BIGINT PK      NO    Auto-increment internal PK
+  request_id                 VARCHAR(60)    NO    System-generated ID
+                                                  Format: RA-REQ-{YYYY}-{8-digit}
+                                                  [CHANGED v1 -- C-02]
+  client_txn_id              VARCHAR(100)   YES   Client-provided transaction ID.
+                                                  Optional. UNIQUE. [CHANGED v1]
+  csr_pem                    TEXT           NO    Raw PKCS#10 CSR in PEM format
+  subject_dn                 VARCHAR(500)   NO    Parsed subject DN from CSR
+  key_algorithm              VARCHAR(20)    NO    RSA, ECDSA, Ed25519
+  key_size                   INT            YES   Key size in bits
+  signature_algorithm        VARCHAR(50)    NO    e.g. SHA256withRSA
+  subject_alt_names          VARCHAR(2000)  YES   SANs parsed from CSR
+  csr_hash                   VARCHAR(64)    NO    SHA-256 of CSR bytes
+                                                  (duplicate detection)
+  profile_id                 BIGINT FK      NO    --> csr_profiles.id
+                                                  [CHANGED v1 -- C-03]
+  workflow_config_id         BIGINT FK      YES   --> workflow_configurations.id
+                                                  (resolved at pickup)
+  approval_mode_at_pickup    VARCHAR(10)    YES   SINGLE or DUAL
+                                                  locked at pickup time
+  status                     VARCHAR(20)    NO    Current status
+  status_reason              VARCHAR(1000)  YES   Reason for current status
+  validation_passed          BOOLEAN        YES   Validation result
+  validation_warnings        JSON           YES   Warnings from validation engine
+  validation_flags           JSON           YES   Flags needing human review
+  certificate_id             BIGINT FK      YES   --> certificates.id
+                                                  (set after issuance)
+  created_at                 DATETIME(6)    NO    When request was received
+  created_by                 VARCHAR(100)   NO    Who or what submitted
+  updated_at                 DATETIME(6)    NO    Last update timestamp
+  updated_by                 VARCHAR(100)   NO    Who last updated
+
+  request_id format change  [CHANGED v1 -- C-02]:
+    Sequence widened from 6 digits (max 999,999/year) to 8 digits
+    (max 99,999,999/year) to eliminate the year-based sequence softlock.
+
+    Previous : RA-REQ-2026-000042
+    Updated  : RA-REQ-2026-00000042
+
+  client_txn_id is now optional  [CHANGED v1]:
+    If not provided by the client, the field is left empty. Client must use
+    the server-generated requestId for all future tracking. UNIQUE constraint
+    is retained.
+
+  Indexes:
+    UNIQUE  uq_request_id        (request_id)
+    UNIQUE  uq_client_txn_id     (client_txn_id)
+    INDEX   idx_csr_status       (status)
+    INDEX   idx_csr_profile      (profile_id)
+    INDEX   idx_csr_hash         (csr_hash)
+    INDEX   idx_csr_created      (created_at)
+    INDEX   idx_csr_workflow     (workflow_config_id)
+
+  8.2  Table: csr_requestor_info                       [CHANGED v1 -- C-07]
+  --------------------------------------------------------------------------
+
+  NOTE: Previously, requestor name, email, department, and phone were columns
+  in csr_requests. For authenticated users, this duplicated data from the
+  users table. This table now holds requestor context cleanly -- either as a
+  FK to users for authenticated requests, or as free-form fields for anonymous
+  submissions.
+
+  Column                  Type           Null  Description
+  ----------------------  -------------  ----  --------------------------------
+  id                      BIGINT PK      NO    Auto-increment
+  request_id              BIGINT FK      NO    --> csr_requests.id
+  requestor_user_id       BIGINT FK      YES   --> users.id. Set if authenticated
+                                               user. Name/email/dept fetched via
+                                               JOIN -- not stored here.
+  requestor_name          VARCHAR(200)   YES   Anonymous submissions only
+  requestor_email         VARCHAR(200)   YES   Anonymous submissions only
+  requestor_department    VARCHAR(200)   YES   Anonymous submissions only
+  requestor_phone         VARCHAR(50)    YES   Anonymous submissions only
+  requested_not_before    DATETIME(6)    YES   Certificate start time.
+                                               NULL = now. [CHANGED v1 -- C-05]
+  requested_not_after     DATETIME(6)    YES   Certificate end time.
+                                               NULL = profile default. [C-05]
+  purpose                 VARCHAR(1000)  YES   Why this certificate is needed
+  priority                VARCHAR(10)    NO    NORMAL (default), HIGH, URGENT
+  additional_attributes   JSON           YES   Org-specific metadata. Keys must
+                                               conform to allowed list for
+                                               the profile. [CHANGED v1]
+
+  Validity period change  [CHANGED v1 -- C-05]:
+    The previous requested_validity_days INT field has been replaced.
+
+    Fields Provided              Result
+    ---------------------------  -----------------------------------------------
+    Neither notBefore/notAfter   notBefore = now
+                                 notAfter  = now + profile default days
+    Only notBefore               notAfter  = notBefore + profile default days
+    Only notAfter                notBefore = now
+                                 validate notAfter > now
+    Both provided                Use as-is
+                                 Validate range within profile limits
+
+  8.3  Table: csr_approval_workflow                    [CHANGED v1 -- C-06]
+  --------------------------------------------------------------------------
+
+  NOTE: Approval tracking columns are moved out of csr_requests into a
+  dedicated table. This table is only created when a request enters IN_REVIEW
+  status -- it does not exist for requests still in SUBMITTED or
+  VALIDATION_FAILED.
+
+  Column              Type           Null  Description
+  ------------------  -------------  ----  ------------------------------------
+  id                  BIGINT PK      NO    Auto-increment
+  request_id          BIGINT FK      NO    --> csr_requests.id
+  maker_id            BIGINT FK      YES   --> users.id (Maker operator)
+                                           [CHANGED v1 -- C-04]
+  assigned_at         DATETIME(6)    YES   When Maker picked up or was assigned
+  maker_remarks       VARCHAR(2000)  YES   Maker's review notes
+  maker_reviewed_at   DATETIME(6)    YES   When Maker submitted review
+  checker_id          BIGINT FK      YES   --> users.id (Checker operator)
+  checker_decision    VARCHAR(10)    YES   APPROVED or REJECTED
+  checker_remarks     VARCHAR(2000)  YES   Checker's decision remarks
+  checker_decided_at  DATETIME(6)    YES   When Checker decided
+  closed_by_id        BIGINT FK      YES   --> users.id (Admin who closed)
+  closed_at           DATETIME(6)    YES   When Admin closed the request
+  closed_reason       VARCHAR(2000)  YES   Why Admin closed
+
+  NOTE: assigned_to_id renamed to maker_id  [CHANGED v1 -- C-04]:
+    The previous column name assigned_to_id was ambiguous -- it mixed up the
+    concept of assignment (admin action) with the Maker role. Renamed to
+    maker_id for symmetry with checker_id and clarity of intent.
+
+  8.4  Table: certificate_request_transitions  (Unchanged)
+  ----------------------------------------------------------
+
+  Every status change creates a permanent history entry. Admin and Auditor
+  can see the full trail per request. Entries MUST NOT be updated or deleted.
+
+  Column           Type           Null  Description
+  ---------------  -------------  ----  ----------------------------------------
+  id               BIGINT PK      NO    Auto-increment
+  request_id       BIGINT FK      NO    --> csr_requests.id
+  from_status      VARCHAR(20)    YES   Previous status (NULL for first entry)
+  to_status        VARCHAR(20)    NO    New status
+  changed_by_id    BIGINT FK      NO    --> users.id
+  changed_by_role  VARCHAR(20)    NO    ADMIN, OPERATOR, or SYSTEM
+  remarks          VARCHAR(2000)  YES   Remarks or reason for transition
+  created_at       DATETIME(6)    NO    When the transition occurred
+
+
+================================================================================
+  9.  REST API REFERENCE         [CHANGED v1 -- C-08, C-09, C-10, C-11, C-12]
+================================================================================
+
+  9.1  Workflow Configuration Management
+  ----------------------------------------
+
+  Method  Path                                    Description        Auth
+  ------  --------------------------------------  -----------------  -------
+  POST    /api/ra/admin/workflow-configs          Create config      ADMIN
+  GET     /api/ra/admin/workflow-configs          List all configs   ADMIN
+  GET     /api/ra/admin/workflow-configs/{id}     Get specific       ADMIN
+  PUT     /api/ra/admin/workflow-configs/{id}     Update config      ADMIN
+  POST    /api/ra/admin/profile-mappings          Map profile        ADMIN
+  GET     /api/ra/admin/profile-mappings          List mappings      ADMIN
+
+  9.2  CSR Submission and Lookup              [CHANGED v1 -- C-08, C-09]
+  -----------------------------------------------------------------------
+
+  Method  Path                                    Description        Auth
+  ------  --------------------------------------  -----------------  ----------
+  POST    /api/ra/requests                        Submit CSR         Any
+  GET     /api/ra/requests                        Query by params    ADMIN /
+                                                                     OPERATOR /
+                                                                     AUDITOR
+  GET     /api/ra/requests/{requestId}/history    Transition history ADMIN,
+                                                                     AUDITOR
+
+  Lookup endpoints replaced  [CHANGED v1 -- C-08]:
+
+    Previous (removed):
+      GET /api/ra/requests/by-request-id/{reqId}
+      GET /api/ra/requests/by-txn-id/{txnId}
+      GET /api/ra/requests/{id}          <-- exposed internal DB id
+
+    Updated -- unified query parameter style:
+      GET /api/ra/requests?requestId=RA-REQ-2026-00000042
+      GET /api/ra/requests?clientTxnId=TXN-2026-06-25-00042
+      GET /api/ra/requests?status=SUBMITTED
+      GET /api/ra/requests?status=SUBMITTED&priority=HIGH
+      GET /api/ra/requests?from=2026-06-01&to=2026-06-30
+      GET /api/ra/requests?subjectDn=CN=api.acme.com
+
+  History endpoint  [CHANGED v1 -- C-09]:
+
+    Previous (removed):
+      GET /api/ra/requests/{id}/history
+      Used internal DB auto-increment ID which client never receives.
+
+    Updated:
+      GET /api/ra/requests/{requestId}/history
+      Uses human-readable requestId (e.g., RA-REQ-2026-00000042).
+      Access restricted to ROLE_ADMIN and ROLE_AUDITOR only.
+
+  9.3  Admin Dashboard and Actions
+  ----------------------------------
+
+  Method  Path                                    Description        Auth
+  ------  --------------------------------------  -----------------  -------
+  GET     /api/ra/requests/summary                Status counts      ADMIN
+  GET     /api/ra/operators                       List operators     ADMIN
+  POST    /api/ra/requests/{requestId}/assign     Assign to operator ADMIN
+  POST    /api/ra/requests/{requestId}/close      Close permanently  ADMIN
+  POST    /api/ra/requests/{requestId}/retry      Retry failed CA    ADMIN
+
+  9.4  Operator Actions                      [CHANGED v1 -- C-11, C-12]
+  -----------------------------------------------------------------------
+
+  Method  Path                                    Description        Auth
+  ------  --------------------------------------  -----------------  -------
+  GET     /api/ra/requests/pool                   View pickup pool   OPERATOR
+  GET     /api/ra/requests/my-work                My in-progress     OPERATOR
+  POST    /api/ra/requests/{requestId}/pickup      Pick up request    OPERATOR
+  POST    /api/ra/requests/{requestId}/review      Maker submits      OPERATOR
+                                                  remarks (DUAL only)
+  POST    /api/ra/requests/{requestId}/approve     Approve or reject  OPERATOR
+  POST    /api/ra/requests/{requestId}/return      Return to Admin    OPERATOR
+
+  /pickup and /pickup-check merged  [CHANGED v1 -- C-12]:
+
+    Previous (removed):
+      POST /api/ra/requests/{id}/pickup        --> for Maker only
+      POST /api/ra/requests/{id}/pickup-check  --> for Checker only
+
+    Updated -- single /pickup endpoint with server-side routing:
+      If request.status == SUBMITTED:
+          --> Caller becomes Maker (maker_id = currentUser.id)
+
+      If request.status == REVIEWED and maker_id != currentUser.id:
+          --> Caller becomes Checker (checker_id = currentUser.id)
+
+      If request.status == REVIEWED and maker_id == currentUser.id:
+          --> 403 PKI_APR_005 (separation of duties)
+
+  /approve and /accept merged  [CHANGED v1 -- C-11]:
+
+    Previous (removed):
+      POST /api/ra/requests/{id}/approve  --> SINGLE mode only
+      POST /api/ra/requests/{id}/accept   --> DUAL Checker only
+
+    Updated -- single /approve endpoint with server-side routing:
+      If approval_mode_at_pickup == SINGLE and maker_id == currentUser.id:
+          --> Direct approval/rejection by operator
+
+      If approval_mode_at_pickup == DUAL and checker_id == currentUser.id:
+          --> Checker final approval/rejection
+
+      If approval_mode_at_pickup == DUAL and maker_id == currentUser.id:
+          --> 403 -- Maker cannot approve directly. Use /review.
+
+    This eliminates PKI_APR_012 and removes the need for clients to know
+    the current workflow mode before calling an endpoint.
+
+  9.5  Certificate Endpoints                         [CHANGED v1 -- C-10]
+  -----------------------------------------------------------------------
+
+  Method  Path                                    Description        Auth
+  ------  --------------------------------------  -----------------  -------
+  GET     /api/ra/certificates                    Query certificate  Any
+  GET     /api/ra/certificates/download           Download PEM       Any
+
+  Certificate lookup redesigned  [CHANGED v1 -- C-10]:
+
+    Previous (removed):
+      GET /api/ra/certificates/{serial}
+      Serial number alone is not globally unique across multiple CAs.
+
+    Updated -- query-parameter style:
+      # Option A -- RFC-compliant unique identification
+      GET /api/ra/certificates?issuerDn=CN=Intermediate+CA&serialNr=4F2A1B3C
+
+      # Option B -- via RA request ID
+      GET /api/ra/certificates?requestId=RA-REQ-2026-00000042
+
+      # Download
+      GET /api/ra/certificates/download?requestId=RA-REQ-2026-00000042
+      GET /api/ra/certificates/download?issuerDn=...&serialNr=4F2A1B3C
+
+  9.6  CA Callback Endpoint                         [CHANGED v1 -- C-14]
+  -----------------------------------------------------------------------
+
+  Method  Path                    Description                  Auth
+  ------  ----------------------  ---------------------------  ------------
+  POST    /api/ra/ca/callback     Receive async CA result      System (CA)
+
+  Request body:
+    {
+      "requestId":      "RA-REQ-2026-00000043",
+      "result":         "ISSUED",
+      "certificatePem": "-----BEGIN CERTIFICATE-----\n...",
+      "serialNumber":   "4F2A1B3C",
+      "issuedAt":       "2026-06-30T11:00:00Z"
+    }
+
+  On result = ISSUED:
+    - status         --> ISSUED
+    - Certificate stored in certificates table
+    - certificate_id FK set in csr_requests
+
+  On result = FAILED:
+    - status         --> FAILED
+    - status_reason  --> CA error message
+    - Admin notified for retry or close
+
+
+================================================================================
+  10.  RECORD VISIBILITY
+================================================================================
+
+  Role              What They See
+  ----------------  -------------------------------------------------------------
+  ADMIN             All records at all statuses. Full transition history. Who
+                    picked up, who reviewed, who decided. Filter by status,
+                    operator, date, subject DN, profile. Configuration and
+                    mapping management.
+
+  OPERATOR          All records with current status and assigned operator name.
+                    SUBMITTED records available for Maker pickup. REVIEWED
+                    records available for Checker pickup (excluding records
+                    where they are the Maker). Own picked-up and in-progress
+                    requests.
+
+  AUDITOR           All records (read-only). Full transition history. Audit
+                    log entries.
+
+  CLIENT / USER     Own submitted requests only. Queryable by requestId or
+                    clientTxnId. Status, validation result, and certificate
+                    download after issuance. Cannot access transition history.
+
+
+================================================================================
+  11.  TRANSITION HISTORY
+================================================================================
+
+  Every status change creates a permanent, immutable history entry in
+  certificate_request_transitions.
+
+  Example History -- DUAL Self-Pickup Full Flow
+
+  #   From           To             By             Role      Remarks
+  --  -------------  -------------  -------------  --------  --------------------
+  1   --             RECEIVED       system         SYSTEM    CSR received via API
+  2   RECEIVED       VALIDATED      system         SYSTEM    Validation passed
+  3   VALIDATED      SUBMITTED      system         SYSTEM    Queued for approval
+                                                             DUAL Self-Pickup
+  4   SUBMITTED      IN_REVIEW      priya.patel    OPERATOR  Maker self-pickup
+  5   IN_REVIEW      REVIEWED       priya.patel    OPERATOR  CSR verified.
+                                                             RSA-4096.
+                                                             Recommend approval.
+  6   REVIEWED       REVIEWED       vikram.singh   OPERATOR  Checker picked up
+  7   REVIEWED       APPROVED       vikram.singh   OPERATOR  Agreed with Maker.
+                                                             Domain verified.
+  8   APPROVED       SENT_TO_CA     system         SYSTEM    Dispatched to CA
+  9   SENT_TO_CA     ISSUED         system         SYSTEM    Serial: 4F2A1B3C
+
+  Access:
+    GET /api/ra/requests/RA-REQ-2026-00000043/history
+    Auth: ROLE_ADMIN or ROLE_AUDITOR
+
+
+================================================================================
+  12.  CA INTEGRATION AND ISSUANCE STATES             [CHANGED v1 -- C-14]
+================================================================================
+
+  NOTE: The previous design had only two CA outcomes: ISSUED and FAILED.
+  Enterprise CAs (including WLCA) process requests asynchronously -- the CA
+  acknowledges the request immediately but the certificate may be issued
+  seconds to minutes later. This section defines the three expected CA
+  outcomes and the async callback mechanism.
+
+  12.1  CA Dispatch Flow
+  -----------------------
+
+  When a request reaches APPROVED status, the system dispatches it to the CA:
+
+    [APPROVED]
+        |
+        | system dispatches to CA
+        v
+    [SENT_TO_CA]
+        |
+        +--[CA responds synchronously with cert]----> [ISSUED]
+        |
+        +--[CA acknowledges, processing async]-------> [PENDING]
+        |                                                  |
+        |                                          +-------+-------+
+        |                                          |               |
+        |                                       [ISSUED]       [FAILED]
+        |                                     (callback)      (callback)
+        |
+        +--[CA returns error immediately]-----------> [FAILED]
+
+  12.2  Three Expected CA Results
+  ---------------------------------
+
+  CA Result  RA Status  Description
+  ---------  ---------  -------------------------------------------------------
+  ISSUED     ISSUED     CA responded synchronously with a signed certificate.
+                        Certificate is immediately stored and available for
+                        download.
+
+  PENDING    PENDING    CA acknowledged the request and queued it for
+                        processing. RA waits for the CA to call back via
+                        POST /api/ra/ca/callback.
+
+  FAILED     FAILED     CA returned an error -- invalid CSR, policy violation,
+                        CA system error, or timeout. Admin reviews and may
+                        retry.
+
+  12.3  Admin Retry on FAILED
+  ----------------------------
+
+    POST /api/ra/requests/{requestId}/retry
+    Auth: ROLE_ADMIN
+
+    - status --> SENT_TO_CA again
+    - System re-dispatches to CA
+    - If CA still unavailable: status --> FAILED again
+    - Admin may retry multiple times or close permanently
+
+
+================================================================================
+  13.  MODE-SWITCH RULES
+================================================================================
+
+  When an Admin changes the workflow configuration mapping for a profile,
+  only new pickups are affected. Requests already in-flight continue under
+  the configuration that was active at the time of their pickup -- stored in
+  approval_mode_at_pickup.
+
+  Rule 1 -- SINGLE --> DUAL Config Switch
+
+  In-flight Status           Behaviour
+  -------------------------  --------------------------------------------------
+  SUBMITTED (not picked up)  Next pickup resolves the new DUAL config.
+                             Follows DUAL flow.
+
+  IN_REVIEW (reviewing)      Continues under SINGLE mode.
+                             approval_mode_at_pickup = SINGLE.
+                             Operator uses /approve directly.
+
+  APPROVED, ISSUED, CLOSED   No change. Already past approval stage.
+
+  ----
+
+  Rule 2 -- DUAL --> SINGLE Config Switch
+
+  In-flight Status           Behaviour
+  -------------------------  --------------------------------------------------
+  SUBMITTED (not picked up)  Next pickup resolves the new SINGLE config.
+                             Follows SINGLE flow.
+
+  IN_REVIEW (Maker picked    approval_mode_at_pickup = DUAL is locked.
+  up under DUAL)             Operator must use /review to submit to Checker.
+                             Cannot skip to /approve.
+
+  REVIEWED (awaiting         Must still have Checker. Maker already submitted.
+  Checker)                   Cannot skip Checker step even though config
+                             changed. System enforces: "Request was reviewed
+                             under DUAL mode. Checker decision is required."
+
+  APPROVED, ISSUED, CLOSED   No change.
+
+  ----
+
+  Rule 3 -- General Principles
+
+  - The approval_mode_at_pickup column on each request locks the mode at
+    pickup time.
+  - Config changes apply to future pickups only.
+  - In-flight requests complete under the mode they started with.
+
+
+================================================================================
+  14.  ROLE AND PERMISSION MATRIX
+================================================================================
+
+  Action                                     ADMIN  OPERATOR  AUDITOR  CLIENT
+  -----------------------------------------  -----  --------  -------  ------
+  Create / update workflow configurations    YES    NO        NO       NO
+  Map profile to workflow config             YES    NO        NO       NO
+  View all requests and statuses             YES    YES       YES      Own only
+  View transition history                    YES    NO        YES      NO
+  Filter / search requests                   YES    YES       YES      NO
+  Assign request to specific operator        YES    NO        NO       NO
+  Close request permanently                  YES    NO        NO       NO
+  Retry failed CA dispatch                   YES    NO        NO       NO
+  Self-pickup from pool (Maker)              NO     YES       NO       NO
+  Self-pickup from reviewed pool (Checker)   NO     YES *     NO       NO
+  Submit Maker review remarks (DUAL)         NO     YES       NO       NO
+  Approve or reject                          NO     YES       NO       NO
+  Return request to Admin                    NO     YES       NO       NO
+  Submit CSR                                 NO     NO        NO       YES
+  Download issued certificate                NO     NO        NO       YES
+
+  * Checker must not be the same person as the Maker for that request.
+
+
+================================================================================
+  15.  ADMIN DASHBOARD
+================================================================================
+
+  The dashboard provides a real-time monitoring view across all requests,
+  grouped by status bucket. With per-profile workflow configurations, the
+  dashboard also shows which configuration is active per profile.
+
+  +------------------------------------------------------------------+
+  |                     CSR REQUEST DASHBOARD                         |
+  +------------------------------------------------------------------+
+  |  Active Workflow Configurations:                                  |
+  |    TLS_SERVER    --> High Security DUAL Self-Pickup               |
+  |    CODE_SIGNING  --> High Security DUAL Self-Pickup               |
+  |    TLS_CLIENT    --> Standard SINGLE Self-Pickup                  |
+  |    SMIME         --> Standard SINGLE Self-Pickup                  |
+  +------------------------------------------------------------------+
+  |  [INCOMING]       [POOL]         [IN PROGRESS]  [COMPLETED]       |
+  |  RECEIVED:  1    SUBMITTED: 5    IN_REVIEW:  3  ISSUED:  28       |
+  |  VAL_FAIL:  2                    REVIEWED:   2  CLOSED:   3       |
+  |                                  SENT_TO_CA: 1                    |
+  |                                  PENDING:    1                    |
+  |                                                                   |
+  |  [NEEDS ATTENTION]                                                |
+  |  REJECTED: 4    RETURNED: 2    FAILED: 0                          |
+  +------------------------------------------------------------------+
+  |  FILTERS:                                                         |
+  |  [Status] [Profile] [Operator] [Config]                           |
+  |  [Date From] [Date To] [Subject DN] [Search]                      |
+  +------------------------------------------------------------------+
+  |  Recent Activity:                                                 |
+  |  10:15  priya.patel   picked up  RA-REQ-2026-00000043  (Maker)   |
+  |  10:45  priya.patel   reviewed   RA-REQ-2026-00000043            |
+  |  11:00  vikram.singh  picked up  RA-REQ-2026-00000043  (Checker) |
+  |  11:05  vikram.singh  approved   RA-REQ-2026-00000043  --> CA    |
+  |  11:06  system        issued     RA-REQ-2026-00000043            |
+  +------------------------------------------------------------------+
+
+  Admin can see for each record:
+    - Current status and workflow configuration applied
+    - Who submitted it (requestor)
+    - Who is the Maker and when they picked up
+    - Maker's remarks (if in REVIEWED or later)
+    - Who is the Checker and when they decided
+    - Checker's decision and remarks
+    - Certificate serial and issued timestamp (after issuance)
+    - Full transition history (expandable per record)
+    - Time spent in each status
+
+
+================================================================================
+  16.  AUDIT LOG EVENTS
+================================================================================
+
+  Event Code               Triggered By     Description
+  -----------------------  ---------------  -----------------------------------
+  CSR_SUBMIT               Requestor        CSR submitted for {subjectDn}
+  CSR_VALIDATED            System           Validation passed
+  CSR_VALIDATION_FAILED    System           Validation failed -- {error}
+  CSR_PICKUP_MAKER         Operator         Picked up as Maker by {operator}
+  CSR_PICKUP_CHECKER       Operator         Picked up as Checker by {operator}
+  CSR_ASSIGN               Admin            Assigned as Maker to {operator}
+  CSR_REVIEW               Maker            Maker review submitted -- {remarks}
+  CSR_APPROVE              Operator/Checker Approved -- {remarks}
+  CSR_REJECT               Operator/Checker Rejected -- {remarks}
+  CSR_RETURN               Operator         Returned to Admin -- {reason}
+  CSR_REASSIGN             Admin            Reassigned to {operator} -- {reason}
+  CSR_CLOSED               Admin            Closed permanently -- {reason}
+  CERT_DISPATCHED          System           Dispatched to CA  [C-14]
+  CERT_PENDING             System           CA acknowledged, async  [C-14]
+  CERT_ISSUE               System           Certificate issued -- serial {serial}
+  CERT_ISSUE_FAIL          System           Certificate issuance failed -- {err}
+  CONFIG_CREATED           Admin            Workflow config created  [C-13]
+  CONFIG_UPDATED           Admin            Workflow config updated  [C-13]
+  PROFILE_MAPPING_CHANGED  Admin            Profile remapped to config  [C-13]
+
+
+================================================================================
+  17.  ERROR CODES
+================================================================================
+
+  Code          HTTP  Message / Notes
+  ------------  ----  ----------------------------------------------------------
+  PKI_APR_001   400   Request is not in the correct status for this operation
+  PKI_APR_002   403   Cannot process your own request
+  PKI_APR_003   403   Only Admin can perform this action
+  PKI_APR_004   403   Only the assigned operator can perform this action
+  PKI_APR_005   403   Maker cannot act as Checker. A different operator must
+                      perform the Checker role.  (DUAL separation of duties)
+  PKI_APR_006   403   Requestor cannot be Maker or Checker
+  PKI_APR_007   404   Operator not found
+  PKI_APR_008   400   Remarks are required for this workflow configuration
+  PKI_APR_009   409   Request already picked up by another operator
+  PKI_APR_010   400   Return reason is required
+  PKI_APR_011   400   Invalid or inactive workflow configuration
+  PKI_APR_013   400   Operator has reached the maximum pending request limit
+  PKI_APR_014   400   No active workflow configuration found for this profile
+                      [CHANGED v1 -- C-13]
+  PKI_APR_015   400   Maker cannot approve directly in DUAL mode. Submit review
+                      remarks via /review endpoint.  [CHANGED v1 -- C-11]
+
+  NOTE: PKI_APR_012 removed  [CHANGED v1 -- C-11]:
+    This error previously indicated that a DUAL mode API was called while the
+    system was in SINGLE mode, or vice versa. With the unified /pickup and
+    /approve endpoints that route server-side based on request state and caller
+    role, this error code is no longer needed.
+
+
+================================================================================
+  18.  TESTING PLAN
+================================================================================
+
+  SINGLE Mode -- Self-Pickup
+
+  Test ID    Scenario
+  ---------  ------------------------------------------------------------------
+  TEST-S01   Submit --> Operator self-pickup --> Approve --> SENT_TO_CA --> ISSUED
+  TEST-S02   Submit --> Operator self-pickup --> Reject --> Admin reassigns -->
+             New operator approves --> ISSUED
+  TEST-S03   Submit --> Operator self-pickup --> Return --> Admin closes --> CLOSED
+  TEST-S04   Submit --> Operator self-pickup --> Approve --> CA PENDING -->
+             CA callback ISSUED
+  TEST-S05   Submit --> Operator self-pickup --> Approve --> CA FAILED -->
+             Admin retries --> ISSUED
+  TEST-S06   Requestor cannot self-pickup own request -- 403 PKI_APR_002
+  TEST-S07   Operator at max pending limit cannot pickup -- 400 PKI_APR_013
+  TEST-S08   Second operator cannot pickup an IN_REVIEW request -- 409 PKI_APR_009
+
+  ----
+
+  DUAL Mode -- Self-Pickup
+
+  Test ID    Scenario
+  ---------  ------------------------------------------------------------------
+  TEST-D01   Submit --> Maker self-pickup --> Review --> Checker self-pickup -->
+             Approve --> ISSUED
+  TEST-D02   Submit --> Maker --> Review --> Checker rejects --> Admin reassigns
+             --> New Maker --> Review --> Checker approves
+  TEST-D03   Maker cannot self-pickup as Checker on same request -- 403 PKI_APR_005
+  TEST-D04   Requestor cannot be Maker or Checker -- 403 PKI_APR_006
+  TEST-D05   Maker returns to Admin --> Admin closes --> CLOSED
+  TEST-D06   Maker cannot call /approve directly in DUAL mode -- 400 PKI_APR_015
+  TEST-D07   Admin assigns Maker --> Maker reviews --> Different operator acts
+             as Checker --> Approve
+  TEST-D08   CA returns PENDING --> CA callback delivers certificate --> ISSUED
+  TEST-D09   CA returns FAILED --> Admin retries --> ISSUED on second attempt
+
+  ----
+
+  Configuration Tests                                        [CHANGED v1 -- C-13]
+
+  Test ID    Scenario
+  ---------  ------------------------------------------------------------------
+  TEST-C01   Create two workflow configs (DUAL Self-Pickup and SINGLE Self-Pickup)
+  TEST-C02   Map TLS_SERVER to DUAL config -- new requests use DUAL flow
+  TEST-C03   Map SMIME to SINGLE config -- new requests use SINGLE flow
+  TEST-C04   Remap TLS_SERVER DUAL --> SINGLE -- in-flight DUAL requests
+             unaffected; new pickups use SINGLE
+  TEST-C05   Remap SMIME SINGLE --> DUAL -- REVIEWED requests still require Checker
+  TEST-C06   Submit request for profile with no active mapping -- 400 PKI_APR_014
+  TEST-C07   Deactivate a workflow config -- cannot map new profiles to it
+  TEST-C08   max_pending_per_operator enforced across all profiles
+
+  ----
+
+  API Unification Tests                              [CHANGED v1 -- C-11, C-12]
+
+  Test ID    Scenario
+  ---------  ------------------------------------------------------------------
+  TEST-A01   POST /pickup on SUBMITTED request --> becomes Maker
+  TEST-A02   POST /pickup on REVIEWED request by non-Maker --> becomes Checker
+  TEST-A03   POST /pickup on REVIEWED request by Maker --> 403 PKI_APR_005
+  TEST-A04   POST /approve in SINGLE mode by Maker --> direct approval --> APPROVED
+  TEST-A05   POST /approve in DUAL mode by Checker --> final approval --> APPROVED
+  TEST-A06   POST /approve in DUAL mode by Maker --> 400 PKI_APR_015
+  TEST-A07   GET /api/ra/requests?requestId=RA-REQ-2026-00000042 --> correct record
+  TEST-A08   GET /api/ra/requests?clientTxnId=TXN-... --> correct record
+  TEST-A09   GET /api/ra/requests/RA-REQ-2026-00000042/history by ADMIN --> full trail
+  TEST-A10   GET /api/ra/requests/RA-REQ-2026-00000042/history by OPERATOR --> 403
+  TEST-A11   GET /api/ra/certificates?issuerDn=...&serialNr=... --> returns cert
+  TEST-A12   GET /api/ra/certificates?requestId=... --> returns cert
+
+  ----
+
+  Monitoring Tests
+
+  Test ID    Scenario
+  ---------  ------------------------------------------------------------------
+  TEST-F01   Admin filters requests by status
+  TEST-F02   Admin filters requests by operator
+  TEST-F03   Admin filters requests by date range
+  TEST-F04   Admin filters requests by subject DN
+  TEST-F05   Admin filters requests by certificate profile
+  TEST-F06   Admin filters requests by workflow configuration
+  TEST-F07   Transition history shows full trail per request
+  TEST-F08   Dashboard status counts accurate across all states
+
+
+================================================================================
+  End of Document -- RA Approval Workflow Architecture V1.0
+  Next document: RA_CSR_Request_Payload_and_Validation.md
+================================================================================
