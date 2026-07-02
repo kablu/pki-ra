@@ -435,10 +435,103 @@
 
   Step 6.7 — Requester Scope Validation
   -------------------------------------------------------------------------
-    - Self-service: CSR identity matches requester's identity?
-    - Requesting for others: requires ROLE_RA_OFFICER
-    - S/MIME: CSR email == requester's email in users table?
-    - TLS Server: requester authorized for that domain?
+
+  Context: The authenticated requestor (who logged in) is NOT always the
+  same as the certificate subject (what is in the CSR). This step validates
+  whether the requestor is authorized to obtain the type of certificate they
+  are requesting for the given subject.
+
+  A.  Certificate Type vs Expected Subject Identity
+
+    +----------------+-------------------------+----------------------------+
+    | Certificate    | Subject Must Be         | Requestor Must Be          |
+    | Type           |                         |                            |
+    +----------------+-------------------------+----------------------------+
+    | TLS Server     | FQDN or hostname        | Domain owner in            |
+    |                | e.g. api.acme.com       | domain_authorizations      |
+    |                | NOT a person's name     | OR ROLE_RA_OFFICER         |
+    +----------------+-------------------------+----------------------------+
+    | TLS Client     | Username or person DN   | That same authenticated    |
+    |                | e.g. CN=john.doe        | user (self-service only)   |
+    |                |                         | OR ROLE_RA_OFFICER         |
+    +----------------+-------------------------+----------------------------+
+    | S/MIME         | Person's full name +    | That same person --        |
+    |                | email SAN               | email in CSR must match    |
+    |                |                         | users.email for requestor  |
+    +----------------+-------------------------+----------------------------+
+    | Code Signing   | Developer or org name   | Authorized developer       |
+    |                |                         | OR ROLE_RA_OFFICER         |
+    +----------------+-------------------------+----------------------------+
+
+  B.  TLS Server Certificate — Requestor Authorization Check
+
+    This is the most critical check for the scenario where a person
+    (e.g., John) submits a CSR for a server (e.g., api.acme.com).
+
+    Step 1: Extract domain from CSR
+      - CN = api.acme.com --> domain = acme.com
+      - SAN dNSName = api.acme.com --> domain = acme.com
+      - SAN dNSName = *.acme.com   --> domain = acme.com
+
+    Step 2: Check CN format for TLS Server template
+      - CN must be a valid FQDN (e.g., api.acme.com)
+      - CN must NOT be a person's name (e.g., "John Doe")
+        Detection: CN contains spaces and no dots --> REJECT
+        Detection: CN matches users.display_name --> REJECT
+        Error: PKI_POL_013 "Subject CN is not a valid hostname
+               for TLS Server certificate"
+
+    Step 3: Check domain authorization
+      Query: domain_authorizations
+             WHERE user_id = :requestorUserId
+             AND   :domain LIKE CONCAT('%', authorized_domain)
+             AND   is_active = true
+
+      +----------------------------+-------------------------------------+
+      | Scenario                   | Action                              |
+      +----------------------------+-------------------------------------+
+      | John authorized for        | ALLOW -- proceed                    |
+      | acme.com                   |                                     |
+      +----------------------------+-------------------------------------+
+      | John NOT authorized for    | REJECT PKI_POL_012                  |
+      | acme.com, role = ROLE_USER | "Requester not authorized to        |
+      |                            |  obtain server certificate for      |
+      |                            |  this domain"                       |
+      +----------------------------+-------------------------------------+
+      | John has ROLE_RA_OFFICER   | ALLOW -- RA Officers can submit     |
+      | (regardless of domain)     | for any domain. Log for audit.      |
+      +----------------------------+-------------------------------------+
+      | John has ROLE_ADMIN        | ALLOW -- but flag for review        |
+      +----------------------------+-------------------------------------+
+
+  C.  S/MIME Certificate — Email Identity Check
+
+    - Extract email from CSR: Subject emailAddress field or SAN rfc822Name
+    - Query: users WHERE id = :requestorUserId --> get users.email
+    - CSR email == users.email? NO --> REJECT PKI_POL_007
+      "S/MIME certificate email must match your registered email address"
+    - Exception: ROLE_RA_OFFICER may submit for others
+
+  D.  TLS Client Certificate — Subject Match Check
+
+    - Extract CN from CSR (expected to be the username/person identifier)
+    - Resolve CN to a user: users WHERE username = :cn OR email = :cn
+    - Resolved user == requestor? NO AND requestor role = ROLE_USER
+      --> REJECT PKI_POL_007 "Cannot request client certificate
+          for a different identity"
+    - Exception: ROLE_RA_OFFICER may submit for others
+
+  E.  Table: domain_authorizations
+
+    Column          Type          Description
+    --------------  ------------  -------------------------------------------
+    id              BIGINT PK     Auto-increment
+    user_id         BIGINT FK     --> users.id (authorized person)
+    authorized_domain VARCHAR(253) Domain e.g. "acme.com" or "api.acme.com"
+    granted_by      BIGINT FK     --> users.id (Admin who granted)
+    granted_at      DATETIME(6)   When granted
+    expires_at      DATETIME(6)   NULL = no expiry
+    is_active       BOOLEAN       Whether active
 
   Step 6.8 — Concurrent Request Limits
   -------------------------------------------------------------------------
@@ -454,9 +547,80 @@
     - Key blocklist: known compromised keys, Debian weak keys
     - Match --> REJECT with generic message (don't reveal blocklist)
 
+  Step 6.10 — Subject CN Format vs Certificate Type Cross-Check
+  -------------------------------------------------------------------------
+
+  This step explicitly catches mismatches where the CN in the CSR does not
+  match what is expected for the selected certificate type. It is the
+  primary guard against a person accidentally (or intentionally) placing
+  their personal name in a server certificate request or vice versa.
+
+  Detection Rules:
+
+    Rule A — TLS Server: CN must be a hostname, not a person's name
+      Checks:
+        1. CN contains at least one dot (.)
+           "John Doe" --> no dot --> REJECT PKI_POL_013
+           "api.acme.com" --> has dot --> continue
+
+        2. CN does not contain spaces
+           "John Doe" --> has space --> REJECT PKI_POL_013
+           "api.acme.com" --> no space --> continue
+
+        3. CN is not an email address (email belongs in S/MIME, not TLS Server)
+           "john@acme.com" --> REJECT PKI_POL_013
+
+        4. CN does not match requestor's display name or email prefix
+           users.display_name = "John Doe" and CN = "John Doe" --> REJECT
+           Error: PKI_POL_013 "Subject CN must be a valid hostname
+                  for TLS Server certificate, not a person's name"
+
+    Rule B — TLS Client: CN must be a person/username, not a hostname
+      Checks:
+        1. CN must NOT look like an FQDN (no trailing domain like .com/.in)
+           CN = "john.doe" --> acceptable (may have a dot)
+           CN = "api.acme.com" --> looks like FQDN --> WARN + flag
+           CN = "*.acme.com" --> wildcard --> REJECT PKI_POL_013
+
+        2. CN should resolve to a known user in users table (WARN if not found)
+
+    Rule C — S/MIME: CN must be a person's name, email SAN must be present
+      Checks:
+        1. SAN rfc822Name (email) must be present --> absence REJECT PKI_POL_003
+        2. CN should be a human name (WARN if CN looks like a hostname)
+
+    Rule D — Code Signing: CN must be a developer or organization name
+      Checks:
+        1. CN must NOT look like a hostname with dNSName SAN
+        2. EKU must include codeSigning only
+
+  Summary Decision Table (John's scenario):
+
+    +---------------------------+------------+--------------------------------+
+    | Requestor  | CSR Subject  | Template   | Outcome                        |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=John Doe  | TLS_SERVER | REJECT PKI_POL_013             |
+    | (person)   | (person name)|            | CN is not a valid hostname     |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=api.      | TLS_SERVER | Check domain_authorizations    |
+    | (person)   | acme.com     |            | John authorized? ALLOW         |
+    |            | (FQDN)       |            | Not authorized? REJECT POL_012 |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=api.      | TLS_SERVER | ALLOW -- RA Officer can        |
+    | ROLE_RA_   | acme.com     |            | submit for any domain. Audit   |
+    | OFFICER    |              |            | log: submitted on behalf.      |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=john.doe  | TLS_CLIENT | ALLOW -- self-service,         |
+    | (person)   | (own name)   |            | identity matches               |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=jane.doe  | TLS_CLIENT | REJECT PKI_POL_007             |
+    | (person)   | (other name) |            | Cannot request for another     |
+    |            |              |            | user without RA_OFFICER role   |
+    +---------------------------+------------+--------------------------------+
+
   Result:
     PASS --> CSR complies with all organizational policies
-    FAIL --> 422 with PKI_POL_001 through PKI_POL_011
+    FAIL --> 422 with PKI_POL_001 through PKI_POL_013
 
 
 ================================================================================
@@ -609,6 +773,10 @@
     PKI_POL_009   "Blocked content detected in request"
     PKI_POL_010   "Wildcard not allowed for this template"
     PKI_POL_011   "Certificate would outlive issuing CA"
+    PKI_POL_012   "Requester not authorized to obtain server certificate for
+                   this domain -- domain authorization required"
+    PKI_POL_013   "Subject CN format does not match certificate type --
+                   TLS Server requires a valid hostname, not a person's name"
 
   Layer 7 (Duplicate/Conflict):
     PKI_DUP_001   "Duplicate CSR already submitted"
@@ -680,6 +848,98 @@
            | for        |          +--------------------+
            | Approval   |
            +------------+
+
+
+================================================================================
+  SCENARIO GUIDE — PERSON REQUESTING SERVER CERTIFICATE
+================================================================================
+
+  Scenario: John (a person) is submitting a CSR. He is logged in as
+  john@acme.com. He wants a TLS Server certificate for api.acme.com.
+
+  This is a valid and common enterprise scenario. An admin or authorized
+  person submits a server certificate request on behalf of a server they
+  manage. The validation layers work together as follows:
+
+  +---------+-----------------------------------------------------------------+
+  | Layer   | What Happens                                                    |
+  +---------+-----------------------------------------------------------------+
+  | Layer 2 | John authenticates with his personal credentials.               |
+  |         | requestor_user_id = john's users.id                             |
+  |         | requestor role = ROLE_USER (or ROLE_RA_OFFICER if elevated)     |
+  +---------+-----------------------------------------------------------------+
+  | Layer 4 | CSR structure parsed.                                           |
+  |         | Step 4.4: Subject DN parsed.                                    |
+  |         |   Case A: CN=John Doe (personal name)                           |
+  |         |     --> valid DN syntax, but mismatch caught in Layer 6         |
+  |         |   Case B: CN=api.acme.com (hostname)                            |
+  |         |     --> valid FQDN format, proceed                              |
+  |         | Step 4.6: SAN dNSName=api.acme.com validated as valid FQDN.    |
+  +---------+-----------------------------------------------------------------+
+  | Layer 5 | CSR self-signature verified.                                    |
+  |         | John's key is in the CSR -- he possesses the private key.       |
+  |         | This is valid even for server certs -- the private key was      |
+  |         | generated on the server and John exported the CSR from it.      |
+  +---------+-----------------------------------------------------------------+
+  | Layer 6 | Step 6.1: Template auto-detected or explicitly set as           |
+  |         | TLS_SERVER (dNSName SAN present, no email SAN).                 |
+  |         |                                                                  |
+  |         | Step 6.4 (Subject DN Policy):                                   |
+  |         |   CN must follow hostname format for TLS_SERVER.                |
+  |         |   Case A: CN=John Doe --> spaces + no dots --> REJECT           |
+  |         |   Error: PKI_POL_013                                            |
+  |         |                                                                  |
+  |         | Step 6.7 (Requester Scope):                                     |
+  |         |   Case B: CN=api.acme.com -- DN format is fine.                 |
+  |         |   Extract domain: acme.com                                      |
+  |         |   Query domain_authorizations for john's user_id + acme.com     |
+  |         |   Found? --> ALLOW                                               |
+  |         |   Not found + ROLE_USER --> REJECT PKI_POL_012                  |
+  |         |   Not found + ROLE_RA_OFFICER --> ALLOW, audit log              |
+  |         |                                                                  |
+  |         | Step 6.10 (CN Format Cross-Check):                              |
+  |         |   Case A: CN=John Doe with TLS_SERVER template                  |
+  |         |     CN contains space --> REJECT PKI_POL_013                    |
+  |         |   Case B: CN=api.acme.com with TLS_SERVER template              |
+  |         |     CN is valid FQDN --> PASS                                   |
+  +---------+-----------------------------------------------------------------+
+  | Layer 7 | Duplicate and domain overlap checks run normally.               |
+  |         | If another active cert exists for api.acme.com:                 |
+  |         |   Same user -- ALLOW + INFO (renewal scenario)                  |
+  |         |   Different user -- WARN + FLAG for RA review                   |
+  +---------+-----------------------------------------------------------------+
+
+  Outcome Summary:
+
+    +----------------------+--------------------------------------------------+
+    | John's CSR           | Result                                           |
+    +----------------------+--------------------------------------------------+
+    | CN=John Doe +        | REJECT at Layer 6 Step 6.10                      |
+    | TLS_SERVER template  | PKI_POL_013: CN not a valid hostname             |
+    +----------------------+--------------------------------------------------+
+    | CN=api.acme.com +    | ALLOW if John is in domain_authorizations for    |
+    | ROLE_USER +          | acme.com.                                        |
+    | domain authorized    | Proceeds to approval queue.                      |
+    +----------------------+--------------------------------------------------+
+    | CN=api.acme.com +    | REJECT at Layer 6 Step 6.7                       |
+    | ROLE_USER +          | PKI_POL_012: Domain not authorized for John.     |
+    | NOT authorized       | Admin must grant domain_authorizations first.    |
+    +----------------------+--------------------------------------------------+
+    | CN=api.acme.com +    | ALLOW. RA Officers can submit for any domain.    |
+    | ROLE_RA_OFFICER      | Audit log records: submitted by john on behalf   |
+    |                      | of server api.acme.com.                          |
+    +----------------------+--------------------------------------------------+
+
+  Recommended Workflow for John's Scenario:
+    1. Admin grants John domain authorization for acme.com in
+       domain_authorizations table.
+    2. John generates key pair on the server.
+    3. John creates CSR with CN=api.acme.com, SAN=dns:api.acme.com.
+    4. John submits CSR via RA REST API using his credentials.
+    5. Layer 2 authenticates John. Layer 6.7 confirms domain authorization.
+    6. Request enters SUBMITTED status and approval workflow.
+    7. Operator reviews and approves. CA issues the certificate.
+    8. John downloads certificate and installs it on the server.
 
 
 ================================================================================
