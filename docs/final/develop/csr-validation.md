@@ -446,3 +446,130 @@ Legend: MUST=required  OPT=optional  SKIP=not applicable  WARN=warning only
 - *Enterprise_RA_Validation_Guide.md* — developer reference with Java implementation
 - *CSR_Validation_Scenario_And_Implementation.md* — scenario walkthroughs + source code
 - *PKCS10_CSR_Structure_Guide.md* — complete PKCS#10 field reference
+
+---
+
+## Part E — Enterprise RA Validations — Complete List with Purpose
+
+### Category 1 — HTTP / Request Layer
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 1 | **Required fields check** (`pkcs10`, `clientTxnId`, `profile`) | Reject incomplete requests before any crypto work starts |
+| 2 | **CSR payload size limit** (max 8 KB) | Prevent DoS — parse + signature verify is CPU-heavy |
+| 3 | **PEM header/footer format** | Give user a clear error instead of cryptic ASN.1 exception |
+| 4 | **Content-Type: application/json** | Ensure RA receives parseable input |
+| 5 | **JWT token present** | No anonymous submissions — every request tied to an identity |
+
+---
+
+### Category 2 — Identity & Authentication
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 6 | **JWT signature verify** (RS256 via AD public key / JWKS) | Prove token came from AD — not forged |
+| 7 | **JWT expiry check** (`exp` claim) | Reject stale tokens — session timeout enforcement |
+| 8 | **JWT issuer + audience** (`iss`, `aud` claims) | Ensure token was meant for this RA — not reused from another system |
+| 9 | **AD group → Role mapping** | Only authorized users can submit/approve/admin |
+| 10 | **User exists in RA database** | Link request to local user record for workflow tracking |
+
+---
+
+### Category 3 — Separation of Duties (Workflow Identity)
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 11 | **Requester ≠ Maker** | Person who submitted CSR cannot review their own request |
+| 12 | **Requester ≠ Checker** | Person who submitted cannot be final approver either |
+| 13 | **Maker ≠ Checker** (DUAL mode) | Operator who reviewed cannot also accept — 4-eyes principle |
+| 14 | **Only assigned operator can act** | Prevent unauthorized operators from acting on others' work |
+
+---
+
+### Category 4 — CSR Cryptographic Validation
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 15 | **ASN.1 / DER parse** | Confirm CSR is structurally valid PKCS#10 before any field inspection |
+| 16 | **Proof of Possession** (self-signature verify) | **Most critical** — proves submitter holds the private key. If invalid → key mismatch or tampered CSR |
+| 17 | **Signature algorithm — no SHA1/MD5** | SHA1 broken since 2017; browsers/OS reject certs with weak sig algo |
+| 18 | **RSA key ≥ 2048 bits** | RSA-1024 factored by commodity hardware; NIST deprecated 2010 |
+| 19 | **EC key ≥ P-256** | Curves below P-256 have known weaknesses |
+| 20 | **Ed25519 / Ed448 always accepted** | Modern, safe — no size check needed |
+
+---
+
+### Category 5 — CSR Policy / Content Validation
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 21 | **CN present in Subject DN** | Certificate holder identity mandatory in every cert type |
+| 22 | **CN is valid FQDN** (TLS_SERVER only) | Browsers match CN/SAN to hostname — person name causes TLS failure |
+| 23 | **CN has no spaces** (TLS_SERVER only) | Space = person name used instead of server hostname |
+| 24 | **CN is not an IP address** (TLS_SERVER, CODE_SIGNING) | IPs go in SAN iPAddress field, not CN |
+| 25 | **SAN dNSName present** (TLS_SERVER only) | RFC 2818 + CA/Browser Forum — all browsers ignore CN since 2017, only SAN used |
+| 26 | **SAN dNSName is valid FQDN** | Invalid hostname in SAN = TLS handshake fail at runtime |
+| 27 | **No multi-level wildcard** (`*.*.acme.com` rejected) | RFC 5280 — only single-level wildcard allowed |
+| 28 | **SAN rfc822Name present** (SMIME only) | Modern mail clients use SAN email, not CN |
+| 29 | **Organization (O=) present** (CODE_SIGNING) | CA/Browser Forum requirement — legal entity name mandatory |
+| 30 | **Country (C=) present** (CODE_SIGNING) | CA/Browser Forum requirement |
+| 31 | **BasicConstraints cA=TRUE forbidden** | End-user cannot obtain a CA certificate — would let them sign certs themselves |
+| 32 | **keyCertSign bit forbidden** | CA-only KeyUsage bit — end-entity must never have this |
+| 33 | **cRLSign bit forbidden** | CA-only KeyUsage bit — end-entity must never have this |
+| 34 | **anyExtendedKeyUsage forbidden** | Bypasses all EKU restrictions — effectively unlimited cert scope |
+| 35 | **Profile ↔ EKU cross-check** | TLS_SERVER must have serverAuth, SMIME must have emailProtection, etc. |
+| 36 | **Validity days within limits** (DOCUMENT_SIGNING max 3 years) | DSC regulations — India max 3 years |
+
+---
+
+### Category 6 — Duplicate & Idempotency
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 37 | **Duplicate CSR hash** (SHA-256 of DER, 24hr window) | Prevent double-submission from retry/double-click; block replay attacks |
+| 38 | **clientTxnId globally unique** | Idempotency — same client transaction never processed twice |
+
+---
+
+### Category 7 — Workflow State Machine
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 39 | **Status transition valid** | e.g. cannot approve a CLOSED request — strict state machine enforced |
+| 40 | **Approval mode check** (SINGLE vs DUAL) | SINGLE mode → direct approve/reject. DUAL mode → review first, then checker accepts |
+| 41 | **approvalModeAtPickup locked** | Config changes mid-flight don't affect in-progress requests |
+| 42 | **Remarks required + minimum length** | Audit trail — operator must justify every decision |
+| 43 | **Return reason required** | When returning request, reason must be given to requestor |
+| 44 | **Request not already picked up** | Prevent two operators grabbing same request simultaneously |
+
+---
+
+### Category 8 — CA Submission
+
+| # | Validation | Purpose |
+|---|-----------|---------|
+| 45 | **CSR PEM still present on approved request** | Sanity check before sending to CA |
+| 46 | **Status is APPROVED before CA send** | Never send unapproved requests to CA |
+| 47 | **Not already sent to CA** | Idempotency — prevent duplicate CA submissions |
+| 48 | **Validity days within CA-allowed range** | Cap at CA maximum if user requested too many days |
+| 49 | **CA callback: requestId exists** | Reject callbacks for unknown requests |
+| 50 | **CA callback: caTransactionId matches** | Prevent spoofed callbacks from triggering certificate issuance |
+| 51 | **Issued cert subject matches CSR subject** | CA issued cert for the right person/server |
+| 52 | **Issued cert not already expired** | CA returned a bad certificate |
+
+---
+
+### Summary by Category
+
+```
+Category 1 — HTTP (5)          Garbage in, garbage out se bachao
+Category 2 — Identity (5)      Har request ek real AD user se aani chahiye
+Category 3 — Duties (4)        Koi ek insaan poora process akele nahi kar sakta
+Category 4 — Crypto (6)        CSR mathematically sound hai — tampered nahi
+Category 5 — Policy (16)       CSR content certificate ke purpose se match karta hai
+Category 6 — Duplicate (2)     Same request baar baar process nahi honi chahiye
+Category 7 — Workflow (6)      Approval process ke rules strictly follow hon
+Category 8 — CA Submit (8)     CA ko sirf valid, approved, correct payload jaaye
+─────────────────────────────────────────────────────────────
+Total: 52 validations across 8 categories
+```
