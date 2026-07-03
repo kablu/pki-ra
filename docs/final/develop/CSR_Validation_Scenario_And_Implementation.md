@@ -366,4 +366,331 @@ public class CsrSubmitService {
 
 ---
 
-*Related: RA_Approval_Workflow_Architecture_V2.md, PKCS10_CSR_Structure_Guide.md*
+## 8. Source Code — Full Implementation
+
+### File: `CsrValidationResult.java`
+**Path:** `subprojects/raservice/src/main/java/com/pki/ra/raservice/csr/validation/`
+
+```java
+package com.pki.ra.raservice.csr.validation;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Immutable result returned by CsrValidatorService.
+ * Errors = hard failures. Warnings = soft issues that don't block.
+ * Metadata fields are extracted during validation so the caller
+ * does not need to re-parse the CSR.
+ */
+public final class CsrValidationResult {
+
+    private final boolean passed;
+    private final List<String> errors;
+    private final List<String> warnings;
+    private final String subjectDn;
+    private final String keyAlgorithm;
+    private final int    keySize;
+    private final String signatureAlgorithm;
+    private final String subjectAltNames;
+    private final String commonName;
+
+    private CsrValidationResult(Builder b) {
+        this.passed             = b.errors.isEmpty();
+        this.errors             = Collections.unmodifiableList(new ArrayList<>(b.errors));
+        this.warnings           = Collections.unmodifiableList(new ArrayList<>(b.warnings));
+        this.subjectDn          = b.subjectDn;
+        this.keyAlgorithm       = b.keyAlgorithm;
+        this.keySize            = b.keySize;
+        this.signatureAlgorithm = b.signatureAlgorithm;
+        this.subjectAltNames    = b.subjectAltNames;
+        this.commonName         = b.commonName;
+    }
+
+    public static Builder builder() { return new Builder(); }
+
+    public boolean isPassed()               { return passed; }
+    public List<String> getErrors()         { return errors; }
+    public List<String> getWarnings()       { return warnings; }
+    public String getSubjectDn()            { return subjectDn; }
+    public String getKeyAlgorithm()         { return keyAlgorithm; }
+    public int getKeySize()                 { return keySize; }
+    public String getSignatureAlgorithm()   { return signatureAlgorithm; }
+    public String getSubjectAltNames()      { return subjectAltNames; }
+    public String getCommonName()           { return commonName; }
+
+    public static final class Builder {
+        private final List<String> errors   = new ArrayList<>();
+        private final List<String> warnings = new ArrayList<>();
+        private String subjectDn;
+        private String keyAlgorithm;
+        private int    keySize;
+        private String signatureAlgorithm;
+        private String subjectAltNames;
+        private String commonName;
+
+        public Builder addError(String code, String detail) {
+            errors.add("[" + code + "] " + detail);
+            return this;
+        }
+        public Builder addWarning(String code, String detail) {
+            warnings.add("[" + code + "] " + detail);
+            return this;
+        }
+        public Builder subjectDn(String v)          { subjectDn = v;          return this; }
+        public Builder keyAlgorithm(String v)       { keyAlgorithm = v;       return this; }
+        public Builder keySize(int v)               { keySize = v;            return this; }
+        public Builder signatureAlgorithm(String v) { signatureAlgorithm = v; return this; }
+        public Builder subjectAltNames(String v)    { subjectAltNames = v;    return this; }
+        public Builder commonName(String v)         { commonName = v;         return this; }
+        public CsrValidationResult build()          { return new CsrValidationResult(this); }
+    }
+}
+```
+
+---
+
+### File: `CsrValidationException.java`
+**Path:** `subprojects/raservice/src/main/java/com/pki/ra/raservice/csr/validation/`
+
+```java
+package com.pki.ra.raservice.csr.validation;
+
+import org.springframework.http.HttpStatus;
+import com.pki.ra.common.exception.PkiRaException;
+import java.util.List;
+
+/**
+ * Thrown when a submitted CSR fails one or more hard validation checks.
+ * Extends PkiRaException → GlobalExceptionHandler returns HTTP 422.
+ * Carries the full list of coded error messages so the user sees all
+ * failures in one response.
+ */
+public class CsrValidationException extends PkiRaException {
+
+    private final List<String> validationErrors;
+
+    public CsrValidationException(List<String> validationErrors) {
+        super(
+            "CSR validation failed: " + String.join("; ", validationErrors),
+            HttpStatus.UNPROCESSABLE_ENTITY
+        );
+        this.validationErrors = List.copyOf(validationErrors);
+    }
+
+    public List<String> getValidationErrors() {
+        return validationErrors;
+    }
+}
+```
+
+---
+
+### File: `CsrValidatorService.java` (key methods)
+**Path:** `subprojects/raservice/src/main/java/com/pki/ra/raservice/csr/validation/`
+
+```java
+@Slf4j
+@Service
+public class CsrValidatorService {
+
+    // ── Entry point ──────────────────────────────────────────────────────────
+    public CsrValidationResult validate(String csrPem, CsrProfile profile) {
+        CsrValidationResult.Builder result = CsrValidationResult.builder();
+
+        PKCS10CertificationRequest csr = parse(csrPem, result);
+        if (csr == null) return result.build();   // Layer 1 failed → stop
+
+        checkSignature(csr, result);              // Layer 2
+        checkSignatureAlgorithm(csr, result);     // Layer 3
+        checkKeyStrength(csr, result, profile);   // Layer 4
+        checkSubjectDn(csr, result, profile);     // Layer 5
+        checkSan(csr, result, profile);           // Layer 6
+        checkExtensions(csr, result, profile);    // Layer 7
+
+        return result.build();
+    }
+
+    // ── Layer 1: Parse ───────────────────────────────────────────────────────
+    private PKCS10CertificationRequest parse(String input,
+                                              CsrValidationResult.Builder result) {
+        try (PEMParser parser = new PEMParser(new StringReader(input.strip()))) {
+            Object obj = parser.readObject();
+            if (!(obj instanceof PKCS10CertificationRequest))  {
+                result.addError("PKI_VAL_002", "Not a PKCS#10 CSR");
+                return null;
+            }
+            return (PKCS10CertificationRequest) obj;
+        } catch (Exception ex) {
+            result.addError("PKI_VAL_002", "CSR parse failure: " + ex.getMessage());
+            return null;
+        }
+    }
+
+    // ── Layer 2: Proof of Possession ─────────────────────────────────────────
+    private void checkSignature(PKCS10CertificationRequest csr,
+                                 CsrValidationResult.Builder result) {
+        try {
+            ContentVerifierProvider verifier =
+                new JcaContentVerifierProviderBuilder()
+                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+                    .build(csr.getSubjectPublicKeyInfo());
+
+            if (!csr.isSignatureValid(verifier)) {
+                result.addError("PKI_CRYPTO_001",
+                    "Self-signature invalid — private key mismatch or CSR tampered");
+            }
+        } catch (Exception ex) {
+            result.addError("PKI_CRYPTO_001",
+                "Cannot verify CSR self-signature: " + ex.getMessage());
+        }
+    }
+
+    // ── Layer 3: Signature Algorithm ─────────────────────────────────────────
+    private static final Set<String> BANNED = Set.of(
+        "MD5WITHRSA", "MD2WITHRSA", "SHA1WITHRSA",
+        "SHA1WITHECDSA", "SHA1WITHDSA"
+    );
+
+    private void checkSignatureAlgorithm(PKCS10CertificationRequest csr,
+                                          CsrValidationResult.Builder result) {
+        String algName = resolveAlgName(
+            csr.getSignatureAlgorithm().getAlgorithm().getId()
+        ).toUpperCase();
+        result.signatureAlgorithm(algName);
+        if (BANNED.contains(algName)) {
+            result.addError("PKI_CRYPTO_002",
+                "Algorithm '" + algName + "' rejected. Use SHA256withRSA or ECDSA-SHA256+");
+        }
+    }
+
+    // ── Layer 4: Key Strength ────────────────────────────────────────────────
+    private void checkKeyStrength(PKCS10CertificationRequest csr,
+                                   CsrValidationResult.Builder result,
+                                   CsrProfile profile) {
+        try {
+            SubjectPublicKeyInfo spki = csr.getSubjectPublicKeyInfo();
+            String oid = spki.getAlgorithm().getAlgorithm().getId();
+            String jcaAlg = "1.2.840.113549.1.1.1".equals(oid) ? "RSA"
+                          : "1.2.840.10045.2.1".equals(oid)    ? "EC" : null;
+
+            if (jcaAlg == null) {
+                result.keyAlgorithm(oid).keySize(0); // Ed25519/Ed448 always OK
+                return;
+            }
+            java.security.PublicKey pk = java.security.KeyFactory
+                .getInstance(jcaAlg, BouncyCastleProvider.PROVIDER_NAME)
+                .generatePublic(new java.security.spec.X509EncodedKeySpec(spki.getEncoded()));
+
+            if (pk instanceof RSAPublicKey rsa) {
+                int bits = rsa.getModulus().bitLength();
+                result.keyAlgorithm("RSA").keySize(bits);
+                if (bits < 2048)
+                    result.addError("PKI_KEY_001",
+                        "RSA " + bits + " bits < minimum 2048 bits");
+            } else if (pk instanceof ECPublicKey ec) {
+                int bits = ec.getParams().getCurve().getField().getFieldSize();
+                result.keyAlgorithm("EC").keySize(bits);
+                if (bits < 256)
+                    result.addError("PKI_KEY_001",
+                        "EC " + bits + " bits < minimum P-256 (256 bits)");
+            }
+        } catch (Exception ex) {
+            result.addWarning("PKI_KEY_002", "Key size check skipped: " + ex.getMessage());
+        }
+    }
+
+    // ── Layer 5: Subject DN ──────────────────────────────────────────────────
+    private void checkSubjectDn(PKCS10CertificationRequest csr,
+                                  CsrValidationResult.Builder result,
+                                  CsrProfile profile) {
+        X500Name subject = csr.getSubject();
+        result.subjectDn(subject.toString());
+        RDN[] cnRdns = subject.getRDNs(BCStyle.CN);
+        if (cnRdns == null || cnRdns.length == 0) {
+            result.addError("PKI_POL_001", "CN missing from Subject DN"); return;
+        }
+        String cn = cnRdns[0].getFirst().getValue().toString().trim();
+        result.commonName(cn);
+        if (profile == CsrProfile.TLS_SERVER) {
+            if (cn.contains(" "))
+                result.addError("PKI_POL_013",
+                    "CN '" + cn + "' contains spaces — must be FQDN, not a person name");
+            else if (!FQDN_PATTERN.matcher(cn).matches() && !WILDCARD_FQDN.matcher(cn).matches())
+                result.addError("PKI_POL_014", "CN '" + cn + "' is not a valid FQDN");
+        }
+    }
+
+    // ── Layer 6: SAN ────────────────────────────────────────────────────────
+    private void checkSan(PKCS10CertificationRequest csr,
+                           CsrValidationResult.Builder result,
+                           CsrProfile profile) {
+        Extensions exts = extractExtensions(csr);
+        if (exts == null) {
+            if (profile == CsrProfile.TLS_SERVER)
+                result.addError("PKI_POL_004",
+                    "TLS_SERVER must have subjectAltName with dNSName (RFC 2818)");
+            return;
+        }
+        Extension sanExt = exts.getExtension(Extension.subjectAlternativeName);
+        if (sanExt == null) {
+            if (profile == CsrProfile.TLS_SERVER)
+                result.addError("PKI_POL_004", "No subjectAltName extension found");
+            return;
+        }
+        List<String> sanList = new ArrayList<>();
+        boolean hasDns = false, hasEmail = false;
+        for (GeneralName gn : GeneralNames.getInstance(sanExt.getParsedValue()).getNames()) {
+            String v = gn.getName().toString();
+            if (gn.getTagNo() == GeneralName.dNSName) {
+                hasDns = true; sanList.add("DNS:" + v);
+                if (!FQDN_PATTERN.matcher(v).matches() && !WILDCARD_FQDN.matcher(v).matches())
+                    result.addError("PKI_POL_005", "SAN dNSName '" + v + "' invalid FQDN");
+            } else if (gn.getTagNo() == GeneralName.rfc822Name) {
+                hasEmail = true; sanList.add("email:" + v);
+            }
+        }
+        result.subjectAltNames(String.join(", ", sanList));
+        if (profile == CsrProfile.TLS_SERVER && !hasDns)
+            result.addError("PKI_POL_004", "SAN has no dNSName. Found: " + sanList);
+        if (profile == CsrProfile.SMIME && !hasEmail)
+            result.addError("PKI_POL_006", "S/MIME SAN must have rfc822Name (email)");
+    }
+
+    // ── Layer 7: Extensions ──────────────────────────────────────────────────
+    private void checkExtensions(PKCS10CertificationRequest csr,
+                                   CsrValidationResult.Builder result,
+                                   CsrProfile profile) {
+        Extensions exts = extractExtensions(csr);
+        if (exts == null) { result.addWarning("PKI_POL_007", "No extensions in CSR"); return; }
+
+        // BasicConstraints — block cA=TRUE
+        Extension bcExt = exts.getExtension(Extension.basicConstraints);
+        if (bcExt != null && BasicConstraints.getInstance(bcExt.getParsedValue()).isCA())
+            result.addError("PKI_POL_008", "BasicConstraints cA=TRUE forbidden in end-entity CSR");
+
+        // KeyUsage — block CA-only bits
+        Extension kuExt = exts.getExtension(Extension.keyUsage);
+        if (kuExt != null) {
+            KeyUsage ku = KeyUsage.getInstance(kuExt.getParsedValue());
+            if (ku.hasUsages(KeyUsage.keyCertSign))
+                result.addError("PKI_POL_009", "KeyUsage keyCertSign is CA-only");
+            if (ku.hasUsages(KeyUsage.cRLSign))
+                result.addError("PKI_POL_010", "KeyUsage cRLSign is CA-only");
+        }
+
+        // EKU — block anyExtendedKeyUsage
+        Extension ekuExt = exts.getExtension(Extension.extendedKeyUsage);
+        if (ekuExt != null) {
+            ExtendedKeyUsage eku = ExtendedKeyUsage.getInstance(ekuExt.getParsedValue());
+            if (eku.hasKeyPurposeId(KeyPurposeId.anyExtendedKeyUsage))
+                result.addError("PKI_POL_012", "anyExtendedKeyUsage forbidden in end-entity CSR");
+        }
+    }
+}
+```
+
+---
+
+*Related: RA_Approval_Workflow_Architecture_V2.md, PKCS10_CSR_Structure_Guide.md, Enterprise_RA_Validation_Guide.md*
