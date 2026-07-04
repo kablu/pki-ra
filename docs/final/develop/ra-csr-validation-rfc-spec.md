@@ -60,13 +60,36 @@ Appendix B.  Certificate Type / Standard Cross-Reference
 
 ## 1. Introduction
 
-An RA is the trust gatekeeper between subscribers and the CA. The CA
-signs whatever the RA approves; therefore every mis-issued
-certificate is an RA validation failure. This specification
-enumerates all validations in execution order — from the cheapest
-byte-level check to the most expensive human vetting — so that
-invalid requests fail fast and expensive checks run only on requests
-that deserve them.
+An RA is the trust gatekeeper between subscribers and the CA. In a
+typical enterprise PKI, the CA is deliberately isolated: it has no
+view of HR systems, government registries, DNS, or the applicant's
+intent. It signs whatever the RA approves. This means the entire
+burden of "should this certificate exist?" falls on the RA — every
+mis-issued certificate in history traces back to a validation that an
+RA skipped, performed against stale evidence, or performed against
+the wrong party.
+
+This specification enumerates all validations in execution order —
+from the cheapest byte-level check to the most expensive human
+vetting. The ordering is deliberate and serves three goals:
+
+1. **DoS resistance.** An attacker who can make the RA do an LDAP
+   query, a DNS lookup, or a registry call with an unauthenticated
+   garbage request has found an amplification primitive. Cheap
+   checks (size caps, parsing, signature verification) must reject
+   garbage before any expensive resource is touched.
+
+2. **Precise diagnostics.** When stages run in a fixed order, a
+   failure code identifies exactly one defect ("PEM armor invalid"
+   vs "domain control failed"). Subscribers self-serve their fixes
+   instead of opening tickets, and support staff never have to guess
+   which of five overlapping checks produced a generic error.
+
+3. **Audit reconstructability.** WebTrust and ETSI auditors work by
+   sampling issued certificates and demanding evidence for each
+   validation step. A pipeline with defined stages, each producing a
+   logged verdict, turns an audit from an archaeology project into a
+   database query.
 
 **Design principle:** *Validate in increasing order of cost;
 fail closed; log every verdict.*
@@ -113,6 +136,24 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 ## 4. Common Validations (All Certificate Types)
 
 ### 4.1 Transport and Request Layer
+
+This stage runs before a single byte of the CSR is interpreted. Its
+job is to establish three facts: the channel is confidential, the
+caller is a known principal, and the request envelope is within the
+bounds the service was designed for. Everything here is enforceable
+in the web framework (filters, schema validation, rate limiters) —
+no PKI knowledge is required yet, which is precisely why it belongs
+first: it is the layer that protects the expensive PKI machinery
+behind it.
+
+Two requirements deserve special attention. Authentication (R-41-02)
+is what turns an anonymous internet endpoint into an enterprise
+service — every subsequent validation assumes it knows *who* is
+asking, and RBAC (R-41-03) assumes it knows *what they are entitled
+to ask for*. And idempotency (R-41-06) is what makes the RA safe to
+retry against: clients WILL resend on timeouts, and without a
+transaction-ID guard each retry becomes a duplicate request flowing
+into the approval queue, confusing officers and inflating quotas.
 
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
@@ -267,6 +308,30 @@ void revokeLeavers() {
 
 ### 4.2 Syntactic Validation (PKCS#10)
 
+This stage answers one question: *is this actually a well-formed
+PKCS#10 certification request?* It sounds trivial, but two of the
+most serious RA failure classes live here.
+
+The first is the **parser differential**. The CSR will be parsed at
+least twice in its life — once by the RA (to validate) and once by
+the CA (to sign). If the RA's parser is lenient (accepts BER,
+tolerates trailing garbage, resolves duplicate fields differently)
+and the CA's parser is strict — or vice versa — an attacker can
+craft a byte string that the RA *reads* as an innocent request and
+the CA *signs* as something else entirely. The defense is strict DER
+enforcement at the RA (R-42-04) so that only one interpretation of
+the bytes exists.
+
+The second is the **accidental key disclosure** (R-42-06). In
+practice, subscribers copy-paste from terminals, and sooner or later
+someone pastes their private key block alongside (or instead of) the
+CSR. The correct response is not merely rejection: that key has now
+crossed a trust boundary, appeared in an HTTP body, and possibly
+landed in access logs. It is compromised *by definition*, and the RA
+must blocklist its fingerprint permanently so it can never appear in
+any future certificate — even years later, even from a different
+requester.
+
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
 | R-42-01 | MUST | CSR payload present and non-empty | Fail fast, precise error | — |
@@ -307,6 +372,37 @@ try (PEMParser p = new PEMParser(new StringReader(pem))) {
 ```
 
 ### 4.3 Cryptographic Validation
+
+This stage validates the mathematics of the request, and it opens
+with the single most important check in the entire RA: **Proof of
+Possession** (R-43-01). The CSR is self-signed with the private key
+corresponding to the public key it carries. Verifying that signature
+proves the requester actually holds the private key. Without PoP, an
+attacker could take *someone else's* public key — scraped from an
+existing certificate — and request a certificate binding that key to
+the attacker's chosen name. The resulting confusion attacks (signature
+repudiation, encrypted-mail misdelivery) are subtle and hard to
+detect after the fact, which is why PoP failure must be a hard,
+unconditional reject.
+
+The remainder of the stage enforces key quality. A certificate is a
+public assertion that "this key is trustworthy for N days", so the RA
+must refuse keys that are already broken: too short (R-43-04), built
+on a weak exponent (R-43-05), generated by the buggy Debian PRNG or a
+ROCA-vulnerable Infineon chip (R-43-07), or already published in a
+compromise corpus like pwnedkeys. All of these checks operate on a
+single derived value — the SHA-256 fingerprint of the
+SubjectPublicKeyInfo — which the RA should compute once and reuse for
+blocklist lookups, duplicate detection (R-43-09), and cross-type
+reuse checks (R-43-10).
+
+The cross-checks matter more than they first appear. The *same key
+under two different subjects* (R-43-09) almost always means one of
+two things: a key was stolen, or an admin is copy-pasting one key
+pair across systems — both are worth an alert. And *one key across
+certificate types* (R-43-10) quietly destroys non-repudiation: if the
+key that signs contracts is also a TLS key, a signature can be
+explained away as a decryption oracle artifact.
 
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
@@ -380,6 +476,37 @@ if ("ML-DSA-65".equals(pub.getAlgorithm()) && !profile.pqcPilotEnabled())
 
 ### 4.4 Subject Distinguished Name Validation
 
+The subject DN is the human-readable identity claim of the
+certificate — the text that will be displayed in browser dialogs,
+OS publisher prompts, and email clients. This stage treats it as
+what it is: **untrusted user input that will later be rendered to
+humans and matched by machines.**
+
+The machine side needs normalization discipline. Directory-string
+comparison is where duplicate detection, vetted-org matching
+(R-44-07), and audit lookups happen; a trailing space or a
+TeletexString encoding of the "same" name silently defeats all of
+them. Hence the rules on string types (R-44-03), whitespace
+(R-44-06), and RFC 5280 length bounds (R-44-01) — they exist so that
+one organization has exactly one canonical spelling inside the RA.
+
+The human side needs spoofing defenses. Unicode gives attackers an
+alphabet of invisible characters (zero-width spaces, right-to-left
+overrides) and confusable glyphs (Cyrillic "А" vs Latin "A") with
+which "Аcme Corp" can be made indistinguishable from the real thing
+on screen while being a different byte string underneath. R-44-04
+and R-44-08 close this class. Note the asymmetry in response:
+malformed input is *rejected* outright, but a confusable name is
+*routed to manual review* — mixed scripts are legitimate in many
+locales, and the goal is a human decision, not a false-positive
+wall.
+
+Finally, R-44-07 is the bridge between syntax and truth: whatever
+organization name appears in O= must equal — byte for byte — a name
+this requester's organization has already been *vetted* under
+(Section 6). Without this check, any authenticated user could put
+any company on the planet into their certificate.
+
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
 | R-44-01 | MUST | Enforce RFC 5280 upper bounds (CN ≤ 64, O ≤ 64, C = 2 …) | Oversized RDNs break relying-party software | RFC 5280 App. A |
@@ -447,6 +574,33 @@ if (RESERVED.matcher(cn).matches())                    // localhost|*.local|10\.
 ```
 
 ### 4.5 Requested Extensions Validation
+
+Extensions are where a certificate's *powers* live: what the key may
+be used for (KeyUsage), which protocols will accept it
+(ExtendedKeyUsage), and whether the holder may act as a CA
+(basicConstraints). A CSR's extensionRequest attribute is therefore
+best read as a **privilege escalation request written in ASN.1** —
+the requester is asking the PKI to grant capabilities, and this
+stage decides which asks are even discussable.
+
+Three asks are never discussable. `cA=TRUE` (R-45-01) requests a
+subordinate CA — a signed one would let its holder mint arbitrary
+certificates under the enterprise root. `keyCertSign`/`cRLSign`
+(R-45-02) are the same power expressed as KeyUsage bits.
+`anyExtendedKeyUsage` (R-45-03) requests an unlimited-purpose
+certificate, dissolving every scope boundary the profiles establish.
+All three appear regularly in real traffic — sometimes from attack
+tooling, more often from developers copying CA config examples —
+and the RA must reject them identically either way.
+
+The subtler rule is the **authoritative-fields principle** (R-45-07):
+values like SubjectKeyIdentifier, certificate policies, and SCTs are
+computed by the RA/CA, and any client-supplied value is discarded
+rather than validated. The general posture of this stage is
+allowlist, not blocklist — an extension OID the profile does not
+mention is rejected (R-45-06), because "unknown" cannot be risk-rated
+and whatever passes this stage ends up inside a signed artifact that
+cannot be un-signed.
 
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
@@ -517,6 +671,37 @@ if (san != null) {
 ### 5.1 TLS Server Certificates
 
 *Purpose: prove server identity for HTTPS. Control-heavy, automatable.*
+
+A TLS server certificate makes exactly one promise to a browser:
+*the party you are speaking to controls the domain name you typed.*
+Everything in this section serves that promise. The identity lives
+in the SAN (browsers have ignored the CN since 2017 — R-51-01), the
+name must be one that can actually be owned (R-51-02/03), and the
+proof of ownership is **Domain Control Validation** (R-51-06) — the
+requester demonstrates control by placing an RA-chosen random token
+where only the domain's controller could: in its DNS zone, on its
+web server, or behind its administrative mailbox. DCV is the check
+that makes phishing-by-certificate hard, and it is also entirely
+automatable, which is why TLS is the one certificate type an RA can
+issue with no human in the loop.
+
+Two constraints around DCV are frequently under-engineered.
+*Scope:* an HTTP token proves control of one host, so it can never
+authorize a wildcard — only a DNS-zone-level proof can (R-51-07).
+*Freshness:* domains change hands, so DCV evidence expires — and the
+industry is aggressively shortening that window (200 days today, 10
+days by 2029 per SC-081). An RA built around annual manual DCV will
+simply stop functioning; the evidence-reuse engine must be designed
+for continuous revalidation from day one.
+
+CAA (R-51-09) is the complementary control in the other direction:
+DCV asks "does the requester control the domain?", CAA asks "has the
+domain's owner authorized *this CA* to issue at all?" — a published,
+DNS-resident policy that the RA is obliged to obey within an 8-hour
+freshness window. Finally, the risk screen (R-51-13) exists because
+DCV is *too* honest: a phisher who registers `salrnantech.com`
+genuinely controls it and will pass DCV perfectly. Only a
+reputation/look-alike layer catches what control validation cannot.
 
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
@@ -594,6 +779,32 @@ if (riskService.isHighValueOrLookalike(domain)) workflow.routeToManualReview(req
 
 *Purpose: prove client identity for mTLS. Identity binding is the core.*
 
+A client certificate inverts the TLS problem. There is no domain to
+validate and no public registry to consult — the name in the
+certificate (`service-a`, `Salman Khan`) only means something inside
+the enterprise's own systems of record. The certificate is therefore
+exactly as trustworthy as the **registry lookup behind it** (R-52-01):
+Active Directory or the HR system for humans, the CMDB or MDM for
+services and devices. If that lookup is skipped, the RA is signing
+self-asserted names.
+
+The defining check of this profile is R-52-02, the **impersonation
+guard**: the authenticated requester must own or administer the
+identity being certified. Every relying service downstream will
+grant access based on the certificate's subject; a developer who can
+obtain a certificate saying `CN=payment-gateway` *is* the payment
+gateway as far as mTLS is concerned. This is also why the EKU
+asymmetry (R-52-03) is absolute — a client certificate that also
+carries serverAuth lets a workstation impersonate a server, turning
+one compromised laptop into a man-in-the-middle toolkit.
+
+Client certificates also age differently. Servers are long-lived and
+centrally managed; employees leave, devices are lost, services are
+decommissioned — continuously. The short validity recommendation
+(R-52-07) and the CMDB-status check (R-52-06) both exist because the
+population behind client certificates churns faster than any
+revocation process can chase.
+
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
 | R-52-01 | MUST | Subject identity exists in an authoritative registry: HR/AD (human), CMDB/MDM (service/device) | The cert is only as true as the registry lookup behind it | RFC 3647 §3.2.3 |
@@ -649,6 +860,35 @@ int granted = Math.min(req.getRequestedValidityDays(), 365);
 ### 5.3 S/MIME Certificates
 
 *Purpose: email signing/encryption. Mailbox control + (sponsor) identity.*
+
+S/MIME sits halfway between the TLS and signing worlds: it has a
+control component (the mailbox) *and* an identity component (the
+person named in the CN). **Mailbox Control Validation** (R-53-02) is
+the domain-validation analogue — a random challenge value delivered
+to the exact address that will appear in the certificate, provable
+only by someone who can read that inbox. The enterprise variant
+(domain-validated + organization attests the mailbox assignment)
+exists because challenging ten thousand employees individually does
+not scale; in that model the *organization's* attestation becomes
+part of the evidence chain and must itself be fresh.
+
+The identity half depends on the SMBR profile. In sponsor-validated
+issuance — the standard enterprise pattern — the organization
+sponsors a named individual, so the RA must verify the person
+against HR records (R-53-06), and the certificate binds *person +
+organization + mailbox* together. This triple binding is why the
+freshness windows differ per component (398 days for mailbox
+control, 825 for identity): each element decays on its own schedule,
+and the fastest-decaying one is the mailbox — employees leave, and
+their addresses get reassigned.
+
+Two policy edges are easy to miss. The Legacy generation profile was
+retired in July 2025 (R-53-05), so any enrolment logic still
+defaulting to it now produces publicly-distrusted certificates. And
+key escrow (R-53-09) is legitimate *only* for encryption
+certificates — escrowing a signing key destroys non-repudiation, so
+dual-key setups (separate signing and encryption certificates) are
+the correct enterprise pattern where escrow is required.
 
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
@@ -709,6 +949,40 @@ int granted = Math.min(req.getRequestedValidityDays(), 824);
 ### 5.4 Code Signing Certificates
 
 *Purpose: OS-trusted publisher identity. Identity-heavy; misuse = signed malware.*
+
+Code signing is the highest-stakes profile an RA handles, for one
+structural reason: the relying party is not a browser applying
+skepticism — it is an operating system loader that will *execute*
+the signed artifact, and a user who has been trained to trust the
+publisher name in the prompt. A mis-issued TLS certificate enables
+interception of one domain; a mis-issued code signing certificate
+becomes signed malware distributed at scale. This is why nearly
+every requirement in this section is a MUST and why no request in
+this profile is ever auto-approved.
+
+The validation weight sits in identity and custody. There is no
+domain or mailbox to challenge, so the RA verifies the *legal
+entity* directly: registry lookup for existence and status
+(R-54-05), and — critically — a callback over a contact channel
+sourced from the registry rather than from the application (R-54-06).
+The independent-contact rule cannot be compromised on: a phone
+number supplied by the applicant only ever verifies the applicant.
+Custody is the 2023 CSBR addition: the private key must live in
+certified hardware, and the RA verifies this via **key attestation**
+(R-54-04) — a signed statement from the token itself, chained to the
+HSM vendor's root, proving the key was generated inside and cannot
+leave. The attested key must be byte-identical to the CSR key, or
+the attestation proves nothing.
+
+The final layer accepts a hard truth: technically perfect requests
+from bad actors are the *norm* in this profile, not the exception.
+Malware operators buy real companies, register plausible names, and
+present flawless CSRs. Reputation screening (R-54-07) — malware
+databases, prior-revocation history, typosquat detection against
+brand lists — plus sanctions checks (R-54-08) are what stands
+between the RA and becoming a malware distribution chain. When these
+flag, the correct output is a human review queue, and the reviewer's
+"no" needs no cryptographic justification.
 
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
@@ -781,6 +1055,35 @@ int granted = Math.min(req.getRequestedValidityDays(), 365);      // 1y since 20
 
 *Purpose: legally-binding personal/org signatures. Full KYC.*
 
+Document signing certificates operate under a different authority
+than every other profile in this document. TLS, S/MIME, and code
+signing answer to browser/OS root programs via the CA/Browser Forum;
+document signing answers to **law** — the IT Act 2000 and CCA
+guidelines in India, eIDAS in the EU. The certificate's output is a
+signature a court may one day examine, which reshapes the
+validations in two ways.
+
+First, identity proofing is at natural-person KYC depth (R-55-04):
+government-issued identity (Aadhaar eKYC, PAN with attested
+documents, or banking KYC) plus a **video verification that must be
+no more than two days old at issuance** under the CCA IVG. The
+two-day rule is the sharpest freshness constraint anywhere in this
+specification, and it means the RA workflow must treat video KYC as
+a just-in-time step scheduled against the issuance date — not a
+document collected at onboarding.
+
+Second, the certificate must be *legally load-bearing*. The
+nonRepudiation KeyUsage bit (R-55-02) is what lets a relying party
+argue that the signer cannot disclaim the signature; without it the
+certificate is legally decorative. The same logic drives key custody
+(R-55-05 — key generated in a FIPS 140-2 L2 token, so the "only the
+signer could have signed" claim survives cross-examination) and
+scope isolation (R-55-03 — a signing key that also does TLS gives
+the signer a repudiation defense). For organization-person
+certificates (R-55-06), both bindings need evidence: that the person
+is who they claim, and that the organization authorized them to sign
+under its name.
+
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
 | R-55-01 | MUST | CN = verified natural person / legal entity name | The name IS the legal signature on documents | ETSI EN 319 411-1 |
@@ -834,6 +1137,40 @@ if (o != null && !hrClient.isEmployedBy(kycRecord.personId(), o))
 
 Applied per the depth demanded by the certificate type (Sec 5).
 
+Vetting is the part of the RA that software alone cannot do — it
+reaches outside the system to registries, phone calls, and documents
+— and it is governed by three principles that every requirement in
+this section instantiates.
+
+**Independence of evidence** (R-60-01/02): every fact about the
+applicant must be confirmed through a channel the applicant does not
+control. The registry record, not the uploaded incorporation PDF;
+the phone number from the QIIS, not the one typed into the form. Any
+vetting step whose input comes solely from the application is
+theater — it verifies that the applicant agrees with themselves.
+
+**Separation of authentication and authority** (R-60-03): knowing
+*who* someone is says nothing about *what they may request*. An
+authenticated employee is not thereby authorized to order the
+company's code signing certificate. Authority is a separate record —
+a delegation, a role assignment, a signed authorization — with its
+own lifecycle and its own expiry.
+
+**Evidence decays** (R-60-04): every piece of vetting evidence has a
+shelf life set by how fast the underlying fact changes — 825 days
+for organizational identity, 200 and shrinking for domain control,
+2 days for video KYC. The engine must store *when* each fact was
+established and re-derive validity at decision time, because a
+vetting file that was complete last year may support nothing today.
+
+The screening half (R-60-06/07) plus the conflict-of-interest bar
+(R-60-08) address the two adversaries vetting cannot see: the
+applicant who has been bad *elsewhere* (sanctions lists, prior abuse,
+velocity anomalies) and the insider *inside the RA itself* — an
+officer who can vet their own organization's requests is a
+single-person issuance pipeline, which is an audit finding in every
+framework this document cites.
+
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
 | R-60-01 | MUST | Org legal existence + exact legal-name match from authoritative registry | The O= field is a legal claim; RA is its guarantor | BR 3.2.2.1 |
@@ -877,6 +1214,39 @@ if (officerRepo.orgOf(officerId).equals(request.orgId()))
 ```
 
 ## 7. Workflow and Issuance Controls
+
+Sections 4 through 6 decide whether a request *deserves* a
+certificate; this section makes sure the machinery between that
+decision and the signed certificate cannot be subverted. The threat
+model here is different — it is not the malicious applicant but the
+**process itself**: race conditions, stale approvals, compromised or
+careless officers, and a CA that returns something other than what
+was approved.
+
+The state machine (R-70-01) is the backbone. Every validation in
+this document is attached to a state transition, so a request that
+could jump states would skip validations by construction — which is
+why transitions are enforced in one place, in code, rather than
+scattered across controllers. Maker-checker (R-70-02/03) applies the
+same discipline to humans: no single person may carry a request from
+submission to issuance, and the enforcement lives in the database
+layer, because a rule that exists only as a hidden button in the UI
+is a rule that curl doesn't follow. R-70-04 closes the classic
+combination attack — obtain approval for an innocent request, then
+modify it — by making any modification void the approval.
+
+The issuance-boundary checks are the last line of defense and the
+most often skipped. Pre-issuance linting (R-70-07) runs the exact
+to-be-signed profile through zlint before the CA commits it to a
+publicly-logged, unrevokable-in-place artifact. Verify-back (R-70-08)
+re-checks that what the CA returned is byte-for-byte what was
+approved — subject, key, extensions, dates — because "the CA is
+internal" is not a reason to skip verification; mis-configuration on
+either side produces the same mis-issued certificate as an attack.
+And the audit trail (R-70-10) is what makes all of it *provable*:
+append-only, hash-chained, retained for the regulator's horizon. In
+an audited PKI, a validation that cannot be proven to have happened
+is treated as one that did not.
 
 | ID | Lvl | Validation | Why | Ref |
 |----|-----|-----------|-----|-----|
