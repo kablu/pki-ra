@@ -101,6 +101,10 @@ public class RaSecurityConfig {
                 .requestMatchers("/api/ra/callback/**")
                     .permitAll()
 
+                // --- End entity self-registration: any authenticated AD user ---
+                .requestMatchers(HttpMethod.POST, "/api/ra/register")
+                    .authenticated()
+
                 // --- Any authenticated: submit CSR ---
                 .requestMatchers(HttpMethod.POST, "/api/ra/requests")
                     .authenticated()
