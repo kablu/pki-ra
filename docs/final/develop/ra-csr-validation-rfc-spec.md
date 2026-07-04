@@ -126,6 +126,54 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-41-08 | SHOULD | Screen free-text fields for injection (XSS/SQLi) | DN values are rendered in consoles and stored in DBs | — |
 | R-41-09 | MAY | Enforce per-tenant source-IP allowlists | Defense in depth for API channels | — |
 
+**Examples (Java / Spring Boot):**
+
+```yaml
+# R-41-01: application.yml — TLS 1.2+ only
+server:
+  ssl:
+    enabled-protocols: TLSv1.2,TLSv1.3
+```
+
+```java
+// R-41-02 + R-41-03: authentication + RBAC per certificate type
+@PostMapping("/api/v1/csr")
+@PreAuthorize("hasRole('CERT_REQUESTER') and @certPolicy.canRequest(principal, #req.certificateType)")
+public ResponseEntity<CsrResponse> submit(@Valid @RequestBody CsrRequest req) { ... }
+```
+
+```java
+// R-41-04: size cap BEFORE parsing
+if (req.getCsrPem().length() > maxCsrBytes)           // e.g. 65_536
+    throw new RaValidationException("PKI_REQ_002", "CSR exceeds size limit");
+
+// R-41-05: rate limit (Bucket4j)
+if (!buckets.resolve(clientId).tryConsume(1))
+    throw new RateLimitException("PKI_REQ_005");      // → HTTP 429
+
+// R-41-06: idempotency — DB unique constraint is the real guard
+try { requestRepo.save(entity); }                     // clientTxnId UNIQUE
+catch (DataIntegrityViolationException e) {
+    throw new RaValidationException("PKI_REQ_006", "Duplicate clientTxnId");
+}
+```
+
+```java
+// R-41-07: strict schema — unknown JSON fields rejected
+@Bean Jackson2ObjectMapperBuilderCustomizer strict() {
+    return b -> b.featuresToEnable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+}
+
+// R-41-08: injection screen on free-text fields
+private static final Pattern SAFE = Pattern.compile("^[\\p{L}\\p{N} .,'()\\-]{1,128}$");
+if (!SAFE.matcher(req.getRequesterNote()).matches())
+    throw new RaValidationException("PKI_REQ_008", "Illegal characters");
+
+// R-41-09: per-tenant IP allowlist (OncePerRequestFilter)
+if (!tenant.allowedCidrs().stream().anyMatch(c -> c.contains(remoteIp)))
+    throw new AccessDeniedException("Source IP not allowlisted");
+```
+
 ### 4.2 Syntactic Validation (PKCS#10)
 
 | ID | Lvl | Validation | Why | Ref |
@@ -136,6 +184,36 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-42-04 | MUST | DER parses as `CertificationRequest`; reject BER/indefinite length | Parser-differential attacks: RA and CA seeing different content | RFC 2986 |
 | R-42-05 | MUST | PKCS#10 `version` == 0 | Only defined version; anything else is malformed | RFC 2986 §4 |
 | R-42-06 | MUST | Reject if a PRIVATE KEY block accompanies the CSR; permanently blocklist that key | The key is now compromised by definition | — |
+
+**Examples (Java / BouncyCastle):**
+
+```java
+// R-42-01 + R-42-02 + R-42-03: PEM armor, single block, clean decode
+String pem = req.getCsrPem().trim();
+if (pem.isEmpty()) throw new RaValidationException("PKI_CSR_001", "Empty CSR");
+
+// R-42-06 FIRST — private key pasted by accident?
+if (pem.contains("PRIVATE KEY")) {
+    keyBlocklistService.blockForever(extractSpkiHash(pem));   // key is burned
+    throw new RaValidationException("PKI_CSR_009", "Private key received — key blocklisted");
+}
+if (countOccurrences(pem, "-----BEGIN") != 1)
+    throw new RaValidationException("PKI_CSR_003", "Exactly one PEM block required");
+
+// R-42-04: strict DER parse via BouncyCastle
+try (PEMParser p = new PEMParser(new StringReader(pem))) {
+    Object obj = p.readObject();
+    if (!(obj instanceof PKCS10CertificationRequest csr))
+        throw new RaValidationException("PKI_CSR_004", "Not a PKCS#10 CertificationRequest");
+
+    // R-42-05: version MUST be 0
+    if (!BigInteger.ZERO.equals(
+            csr.toASN1Structure().getCertificationRequestInfo().getVersion().getValue()))
+        throw new RaValidationException("PKI_CSR_005", "PKCS#10 version must be 0");
+} catch (IOException e) {
+    throw new RaValidationException("PKI_CSR_004", "ASN.1/DER parse failed");
+}
+```
 
 ### 4.3 Cryptographic Validation
 
@@ -153,6 +231,62 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-43-10 | SHOULD | Forbid key reuse across certificate types | Scope separation: TLS key ≠ signing key (non-repudiation dies) | NIST SP 800-57 §5.2 |
 | R-43-11 | MAY | Accept ML-DSA / SLH-DSA (PQC) under a dedicated pilot profile | Controlled post-quantum migration path | FIPS 204/205 |
 
+**Examples (Java / BouncyCastle):**
+
+```java
+// R-43-01: Proof of Possession — the most important line in the whole RA
+boolean popOk = csr.isSignatureValid(
+        new JcaContentVerifierProviderBuilder().setProvider("BC")
+            .build(csr.getSubjectPublicKeyInfo()));
+if (!popOk) throw new RaValidationException("PKI_CRY_001", "PoP signature invalid");
+
+// R-43-02: signature algorithm allowlist (OIDs, not names — names can be spoofed)
+private static final Set<ASN1ObjectIdentifier> ALLOWED_SIG = Set.of(
+    PKCSObjectIdentifiers.sha256WithRSAEncryption,
+    PKCSObjectIdentifiers.sha384WithRSAEncryption,
+    X9ObjectIdentifiers.ecdsa_with_SHA256,
+    X9ObjectIdentifiers.ecdsa_with_SHA384);
+if (!ALLOWED_SIG.contains(csr.getSignatureAlgorithm().getAlgorithm()))
+    throw new RaValidationException("PKI_CRY_002", "Weak/unknown signature algorithm");
+```
+
+```java
+// R-43-03..05: key extraction + RSA rules
+PublicKey pub = new JcaPKCS10CertificationRequest(csr).getPublicKey();
+if (pub instanceof RSAPublicKey rsa) {
+    int bits = rsa.getModulus().bitLength();
+    int min  = certType == CertType.CODE_SIGNING ? 3072 : 2048;      // R-43-04
+    if (bits < min || bits > 8192)
+        throw new RaValidationException("PKI_KEY_001", "RSA size " + bits);
+    BigInteger e = rsa.getPublicExponent();                          // R-43-05
+    if (e.compareTo(BigInteger.valueOf(65537)) < 0 || !e.testBit(0))
+        throw new RaValidationException("PKI_KEY_002", "Weak RSA exponent");
+}
+
+// R-43-06: EC curve allowlist — compare parameters, not the curve name string
+if (pub instanceof ECPublicKey ec && !isAllowedCurve(ec.getParams()))   // P-256/P-384
+    throw new RaValidationException("PKI_KEY_003", "Curve not allowed");
+```
+
+```java
+// R-43-07 + R-43-08 + R-43-09: SPKI fingerprint drives every key-reputation check
+byte[] spkiHash = MessageDigest.getInstance("SHA-256")
+        .digest(csr.getSubjectPublicKeyInfo().getEncoded());
+if (keyBlocklistService.isBlocked(spkiHash))          // Debian/ROCA/pwnedkeys/revoked
+    throw new RaValidationException("PKI_KEY_004", "Compromised/weak key");
+certRepo.findBySpkiHash(spkiHash).stream()            // R-43-09: cross-subject reuse
+    .filter(c -> !c.subjectDn().equals(requestedDn))
+    .findAny().ifPresent(c -> auditAlert("SPKI reuse across subjects", c));
+
+// R-43-10: key reuse across cert types
+if (certRepo.existsBySpkiHashAndTypeNot(spkiHash, certType))
+    throw new RaValidationException("PKI_KEY_005", "Key already used for another cert type");
+
+// R-43-11: PQC pilot (BC 1.78+ supports ML-DSA)
+if ("ML-DSA-65".equals(pub.getAlgorithm()) && !profile.pqcPilotEnabled())
+    throw new RaValidationException("PKI_KEY_006", "PQC only under pilot profile");
+```
+
 ### 4.4 Subject Distinguished Name Validation
 
 | ID | Lvl | Validation | Why | Ref |
@@ -168,6 +302,59 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-44-09 | SHOULD | Reject deprecated attributes: OU (TLS), emailAddress in DN | CABF removed OU (2022); email belongs in SAN | BR 7.1.4.2; RFC 5280 |
 | R-44-10 | MUST | Reject internal/reserved names in public profiles (localhost, RFC 1918 IPs, .local) | Publicly-trusted certs for unownable names | BR 7.1.4 |
 
+**Examples (Java / BouncyCastle):**
+
+```java
+X500Name subject = csr.getSubject();
+
+// R-44-01: RFC 5280 upper bounds
+String cn = getFirst(subject, BCStyle.CN);            // IETFUtils.valueToString(...)
+if (cn != null && cn.length() > 64)
+    throw new RaValidationException("PKI_DN_001", "CN exceeds 64 chars");
+
+// R-44-02: ISO 3166-1 country
+String c = getFirst(subject, BCStyle.C);
+if (c != null && !Set.of(Locale.getISOCountries()).contains(c))
+    throw new RaValidationException("PKI_DN_002", "Invalid country: " + c);
+
+// R-44-03: only UTF8String / PrintableString encodings
+for (RDN rdn : subject.getRDNs())
+    for (AttributeTypeAndValue atv : rdn.getTypesAndValues()) {
+        ASN1Encodable v = atv.getValue();
+        if (!(v instanceof DERUTF8String || v instanceof DERPrintableString))
+            throw new RaValidationException("PKI_DN_003", "Illegal DN string type");
+    }
+```
+
+```java
+// R-44-04: control / invisible / bidi-override characters
+private static final Pattern FORBIDDEN =
+    Pattern.compile("[\\p{Cc}\\p{Cf}\\u202A-\\u202E\\u200B-\\u200F]");
+if (FORBIDDEN.matcher(cn).find())
+    throw new RaValidationException("PKI_DN_004", "Invisible/control character in CN");
+
+// R-44-05 + R-44-06: placeholders and whitespace hygiene
+if (Set.of("-", ".", "N/A", "NA", "NULL").contains(cn.trim().toUpperCase())
+        || !cn.equals(cn.trim()) || cn.contains("  "))
+    throw new RaValidationException("PKI_DN_005", "Placeholder/whitespace defect");
+
+// R-44-07: O must equal the requester's vetted org (DB, not user input)
+String o = getFirst(subject, BCStyle.O);
+if (o != null && !vettingRepo.activeOrgNames(principal.orgId()).contains(o))
+    throw new RaValidationException("PKI_DN_007", "O does not match vetted organization");
+
+// R-44-08: mixed-script homoglyph screen (ICU4J)
+if (new SpoofChecker.Builder().setChecks(SpoofChecker.MIXED_SCRIPT_CONFUSABLE)
+        .build().failsChecks(cn))
+    flagForManualReview("PKI_DN_008", "Mixed-script CN: " + cn);
+
+// R-44-09 + R-44-10: deprecated attrs, reserved names
+if (certType.isTls() && getFirst(subject, BCStyle.OU) != null)
+    throw new RaValidationException("PKI_DN_009", "OU deprecated for TLS (CABF 2022)");
+if (RESERVED.matcher(cn).matches())                    // localhost|*.local|10\..* ...
+    throw new RaValidationException("PKI_DN_010", "Reserved/internal name");
+```
+
 ### 4.5 Requested Extensions Validation
 
 | ID | Lvl | Validation | Why | Ref |
@@ -180,6 +367,57 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-45-06 | MUST | Unknown/unprofiled extension OIDs → reject | Unreviewed extensions reach the signed cert | — |
 | R-45-07 | MUST | Ignore client-supplied SKID/AKID/certificatePolicies/SCT values | These are RA/CA-authoritative fields | RFC 5280 |
 | R-45-08 | SHOULD | Cap SAN entry count (e.g. 100) and reject duplicates | Abuse amplification and log bloat | — |
+
+**Examples (Java / BouncyCastle):**
+
+```java
+// Extract requested extensions from the PKCS#10 attribute
+Extensions ext = null;
+for (Attribute a : csr.getAttributes(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest))
+    ext = Extensions.getInstance(a.getAttributeValues()[0]);
+if (ext == null) return;                               // nothing requested — profile fills defaults
+
+// R-45-01: cA=TRUE forbidden
+BasicConstraints bc = BasicConstraints.fromExtensions(ext);
+if (bc != null && bc.isCA())
+    throw new RaValidationException("PKI_EXT_001", "basicConstraints cA=TRUE forbidden");
+
+// R-45-02: CA-only KeyUsage bits
+KeyUsage ku = KeyUsage.fromExtensions(ext);
+if (ku != null && (ku.hasUsages(KeyUsage.keyCertSign) || ku.hasUsages(KeyUsage.cRLSign)))
+    throw new RaValidationException("PKI_EXT_002", "keyCertSign/cRLSign forbidden");
+
+// R-45-03 + R-45-04: EKU rules per profile
+ExtendedKeyUsage eku = ExtendedKeyUsage.fromExtensions(ext);
+if (eku != null) {
+    if (eku.hasKeyPurposeId(KeyPurposeId.anyExtendedKeyUsage))
+        throw new RaValidationException("PKI_EXT_003", "anyExtendedKeyUsage forbidden");
+    for (KeyPurposeId kp : eku.getUsages())
+        if (!profile.allowedEkus(certType).contains(kp))          // cross-type combos die here
+            throw new RaValidationException("PKI_EXT_004", "EKU not allowed: " + kp);
+}
+```
+
+```java
+// R-45-05: KU consistent with key algorithm
+if (pub instanceof ECPublicKey && ku != null && ku.hasUsages(KeyUsage.keyEncipherment))
+    throw new RaValidationException("PKI_EXT_005", "keyEncipherment meaningless for EC");
+
+// R-45-06 + R-45-07: allowlist of extension OIDs; authoritative fields ignored
+for (ASN1ObjectIdentifier oid : ext.getExtensionOIDs()) {
+    if (AUTHORITATIVE.contains(oid)) continue;         // SKID/AKID/policies/SCT → RA overwrites
+    if (!profile.allowedExtensionOids(certType).contains(oid))
+        throw new RaValidationException("PKI_EXT_006", "Unprofiled extension: " + oid);
+}
+
+// R-45-08: SAN count + duplicates
+GeneralNames san = GeneralNames.fromExtensions(ext, Extension.subjectAlternativeName);
+if (san != null) {
+    List<GeneralName> names = List.of(san.getNames());
+    if (names.size() > 100 || names.size() != Set.copyOf(names).size())
+        throw new RaValidationException("PKI_EXT_008", "SAN count/duplicate violation");
+}
+```
 
 ---
 
@@ -206,6 +444,61 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-51-13 | SHOULD | High-value/phishing-list domain screening → manual review | Look-alike bank/brand domains pass DCV; risk check catches them | — |
 | R-51-14 | MUST | OV/EV: org vetting per Section 6 in addition to DCV | Identity in the cert must be real, not just domain control | BR 3.2.2.1; EVG |
 
+**Examples (Java / BC / Spring Boot — dnsjava + Guava):**
+
+```java
+// R-51-01: SAN mandatory; CN (if present) must be repeated in SAN
+List<String> dnsNames = extractDnsNames(san);          // GeneralName.dNSName entries
+if (dnsNames.isEmpty())
+    throw new RaValidationException("PKI_TLS_001", "TLS server cert requires SAN dNSName");
+if (cn != null && !dnsNames.contains(cn.toLowerCase()))
+    throw new RaValidationException("PKI_TLS_001", "CN not present in SAN");
+
+// R-51-02..05: FQDN syntax, registrability, wildcard, IDN — Guava InternetDomainName
+for (String name : dnsNames) {
+    String host = name.startsWith("*.") ? name.substring(2) : name;
+    InternetDomainName idn = InternetDomainName.from(host);        // syntax (throws)
+    if (idn.isPublicSuffix())                                       // R-51-03
+        throw new RaValidationException("PKI_TLS_003", "Bare public suffix: " + name);
+    if (name.contains("*") && !name.startsWith("*."))               // R-51-04
+        throw new RaValidationException("PKI_TLS_004", "Illegal wildcard: " + name);
+    if (host.contains("xn--")) homographScreen(IDN.toUnicode(host)); // R-51-05
+}
+```
+
+```java
+// R-51-06: DCV — DNS TXT method (dnsjava); one token per authorization domain
+String expected = dcvTokenRepo.tokenFor(requestId, domain);
+Lookup lookup = new Lookup("_pki-validation." + domain, Type.TXT);
+boolean dcvOk = Arrays.stream(Optional.ofNullable(lookup.run()).orElse(new Record[0]))
+    .flatMap(r -> ((TXTRecord) r).getStrings().stream())
+    .anyMatch(expected::equals);
+if (!dcvOk) throw new RaValidationException("PKI_DCV_001", "DNS TXT token not found");
+
+// R-51-07 + R-51-08: wildcard needs DNS method; evidence freshness
+if (name.startsWith("*.") && evidence.method() != DcvMethod.DNS_TXT)
+    throw new RaValidationException("PKI_DCV_002", "Wildcard requires DNS-based DCV");
+if (evidence.ageDays() > policy.dcvReuseDays())        // 200 (2026) → 100 → 10
+    throw new RaValidationException("PKI_DCV_003", "DCV evidence stale — revalidate");
+```
+
+```java
+// R-51-09: CAA (RFC 8659) — walk up the tree, check ≤ 8h before issuance
+for (Record r : Optional.ofNullable(new Lookup(domain, Type.CAA).run()).orElse(new Record[0])) {
+    CAARecord caa = (CAARecord) r;
+    if ("issue".equals(caa.getTag()) && !caa.getValue().startsWith("ourca.example"))
+        throw new RaValidationException("PKI_CAA_001", "CAA does not authorize our CA");
+}
+
+// R-51-10 + R-51-11: IP SAN policy, validity clamp (SC-081)
+if (generalName.getTagNo() == GeneralName.iPAddress && isRfc1918(ipBytes))
+    throw new RaValidationException("PKI_TLS_010", "Private IP in public cert");
+int granted = Math.min(req.getRequestedValidityDays(), policy.tlsMaxDays()); // 200 in 2026
+
+// R-51-13: risk screen hook (Safe Browsing / internal list) → manual queue, not auto-reject
+if (riskService.isHighValueOrLookalike(domain)) workflow.routeToManualReview(requestId);
+```
+
 ### 5.2 TLS Client Certificates
 
 *Purpose: prove client identity for mTLS. Identity binding is the core.*
@@ -219,6 +512,48 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-52-05 | SHOULD | CN must not look like an FQDN | Type-confusion smell — likely a mis-routed server request | — |
 | R-52-06 | SHOULD | Device certs: asset status ACTIVE in CMDB | Retired/lost devices must not get fresh credentials | — |
 | R-52-07 | SHOULD | Validity ≤ 1 year (policy) | Client population churns faster than servers | internal CP |
+
+**Examples (Java / Spring Boot — LDAP + CMDB):**
+
+```java
+// R-52-01: identity must exist in the authoritative registry
+switch (subjectKind) {
+    case HUMAN -> {
+        if (ldapTemplate.search(query().where("cn").is(cn), attrMapper).isEmpty())
+            throw new RaValidationException("PKI_CLI_001", "No AD record for: " + cn);
+    }
+    case SERVICE -> {
+        CmdbEntry svc = cmdbClient.findService(cn)
+            .orElseThrow(() -> new RaValidationException("PKI_CLI_001", "Not in CMDB"));
+        // R-52-06: asset must be ACTIVE
+        if (svc.status() != Status.ACTIVE)
+            throw new RaValidationException("PKI_CLI_006", "Service retired/inactive");
+        // R-52-02: requester must own the identity — the impersonation guard
+        if (!svc.ownerTeams().contains(principal.teamId()))
+            throw new RaValidationException("PKI_AUTHZ_003", "Requester does not own " + cn);
+    }
+}
+```
+
+```java
+// R-52-03: clientAuth only, serverAuth forbidden
+if (eku == null || !eku.hasKeyPurposeId(KeyPurposeId.id_kp_clientAuth))
+    throw new RaValidationException("PKI_CLI_003", "EKU clientAuth required");
+if (eku.hasKeyPurposeId(KeyPurposeId.id_kp_serverAuth))
+    throw new RaValidationException("PKI_CLI_003", "serverAuth forbidden in client cert");
+
+// R-52-04: UPN otherName (1.3.6.1.4.1.311.20.2.3) must equal AD userPrincipalName
+String upn = extractUpnOtherName(san);                 // parse OtherName → UTF8String
+if (upn != null && !upn.equalsIgnoreCase(adUser.getUserPrincipalName()))
+    throw new RaValidationException("PKI_CLI_004", "UPN mismatch with directory");
+
+// R-52-05: hostname-shaped CN in a client cert = type confusion
+if (cn.matches("([a-z0-9-]+\\.)+[a-z]{2,}"))
+    flagForManualReview("PKI_CLI_005", "FQDN-style CN in client cert: " + cn);
+
+// R-52-07: policy validity
+int granted = Math.min(req.getRequestedValidityDays(), 365);
+```
 
 ### 5.3 S/MIME Certificates
 
@@ -235,6 +570,50 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-53-07 | MUST | EKU = emailProtection; KU per key type (RSA: keyEncipherment; EC: keyAgreement) | Scope separation + working encryption | SMBR 7.1.2 |
 | R-53-08 | MUST | Validity ≤ 824 days (Strict/Multipurpose) | SMBR hard cap | SMBR 6.3.2 |
 | R-53-09 | MAY | Key escrow for encryption certs, dual-control recovery | Business continuity vs insider-abuse trade-off — signing keys NEVER escrowed | SMBR 6.2.1 |
+
+**Examples (Java / BC / Spring Boot — JavaMail):**
+
+```java
+// R-53-01: rfc822Name SAN mandatory + syntax
+String email = extractRfc822Name(san)                  // GeneralName.rfc822Name
+    .orElseThrow(() -> new RaValidationException("PKI_SMM_001", "rfc822Name SAN required"));
+try { new InternetAddress(email, /*strict*/ true).validate(); }   // RFC 5321-ish
+catch (AddressException e) {
+    throw new RaValidationException("PKI_SMM_001", "Invalid mailbox: " + email);
+}
+
+// R-53-03: mail domain must be org-verified
+String mailDomain = email.substring(email.indexOf('@') + 1).toLowerCase();
+if (!vettingRepo.verifiedMailDomains(principal.orgId()).contains(mailDomain))
+    throw new RaValidationException("PKI_SMM_003", "Domain not sponsored by org");
+```
+
+```java
+// R-53-02: Mailbox Control Validation — random-value challenge (SMBR 3.2.2)
+String code = HexFormat.of().formatHex(SecureRandom.getInstanceStrong().generateSeed(16));
+mcvRepo.save(new McvChallenge(requestId, email, sha256(code), Instant.now()));
+mailSender.send(mime -> {
+    mime.setRecipients(TO, email);                     // the EXACT mailbox, nothing else
+    mime.setSubject("Certificate request verification");
+    mime.setText("Enter this code in the RA portal: " + code);
+});
+// later, on portal submit:
+if (!mcvRepo.matches(requestId, sha256(submittedCode)))
+    throw new RaValidationException("PKI_SMM_002", "Mailbox challenge failed");
+
+// R-53-04 + R-53-06: evidence freshness windows
+if (mcvEvidence.ageDays() > 398)
+    throw new RaValidationException("PKI_SMM_004", "MCV stale — rechallenge");
+if (profile == SmimeProfile.SPONSOR_VALIDATED && hrEvidence.ageDays() > 825)
+    throw new RaValidationException("PKI_SMM_006", "Identity evidence expired");
+
+// R-53-05 + R-53-07 + R-53-08: profile, EKU/KU, validity
+if (req.getProfile() == SmimeProfile.LEGACY)           // retired July 2025
+    throw new RaValidationException("PKI_SMM_005", "Legacy profile retired");
+if (!eku.hasKeyPurposeId(KeyPurposeId.id_kp_emailProtection))
+    throw new RaValidationException("PKI_SMM_007", "EKU emailProtection required");
+int granted = Math.min(req.getRequestedValidityDays(), 824);
+```
 
 ### 5.4 Code Signing Certificates
 
@@ -254,6 +633,59 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-54-10 | MUST | EV: subject serialNumber = registry number, verified | EV promise = machine-checkable legal identity | CSBR/EVG |
 | R-54-11 | SHOULD | Direct subscriber to RFC 3161 timestamping | Signatures must verify after cert expiry | RFC 3161 |
 
+**Examples (Java / BC / Spring Boot):**
+
+```java
+// R-54-01: CSBR key floor — stricter than TLS
+if (pub instanceof RSAPublicKey rsa && rsa.getModulus().bitLength() < 3072)
+    throw new RaValidationException("PKI_CSG_001", "Code signing requires RSA >= 3072");
+
+// R-54-02 + R-54-03: CN = vetted legal name; no SAN; single-purpose EKU/KU
+if (!cn.equals(vettedOrg.legalName()))
+    throw new RaValidationException("PKI_CSG_002", "CN must be exact vetted legal name");
+if (san != null)
+    throw new RaValidationException("PKI_CSG_003", "SAN not permitted in code signing");
+if (!eku.hasKeyPurposeId(KeyPurposeId.id_kp_codeSigning) || eku.getUsages().length != 1)
+    throw new RaValidationException("PKI_CSG_003", "EKU must be codeSigning only");
+```
+
+```java
+// R-54-04: key attestation — verify statement chains to HSM vendor root (e.g. YubiKey)
+X509Certificate attest = parseCert(req.getAttestationCertPem());
+CertPath path = certFactory.generateCertPath(List.of(attest, req.intermediate()));
+PKIXParameters params = new PKIXParameters(yubicoTrustAnchors);   // vendor roots, pinned
+params.setRevocationEnabled(false);
+CertPathValidator.getInstance("PKIX").validate(path, params);     // throws on failure
+// attested key MUST equal the CSR key
+if (!Arrays.equals(attest.getPublicKey().getEncoded(),
+                   csr.getSubjectPublicKeyInfo().getEncoded()))
+    throw new RaValidationException("PKI_CSG_004", "Attestation key != CSR key");
+```
+
+```java
+// R-54-05: registry lookup (MCA/QIIS connector)
+OrgRecord rec = registryClient.lookup(vettedOrg.registrationNumber())
+    .orElseThrow(() -> new RaValidationException("PKI_CSG_005", "Org not in registry"));
+if (rec.status() != OrgStatus.ACTIVE)
+    throw new RaValidationException("PKI_CSG_005", "Org not ACTIVE: " + rec.status());
+
+// R-54-06: verified callback — contact from registry, NEVER from the application
+CallbackTask task = workflow.scheduleCallback(requestId, rec.registryPhone());  // not req.phone()!
+
+// R-54-07: malware/abuse + typosquat screening (Levenshtein vs brand list)
+for (String brand : brandList)
+    if (LevenshteinDistance.getDefaultInstance().apply(normalize(cn), brand) <= 2
+            && !normalize(cn).equals(brand))
+        workflow.routeToManualReview(requestId, "Possible typosquat of " + brand);
+if (malwareIntelClient.isKnownAbuser(vettedOrg, spkiHash))
+    throw new RaValidationException("PKI_CSG_007", "Malware association");
+
+// R-54-08 + R-54-09: sanctions; validity cap (2026)
+if (sanctionsClient.isListed(vettedOrg, rec.directors()))
+    throw new RaValidationException("PKI_CSG_008", "Sanctions hit");
+int granted = Math.min(req.getRequestedValidityDays(), 365);      // 1y since 2026-02-15
+```
+
 ### 5.5 Document Signing Certificates
 
 *Purpose: legally-binding personal/org signatures. Full KYC.*
@@ -267,6 +699,43 @@ A validator error or timeout MUST be treated as failure (fail-closed).
 | R-55-05 | MUST | India (CCA): key generated in FIPS 140-2 L2 crypto token; validity ≤ 3 years (1/2/3) | IT Act legal validity depends on CCA-compliant key custody | CCA CP §6.1.1 |
 | R-55-06 | MUST | Org-person certs: employment/affiliation proof + org authorization | Person signs *on behalf of* org — both identities need vetting | ETSI EN 319 411-1 |
 | R-55-07 | SHOULD | EU (eIDAS qualified): QSCD + qcStatements + face-to-face-equivalent proofing | Qualified signature = handwritten-equivalent; bar is highest | eIDAS; ETSI EN 319 411-2 |
+
+**Examples (Java / BC / Spring Boot):**
+
+```java
+// R-55-01: CN must equal the KYC-verified name
+if (!cn.equals(kycRecord.verifiedFullName()))
+    throw new RaValidationException("PKI_DOC_001", "CN != KYC-verified name");
+
+// R-55-02: nonRepudiation (contentCommitment) mandatory
+if (ku == null || !ku.hasUsages(KeyUsage.nonRepudiation))
+    throw new RaValidationException("PKI_DOC_002", "nonRepudiation KU required");
+
+// R-55-03: TLS/code-signing EKUs forbidden
+if (eku != null && (eku.hasKeyPurposeId(KeyPurposeId.id_kp_serverAuth)
+        || eku.hasKeyPurposeId(KeyPurposeId.id_kp_clientAuth)
+        || eku.hasKeyPurposeId(KeyPurposeId.id_kp_codeSigning)))
+    throw new RaValidationException("PKI_DOC_003", "Out-of-scope EKU");
+```
+
+```java
+// R-55-04: CCA IVG — KYC mode + video freshness (<= 2 days at ISSUANCE time)
+if (!EnumSet.of(KycMode.AADHAAR_EKYC, KycMode.PAN_ATTESTED, KycMode.BANK_KYC)
+        .contains(kycRecord.mode()))
+    throw new RaValidationException("PKI_DOC_004", "Unsupported KYC mode");
+if (Duration.between(kycRecord.videoVerifiedAt(), Instant.now()).toDays() > 2)
+    throw new RaValidationException("PKI_DOC_004", "Video KYC stale — redo (CCA IVG)");
+
+// R-55-05: token-resident key + validity 1/2/3 years
+if (!req.hasTokenAttestation())                        // FIPS 140-2 L2 token proof
+    throw new RaValidationException("PKI_DOC_005", "Crypto-token key evidence required");
+if (!Set.of(365, 730, 1095).contains(req.getRequestedValidityDays()))
+    throw new RaValidationException("PKI_DOC_005", "Validity must be 1/2/3 years");
+
+// R-55-06: org-person cert — both identities vetted
+if (o != null && !hrClient.isEmployedBy(kycRecord.personId(), o))
+    throw new RaValidationException("PKI_DOC_006", "No employment proof for O=" + o);
+```
 
 ---
 
@@ -285,6 +754,37 @@ Applied per the depth demanded by the certificate type (Sec 5).
 | R-60-07 | SHOULD | Velocity/anomaly detection on request patterns | Compromised requester accounts order certs in bursts | — |
 | R-60-08 | MUST | RA officer conflict-of-interest bar (cannot vet own org/request) | Insider threat is an audit-level finding | ETSI EN 319 411-1 |
 
+**Examples (Java / Spring Boot):**
+
+```java
+// R-60-01: registry-backed org verification, stored as evidence
+OrgRecord rec = registryClient.lookup(org.registrationNumber()).orElseThrow(...);
+evidenceRepo.save(Evidence.of(requestId, "ORG_REGISTRY", rec.rawResponse(), Instant.now()));
+
+// R-60-02: contacts from registry only — the field from the application is IGNORED
+String verifiedPhone = rec.registryPhone();            // never req.getContactPhone()
+
+// R-60-03: authenticated != authorized
+if (!authorityRepo.hasAuthority(principal.userId(), org.id(), certType))
+    throw new RaValidationException("PKI_VET_003", "Requester lacks authority for org");
+
+// R-60-04: generic freshness gate — every evidence type carries its own window
+for (Evidence e : evidenceRepo.forRequest(requestId))
+    if (e.ageDays() > policy.maxAgeDays(e.type()))     // 825 org / 200 DCV / 2 video-KYC
+        throw new RaValidationException("PKI_VET_004", e.type() + " evidence stale");
+
+// R-60-05..07: agreement, sanctions, velocity
+if (!agreementRepo.hasCurrentSignedAgreement(org.id(), certType))
+    throw new RaValidationException("PKI_VET_005", "Subscriber agreement missing/outdated");
+if (sanctionsClient.isListed(org)) throw new RaValidationException("PKI_VET_006", "Sanctions");
+if (requestRepo.countSince(org.id(), Instant.now().minus(1, HOURS)) > policy.hourlyBurst())
+    workflow.routeToManualReview(requestId, "Velocity anomaly");
+
+// R-60-08: conflict-of-interest bar, enforced in the service layer
+if (officerRepo.orgOf(officerId).equals(request.orgId()))
+    throw new AccessDeniedException("Officer cannot vet own organization");
+```
+
 ## 7. Workflow and Issuance Controls
 
 | ID | Lvl | Validation | Why | Ref |
@@ -299,6 +799,59 @@ Applied per the depth demanded by the certificate type (Sec 5).
 | R-70-08 | MUST | Verify CA response: subject/SPKI/extensions match approved request; chain valid; dates sane; serial ≥ 64-bit CSPRNG | The RA must confirm the CA issued exactly what was approved | BR 7.1 |
 | R-70-09 | MUST | CT logging for public TLS (≥ 2 qualified logs) | Chrome/Safari reject un-logged certs; transparency detects mis-issuance | RFC 6962 |
 | R-70-10 | MUST | Append-only audit log of every verdict + evidence reference; retention ≥ regulatory minimum (2y BR post-expiry; 7y CCA) | WebTrust/ETSI/CCA audits reconstruct decisions from logs alone | RFC 3647 §5.4/5.5 |
+
+**Examples (Java / BC / Spring Boot):**
+
+```java
+// R-70-01: state machine — transitions defined once, enforced everywhere
+public enum ReqState { SUBMITTED, VALIDATED, APPROVED, SENT_TO_CA, ISSUED, REJECTED;
+    private static final Map<ReqState, Set<ReqState>> LEGAL = Map.of(
+        SUBMITTED, Set.of(VALIDATED, REJECTED),
+        VALIDATED, Set.of(APPROVED, REJECTED),
+        APPROVED,  Set.of(SENT_TO_CA, REJECTED),
+        SENT_TO_CA, Set.of(ISSUED, REJECTED));
+    public void assertCanGoTo(ReqState next) {
+        if (!LEGAL.getOrDefault(this, Set.of()).contains(next))
+            throw new IllegalStateTransitionException(this + " -> " + next);
+    }
+}
+
+// R-70-02 + R-70-03: maker-checker in the service layer (never UI-only)
+if (request.getSubmittedBy().equals(approverId))
+    throw new RaValidationException("PKI_WFL_002", "Submitter cannot approve (SoD)");
+if (certType == CertType.CODE_SIGNING && request.approvals().size() < 2)
+    return;                                            // stays pending until 2nd officer
+
+// R-70-04 + R-70-05: modification voids approval; stale requests expire
+@PreUpdate void onModify() { if (state == APPROVED) state = VALIDATED; approvals.clear(); }
+@Scheduled(cron = "0 0 * * * *")
+void expireStale() { requestRepo.expireOlderThan(Instant.now().minus(30, DAYS)); }
+```
+
+```java
+// R-70-06 + R-70-07: re-clamp at CA-send + pre-issuance lint
+int days = Math.min(request.getApprovedDays(), policy.currentMaxDays(certType)); // rules moved?
+LintResult lint = zlintRunner.lint(tbsCertificateBytes);            // exec zlint, parse JSON
+if (lint.hasErrors())
+    throw new RaValidationException("PKI_WFL_007", "Lint: " + lint.firstError());
+
+// R-70-08: verify the CA returned EXACTLY what was approved
+X509CertificateHolder issued = new X509CertificateHolder(caResponse.certDer());
+if (!issued.getSubject().equals(approvedSubject)
+        || !Arrays.equals(issued.getSubjectPublicKeyInfo().getEncoded(),
+                          csr.getSubjectPublicKeyInfo().getEncoded())
+        || issued.getNotAfter().after(Date.from(maxNotAfter))
+        || issued.getSerialNumber().bitLength() < 64)
+    throw new RaValidationException("PKI_WFL_008", "Issued cert deviates from approval");
+
+// R-70-09 + R-70-10: CT presence; hash-chained audit trail
+if (certType == CertType.TLS_SERVER && issued.getExtension(SCT_LIST_OID) == null)
+    throw new RaValidationException("PKI_WFL_009", "Missing SCTs");
+auditRepo.append(AuditEntry.builder().requestId(requestId).verdict(verdict)
+    .evidenceRef(evidenceId)
+    .prevHash(auditRepo.lastHash())                    // tamper-evident chain
+    .build());
+```
 
 ## 8. Security Considerations
 
