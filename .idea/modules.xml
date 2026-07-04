@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/caservice/pki-ra.caservice.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/caservice/pki-ra.caservice.main.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.main.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.test.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/common/pki-ra.common.test.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.main.iml" filepath="$PROJECT_DIR$/.idea/modules/subprojects/documentation/pki-ra.documentation.main.iml" />

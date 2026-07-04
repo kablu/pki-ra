@@ -263,37 +263,82 @@ MUST NOT:
 
 ## 2. TLS_CLIENT Certificate
 
-**Use:** Ravi ka laptop → server ko prove karna "main Ravi hun" — mTLS, VPN, smartcard login  
+**Use:** Salman ka laptop / service-a → server ko prove karna "main authorized hoon" — mTLS, VPN, smartcard login  
 **Generates with:**
 ```bash
 openssl req -new -key client.key \
-  -subj "/CN=John Doe/O=Acme Corp/C=IN" \
-  -addext "subjectAltName=email:john@acme.com" \
+  -subj "/CN=service-a/O=Salman Technologies/C=IN" \
+  -addext "subjectAltName=email:salman@salman.com" \
   -addext "keyUsage=critical,digitalSignature" \
   -addext "extendedKeyUsage=clientAuth" \
   -out client.csr
 ```
 
+> **SAN mandatory nahi hai** client cert mein — server hostname verify nahi karta.  
+> Server sirf yeh dekhta hai: CA ne sign kiya? EKU clientAuth hai? Cert expired nahi?
+
+### RA Verification Layers — TLS_CLIENT
+
+#### Layer 1: Identity Verification (Kaun hai yeh?)
+
+| Type | RA Kya Verify Karega |
+|------|---------------------|
+| **Human User** | Employee ID HR database se match, email ownership proven (challenge), manager approval |
+| **Service/App** | Service name system inventory mein registered, ITSM ticket authorized, requesting team verified |
+| **IoT Device** | Device serial number registered, hardware ID / MAC address match, manufacturing record exist |
+
+#### Layer 2: CSR Technical Validation
+
 | # | Validation | Check | Reason | Error Code |
 |---|-----------|-------|--------|------------|
-| C-01 | **CN person/service name OK** | `John Doe`, `svc-payments` — spaces allowed | Client cert mein person naam hota hai | — (OK) |
+| C-01 | **CN person/service name OK** | `Salman Khan`, `service-a` — identity clearly readable | Client cert mein requester ka naam hota hai — server authorization ke liye use hota hai | — (OK) |
 | C-02 | **CN max 128 chars** | 128 se bada → warning | Kuch CA systems truncate kar dete hain | PKI_POL_015 (warn) |
-| C-03 | **SAN rfc822Name optional** | `email:ravi@acme.com` — present ho to format valid hona chahiye | Email SAN se mail clients bhi cert use kar sakte hain | PKI_POL_020 (warn) |
-| C-04 | **SAN otherName UPN optional** | `ravi@acme.com` UPN format | AD mein smartcard login ke liye UPN SAN required hoti hai | — (optional) |
-| C-05 | **KeyUsage: digitalSignature** | Authentication ke liye mandatory | Client apna identity signature se prove karta hai | PKI_POL_011 (warn) |
-| C-06 | **EKU: clientAuth recommended** | `id-kp-clientAuth` | Server yahi EKU check karta hai mTLS mein | PKI_POL_014 (warn) |
-| C-07 | **CN hostname jaisa nahi hona chahiye** | `api.acme.com` as CN in client cert → warning | Client cert mein server-style hostname suspicious hai | PKI_POL_015 (warn) |
+| C-03 | **SAN rfc822Name optional** | `email:salman@salman.com` — present ho to format valid hona chahiye | Email SAN optional hai — server hostname verify nahi karta client cert mein | PKI_POL_020 (warn) |
+| C-04 | **SAN otherName UPN optional** | `salman@salman.com` UPN format | AD mein smartcard login ke liye UPN SAN required hoti hai | — (optional) |
+| C-05 | **KeyUsage: digitalSignature MANDATORY** | Authentication ke liye mandatory — `keyEncipherment` nahi chahiye | Client apna identity signature se prove karta hai TLS handshake mein | PKI_POL_011 |
+| C-06 | **EKU: clientAuth MANDATORY** | `id-kp-clientAuth` (OID 1.3.6.1.5.5.7.3.2) | Server yahi EKU check karta hai mTLS mein — absent ho toh handshake fail | PKI_POL_014 |
+| C-07 | **EKU: serverAuth absent hona chahiye** | `serverAuth` client cert mein → reject | Client cert ko server identity prove karne ke liye use nahi hona chahiye — scope violation | PKI_POL_014 |
+| C-08 | **BasicConstraints: isCA=false MANDATORY** | Client cert CA nahi ban sakta | Certificate hierarchy protect karna — client cert se sub-CA nahi banna chahiye | PKI_POL_001 |
+| C-09 | **CN hostname jaisa nahi hona chahiye** | `api.salman.com` as CN in client cert → warning | Server-style hostname client cert mein suspicious — cert type confusion attack | PKI_POL_015 (warn) |
+| C-10 | **Key size adequate** | RSA ≥ 2048, EC ≥ 256 | Weak key = security failure | PKI_POL_010 |
+| C-11 | **CSR self-signature valid (PoP)** | Proof of Possession verify karo | Requester ke paas private key hai — otherwise stolen public key se cert ban sakta hai | PKI_POL_002 |
+
+#### Layer 3: Policy & Authorization Checks
+
+| # | Check | Reason |
+|---|-------|--------|
+| C-12 | **Validity period ≤ 1 year** (policy) | Client certs short-lived rakhni chahiye — long-lived = revocation risk |
+| C-13 | **Duplicate CN check** | Same CN ke liye already active cert hai? → warn/block |
+| C-14 | **Blacklist/revocation check** | Yeh identity revoke list mein toh nahi? |
+| C-15 | **Requester authorization** | Kya requester ko IS identity ke liye cert maangne ka haq hai? (e.g. DevOps can't request payment-gateway cert) |
+| C-16 | **Rate limit** | Ek hi requester bahut zyada certs toh nahi maang raha? |
+
+#### Layer 4: Server Cert vs Client Cert — RA Verification Difference
+
+| Verification | Server Cert | Client Cert (Human) | Client Cert (Service) |
+|-------------|-------------|--------------------|-----------------------|
+| PoP (CSR Signature) | ✅ | ✅ | ✅ |
+| Key Size | ✅ | ✅ | ✅ |
+| EKU = serverAuth | ✅ Mandatory | ❌ Must be absent | ❌ Must be absent |
+| EKU = clientAuth | ❌ | ✅ Mandatory | ✅ Mandatory |
+| isCA = false | ✅ | ✅ | ✅ |
+| SAN hostname | ✅ Mandatory | ❌ Optional | ❌ Optional |
+| SAN email | ❌ | Optional | ❌ |
+| Domain ownership | ✅ | ❌ | ❌ |
+| Employee HR check | ❌ | ✅ | ❌ |
+| Service inventory | ❌ | ❌ | ✅ |
+| Manager/ITSM approval | ❌ | Depends on policy | ✅ |
 
 ---
 
 ## 3. S/MIME Certificate
 
-**Use:** Ravi Outlook se email sign + encrypt karta hai  
+**Use:** Salman Outlook se email sign + encrypt karta hai  
 **Generates with:**
 ```bash
 openssl req -new -key smime.key \
-  -subj "/CN=Ravi Sharma/O=Acme Corp/C=IN" \
-  -addext "subjectAltName=email:ravi@acme.com" \
+  -subj "/CN=Salman Khan/O=Acme Corp/C=IN" \
+  -addext "subjectAltName=email:salman@salman.com" \
   -addext "keyUsage=critical,digitalSignature,nonRepudiation,keyEncipherment" \
   -addext "extendedKeyUsage=emailProtection" \
   -out smime.csr
@@ -301,9 +346,9 @@ openssl req -new -key smime.key \
 
 | # | Validation | Check | Reason | Error Code |
 |---|-----------|-------|--------|------------|
-| M-01 | **CN person naam hona chahiye** | `Ravi Sharma` ✓ | Email cert mein person identify hota hai | PKI_POL_001 |
-| M-02 | **SAN rfc822Name MANDATORY** | `email:ravi@acme.com` hona hi chahiye | RFC 5322 — modern mail clients CN nahi, SAN email dekhte hain | PKI_POL_006 |
-| M-03 | **Email format valid** | `ravi@acme.com` ✓ — `ravi@` ✗ — `ravi` ✗ | Galat email = mail delivery fail | PKI_POL_020 |
+| M-01 | **CN person naam hona chahiye** | `Salman Khan` ✓ | Email cert mein person identify hota hai | PKI_POL_001 |
+| M-02 | **SAN rfc822Name MANDATORY** | `email:salman@salman.com` hona hi chahiye | RFC 5322 — modern mail clients CN nahi, SAN email dekhte hain | PKI_POL_006 |
+| M-03 | **Email format valid** | `salman@salman.com` ✓ — `salman@` ✗ — `salman` ✗ | Galat email = mail delivery fail | PKI_POL_020 |
 | M-04 | **KeyUsage: digitalSignature** | Email signing ke liye | Signature se recipient verify karta hai email actually tune bheji | PKI_POL_011 (warn) |
 | M-05 | **KeyUsage: keyEncipherment (RSA key)** | Email encryption ke liye RSA | Sender tere public key se email encrypt karta hai | PKI_POL_011 (warn) |
 | M-06 | **KeyUsage: keyAgreement (EC key)** | Email encryption ke liye EC | EC ka ECDH-based encryption mechanism | PKI_POL_011 (warn) |
@@ -314,7 +359,7 @@ openssl req -new -key smime.key \
 
 ## 4. CODE_SIGNING Certificate
 
-**Use:** Ravi ek `.exe` ya `.jar` sign karta hai taaki Windows/OS trust kare  
+**Use:** Salman ek `.exe` ya `.jar` sign karta hai taaki Windows/OS trust kare  
 **Generates with:**
 ```bash
 openssl req -new -key codesign.key \
@@ -326,7 +371,7 @@ openssl req -new -key codesign.key \
 
 | # | Validation | Check | Reason | Error Code |
 |---|-----------|-------|--------|------------|
-| CS-01 | **CN organization ya developer naam** | `Acme Corp`, `Ravi Sharma` ✓ — IP ✗ | Software ke saath naam dikhta hai user ko — "Publisher: Acme Corp" | PKI_POL_016 |
+| CS-01 | **CN organization ya developer naam** | `Acme Corp`, `Salman Khan` ✓ — IP ✗ | Software ke saath naam dikhta hai user ko — "Publisher: Acme Corp" | PKI_POL_016 |
 | CS-02 | **CN IP address nahi** | `192.168.1.1` → reject | Code signing cert mein IP meaningless aur suspicious | PKI_POL_016 |
 | CS-03 | **O (Organization) MANDATORY** | `O=Acme Corp` hona chahiye | CA/Browser Forum requirement for code signing | PKI_POL_001 |
 | CS-04 | **C (Country) MANDATORY** | `C=IN` hona chahiye | CAB Forum — country mandatory for code signing | PKI_POL_001 |
@@ -344,14 +389,14 @@ openssl req -new -key codesign.key \
 **Generates with:**
 ```bash
 openssl req -new -key docsign.key \
-  -subj "/CN=Ravi Sharma/O=Acme Corp/C=IN" \
+  -subj "/CN=Salman Khan/O=Acme Corp/C=IN" \
   -addext "keyUsage=critical,digitalSignature,nonRepudiation" \
   -out docsign.csr
 ```
 
 | # | Validation | Check | Reason | Error Code |
 |---|-----------|-------|--------|------------|
-| D-01 | **CN person ya organization naam** | `Ravi Sharma`, `Acme Corp Legal` | Document par naam dikhega — legal identity | PKI_POL_001 |
+| D-01 | **CN person ya organization naam** | `Salman Khan`, `Acme Corp Legal` | Document par naam dikhega — legal identity | PKI_POL_001 |
 | D-02 | **O (Organization) recommended** | `O=Acme Corp` | Legal entity ke liye organization naam important | PKI_POL_011 (warn) |
 | D-03 | **KeyUsage: digitalSignature MANDATORY** | Mandatory | PDF signature mechanism ke liye | PKI_POL_011 (warn) |
 | D-04 | **KeyUsage: nonRepudiation MANDATORY** | `nonRepudiation` bit | Legal documents mein non-repudiation critical — baad mein "maine sign nahi kiya" nahi bol sakte | PKI_POL_011 (warn) |
@@ -573,3 +618,128 @@ Category 8 — CA Submit (8)     CA ko sirf valid, approved, correct payload jaa
 ─────────────────────────────────────────────────────────────
 Total: 52 validations across 8 categories
 ```
+
+---
+
+## Part F — Certificate Type Matrix (RFC Style)
+
+```text
+                 Certificate Types: Purpose, Verification & Validation
+
+   +------------------+-------------------------+----------------------------------+--------------------------------+
+   | Certificate Type | Purpose                 | Verification & Validation (RA)   | Example                        |
+   +------------------+-------------------------+----------------------------------+--------------------------------+
+   | TLS_SERVER       | Server identity for     | o  PKCS#10 parse + Proof of      | CN=api.acme.com                |
+   |                  | HTTPS/TLS; browser to   |    Possession (self-sig verify)  | SAN: dNSName=api.acme.com,     |
+   |                  | server encryption       | o  Domain Control Validation     |      dNSName=www.acme.com      |
+   |                  |                         |    (DNS TXT / HTTP token /       | EKU: serverAuth                |
+   |                  |                         |    email to admin@domain)        | KU: digitalSignature,          |
+   |                  |                         | o  CN/SAN FQDN syntax; wildcard  |     keyEncipherment            |
+   |                  |                         |    policy; no bare IP (policy)   |                                |
+   |                  |                         | o  EKU=serverAuth; RSA >= 2048   |                                |
+   |                  |                         | o  CAA record check              |                                |
+   +------------------+-------------------------+----------------------------------+--------------------------------+
+   | TLS_CLIENT       | Client/device identity  | o  PoP + key/algo checks         | CN=salman.device-042           |
+   |                  | for mutual TLS (mTLS);  | o  Identity binding: CN maps to  | O=Acme Corp                    |
+   |                  | API and service auth    |    a real user/device in IAM/    | EKU: clientAuth                |
+   |                  |                         |    HR/CMDB registry              | KU: digitalSignature           |
+   |                  |                         | o  Requester owns that identity  |                                |
+   |                  |                         |    (no impersonation)            |                                |
+   |                  |                         | o  EKU=clientAuth only;          |                                |
+   |                  |                         |    serverAuth forbidden          |                                |
+   +------------------+-------------------------+----------------------------------+--------------------------------+
+   | S/MIME           | Email signing and       | o  PoP + key/algo checks         | CN=Salman Khan                 |
+   |                  | encryption; sender      | o  Mailbox Control Validation:   | SAN: rfc822Name=               |
+   |                  | authenticity            |    challenge mail to the exact   |      salman@acme.com           |
+   |                  |                         |    address in SAN rfc822Name     | EKU: emailProtection           |
+   |                  |                         | o  SAN email syntax valid;       | KU: digitalSignature,          |
+   |                  |                         |    domain belongs to org         |     keyEncipherment            |
+   |                  |                         | o  EKU=emailProtection           |                                |
+   +------------------+-------------------------+----------------------------------+--------------------------------+
+   | CODE_SIGNING     | Sign .exe/.jar/.msi so  | o  PoP + RSA >= 3072 (CSBR)      | CN=Acme Corp                   |
+   |                  | OS trusts publisher;    | o  Legal identity vetting: org   | O=Acme Corp, C=IN              |
+   |                  | shows "Publisher:       |    in govt registry (MCA/ROC/    | serialNumber=U72900MH2015      |
+   |                  | Acme Corp"              |    DUNS); verified callback      |   (EV only)                    |
+   |                  |                         | o  Requester authorized by org   | EKU: codeSigning               |
+   |                  |                         | o  Malware/abuse + sanctions     | KU: digitalSignature           |
+   |                  |                         |    screening                     | No SAN                         |
+   |                  |                         | o  Key in FIPS 140-2 L2 HW       |                                |
+   |                  |                         |    (attestation, CSBR 2023)      |                                |
+   |                  |                         | o  O and C mandatory; no SAN;    |                                |
+   |                  |                         |    manual RA approval always     |                                |
+   +------------------+-------------------------+----------------------------------+--------------------------------+
+   | DOCUMENT_SIGNING | Sign PDFs/contracts;    | o  PoP + key/algo checks         | CN=Salman Khan                 |
+   |                  | legal non-repudiation   | o  Personal identity proofing:   | O=Acme Corp, C=IN              |
+   |                  | (DSC in India)          |    govt photo ID, video/         | KU: digitalSignature,          |
+   |                  |                         |    in-person KYC (India DSC)     |     nonRepudiation             |
+   |                  |                         | o  KU must include               | Validity: <= 3 years           |
+   |                  |                         |    nonRepudiation                |                                |
+   |                  |                         | o  No serverAuth/clientAuth EKU  |                                |
+   |                  |                         | o  Validity <= 3 years (India    |                                |
+   |                  |                         |    DSC regulation)               |                                |
+   +------------------+-------------------------+----------------------------------+--------------------------------+
+
+                      Table 1: RA Verification Matrix by Certificate Type
+```
+
+**Pattern:** Upar se neeche jaate hue verification **automated technical checks** (TLS server — domain control fully automated ho sakta hai) se **human identity vetting** (code signing / document signing — legal registries, callbacks, KYC) ki taraf shift hota hai — isliye last two types mein manual RA officer approval hamesha mandatory hai.
+
+---
+
+## Part G — Code Signing CSR: Complete RA Verification List
+
+Real enterprise RA + CA/Browser Forum Code Signing Baseline Requirements (CSBR) ke hisaab se, phase-wise complete list. Phase 1–3 is doc mein pehle se covered hain (V-01..V-13, CS-01..CS-09); Phase 4–5 code signing ke special requirements hain.
+
+### Phase 1 — Request/Transport Layer
+
+1. **Authentication** — request bhejne wala client authenticated hai (mTLS / API key / session)
+2. **Authorization** — is user ko CODE_SIGNING type request karne ka right hai ya nahi (RBAC)
+3. **Payload present + size limit** — CSR empty nahi, aur size cap (e.g. 64KB) ke andar
+4. **clientTxnId unique** — idempotency/replay protection
+
+### Phase 2 — CSR Technical (Cryptographic) Validation
+
+5. **PEM format valid** — `-----BEGIN CERTIFICATE REQUEST-----` structure sahi
+6. **ASN.1/DER parse** — PKCS#10 structure valid
+7. **Proof of Possession** — CSR ki self-signature verify karo; prove karta hai ki client ke paas private key hai
+8. **Signature algorithm** — SHA-256+ only; MD5/SHA-1 reject
+9. **Key size** — RSA minimum **3072-bit** (CSBR mandate for code signing — TLS ke 2048 se strict), ya ECDSA P-256/P-384
+10. **Weak/compromised key check** — Debian weak keys, ROCA-vulnerable keys, known-compromised key blocklist ke against public key match
+11. **Duplicate CSR / duplicate public key** — same key pe pehle koi cert issued/revoked to nahi
+
+### Phase 3 — Subject DN & Extension Policy
+
+12. **CN = organization ya developer naam** — yahi naam user ko "Publisher: Acme Corp" ke roop mein dikhega; IP/FQDN reject
+13. **O (Organization) mandatory** — CABF requirement
+14. **C (Country) mandatory** — aur O ke registered country se match kare
+15. **SAN absent** — code signing mein SAN suspicious hai (warn/reject)
+16. **KeyUsage = digitalSignature only** — keyEncipherment nahi
+17. **EKU = codeSigning (`1.3.6.1.5.5.7.3.3`)** — serverAuth/clientAuth forbidden
+18. **BasicConstraints cA=TRUE forbidden** + `anyExtendedKeyUsage` forbidden
+19. **EV code signing**: `serialNumber` field mein company registration number mandatory
+
+### Phase 4 — Identity Vetting (RA ka core kaam — yahi TLS se sabse bada difference hai)
+
+20. **Legal existence verification** — organization government registry (MCA/ROC in India, QIIS, DUNS) mein registered hai
+21. **Physical address verification** — registered office address confirm
+22. **Requester authority verification** — jo bhej raha hai (e.g. Salman), woh organization ki taraf se authorized hai — authorization letter ya verified contact se confirmation
+23. **Verified callback** — organization ke *independently verified* phone number pe call karke request confirm (applicant ke diye number pe nahi!)
+24. **Individual developer case** — government photo ID + face-to-face ya remote video verification
+25. **EV extra**: operational existence (company 3+ saal, ya bank account proof), signed subscriber agreement
+
+### Phase 5 — Risk & Reputation Screening (code signing specific)
+
+26. **Malware/abuse history check** — applicant ka naam CA ke internal denied list + industry malware databases mein to nahi (kyunki code signing cert ka misuse = signed malware)
+27. **Sanctions/denied party screening** — OFAC/embargo lists
+28. **High-risk applicant flag** — pehle revoked-for-abuse cert, typosquatting company names (e.g. "Microsofft Corp") → manual review
+29. **Private key protection attestation** — **June 2023 se CSBR mandatory**: private key FIPS 140-2 Level 2 / Common Criteria EAL4+ hardware (HSM/USB token) mein generate hui hai — key attestation verify karo ya subscriber attestation lo. Software-only key ab allowed nahi.
+
+### Phase 6 — Workflow & Approval
+
+30. **Separation of duties** — jo request laya wahi approve nahi kar sakta (maker-checker)
+31. **RA officer manual review** — code signing kabhi bhi fully auto-approve nahi hota (TLS DV jaisa nahi)
+32. **Validity period check** — max 39 months (CSBR)
+33. **Audit logging** — har verification step ka evidence record (WebTrust audit ke liye)
+34. **CA submission** — sab pass hone ke baad hi CSR CA ko forward
+
+**Ek line mein farq:** TLS cert mein RA *domain control* verify karta hai, lekin code signing mein RA *legal identity + reputation + key hardware protection* verify karta hai — kyunki galat haath mein gaya code signing cert directly signed malware banata hai.
