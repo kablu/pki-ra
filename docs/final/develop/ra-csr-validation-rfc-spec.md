@@ -174,6 +174,97 @@ if (!tenant.allowedCidrs().stream().anyMatch(c -> c.contains(remoteIp)))
     throw new AccessDeniedException("Source IP not allowlisted");
 ```
 
+#### 4.1.1 Active Directory Authentication Profile
+
+When R-41-02/R-41-03 are implemented against Active Directory, AD becomes
+three things at once: the authenticator, the RBAC source, and the identity
+registry. Each role carries its own validations. The core risk is the
+**time gap**: AD can change between token issuance, group resolution, and
+approval — so token claims are acceptable for cheap actions (submit), but
+sensitive actions (approve, CA-send) MUST use a live AD lookup.
+
+**(a) At authentication time (every request)**
+
+| ID | Lvl | Validation | Why |
+|----|-----|-----------|-----|
+| R-AD-01 | MUST | Kerberos ticket / OIDC token (ADFS/Entra) cryptographically valid: signature, `iss`, `aud`, `exp`, nonce | A token borrowed from another app must not replay here |
+| R-AD-02 | MUST | LDAPS (636) or StartTLS with DC certificate verification; never simple bind in plaintext | Bind credentials and queries must not be sniffable |
+| R-AD-03 | MUST | RA clock NTP-synced with DCs (Kerberos 5-min skew) | Auth failures and replay-window drift |
+| R-AD-04 | MUST | LIVE account-state check at sensitive actions: `userAccountControl` ACCOUNTDISABLE (0x2), LOCKOUT (0x10), PASSWORD_EXPIRED; `accountExpires` | The user may have been disabled AFTER the token was issued — token valid, user invalid |
+| R-AD-05 | MUST | Distinguish human vs service accounts (gMSA/OU/naming); service accounts may submit, MUST NOT approve | Automation accounts must not bypass maker-checker |
+
+**(b) Authorization — AD groups → RA roles**
+
+| ID | Lvl | Validation | Why |
+|----|-----|-----------|-----|
+| R-AD-06 | MUST | Fresh group resolution (LDAP) for approvals — do not trust token group claims | A user removed from a group must not approve with an old token |
+| R-AD-07 | MUST | Resolve nested groups: matching rule `1.2.840.113556.1.4.1941` or `tokenGroups` — `memberOf` is direct-only | Missed nested membership = wrong deny, or worse, wrong allow |
+| R-AD-08 | MUST | Dedicated, change-controlled groups (`RA_CERT_REQUESTERS`, `RA_OFFICERS`, `RA_CODESIGN_APPROVERS`); audit who can edit them | Whoever edits the AD group effectively grants RA roles — that group IS the trust boundary |
+| R-AD-09 | MUST | SoD enforced per-request at action time (this submitter ≠ this approver), not merely per-group | One user may legitimately hold both roles for different requests |
+| R-AD-10 | MUST | Verify MFA claim (`amr` / authentication method) for officer sessions | Password-only sessions must not approve |
+
+**(c) AD as identity registry (TLS client / S/MIME subjects)**
+
+| ID | Lvl | Validation | Why |
+|----|-----|-----------|-----|
+| R-AD-11 | MUST | Cert subject ↔ AD attributes exact match: SAN UPN = `userPrincipalName`, SAN email = `mail`, CN = `displayName`/`cn` | Smartcard logon maps via UPN; mismatch = broken or spoofed logon |
+| R-AD-12 | MUST | Authenticated identity == certificate subject identity (or an explicit delegation record) | Salman must not obtain a cert for a colleague |
+| R-AD-13 | MUST | Persist `objectGUID`/`objectSid`, not just username | Usernames are reused; a new "salman" must not inherit the old salman's certs |
+| R-AD-14 | MUST | Escape all user input in LDAP filters (Spring `LdapQueryBuilder`/`LdapEncoder`) | `cn=*)(uac=*` style injection can dump the directory |
+| R-AD-15 | MUST | RA's bind account is read-only, least-privilege, scoped to needed OUs/attributes | An RA compromise must not become an AD compromise |
+
+**(d) Lifecycle integration (most commonly forgotten)**
+
+| ID | Lvl | Validation | Why |
+|----|-----|-----------|-----|
+| R-AD-16 | MUST | Leaver hook: AD disable/delete → auto-revoke (or review-queue) the user's active certs | An ex-employee's valid client cert is ghost access |
+| R-AD-17 | MUST | Mover hook: group/OU change re-evaluates entitlements; voids pending requests that lost their basis | Old entitlements must not survive role changes |
+| R-AD-18 | SHOULD | Stale-account guard: `lastLogonTimestamp` older than policy (e.g. 90 days) → manual review | Dormant-account takeover is a classic entry point |
+| R-AD-19 | MUST | Audit evidence includes the group snapshot, `objectGUID`, and DC response at verdict time | The auditor's question is "was the officer in the group AT THAT MOMENT?" — needs proof, not memory |
+
+**Examples (Java / Spring LDAP / Spring Security):**
+
+```java
+// R-AD-04: live account-state check at approval time (not from the token)
+DirContextOperations ctx = ldapTemplate.searchForContext(
+    query().base("OU=Users,DC=corp,DC=salmantech,DC=in")
+           .where("objectGUID").is(officer.objectGuid()));          // R-AD-13: GUID, not name
+int uac = Integer.parseInt(ctx.getStringAttribute("userAccountControl"));
+if ((uac & 0x2) != 0 || (uac & 0x10) != 0)                          // disabled / locked
+    throw new AccessDeniedException("Account disabled/locked in AD");
+
+// R-AD-06 + R-AD-07: fresh, transitive group check (LDAP_MATCHING_RULE_IN_CHAIN)
+boolean isOfficer = !ldapTemplate.search(
+    query().where("memberOf:1.2.840.113556.1.4.1941:")
+           .is("CN=RA_OFFICERS,OU=Groups,DC=corp,DC=salmantech,DC=in")
+           .and("objectGUID").is(officer.objectGuid()),
+    (AttributesMapper<String>) a -> "x").isEmpty();
+if (!isOfficer) throw new AccessDeniedException("Not in RA_OFFICERS (live check)");
+```
+
+```java
+// R-AD-10: MFA claim on the officer's OIDC session
+List<String> amr = principal.getClaimAsStringList("amr");
+if (amr == null || amr.stream().noneMatch(Set.of("mfa", "otp", "hwk")::contains))
+    throw new AccessDeniedException("MFA required for approval actions");
+
+// R-AD-11 + R-AD-12: subject binding for a TLS client / S/MIME request
+if (!upnFromCsr.equalsIgnoreCase(ctx.getStringAttribute("userPrincipalName"))
+        || !principal.objectGuid().equals(requestedForGuid))
+    throw new RaValidationException("PKI_CLI_004", "CSR subject not bound to requester");
+
+// R-AD-14: never concatenate user input into filters
+LdapQuery q = query().where("cn").is(userSuppliedCn);   // Spring escapes internally
+
+// R-AD-16: leaver hook — scheduled reconciliation
+@Scheduled(cron = "0 */15 * * * *")
+void revokeLeavers() {
+    for (ActiveCert cert : certRepo.findActiveClientCerts())
+        if (adClient.isDisabledOrGone(cert.subjectObjectGuid()))
+            revocationService.requestRevocation(cert, Reason.AFFILIATION_CHANGED);
+}
+```
+
 ### 4.2 Syntactic Validation (PKCS#10)
 
 | ID | Lvl | Validation | Why | Ref |
