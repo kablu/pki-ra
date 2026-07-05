@@ -234,3 +234,46 @@ ALWAYS:               maker-checker → edit voids approval →
    control, identity, freshness, and process, not just cryptography.
 3. A check we cannot prove happened is a check that never happened.
 
+---
+
+## Part 5 — Checks We Learned from Worldwide RA Projects (v1.1)
+
+We compared our list against real RA/CA software used worldwide — EJBCA,
+Let's Encrypt's Boulder, Dogtag PKI, OpenXPKI, Microsoft AD CS — and the
+newest 2025–2026 industry rules. These checks were missing:
+
+### New industry rules (now mandatory)
+
+| Check | What we do | Why |
+|-------|-----------|-----|
+| **Check domains from more than one place (MPIC)** | Domain validation and CAA checks must be confirmed from at least 2 network locations, at least 500 km apart (mandatory since Sept 2025) | An attacker can hijack internet routes (BGP) near *our* network and answer our DNS check themselves. A hijack cannot fool two far-apart viewpoints at once. This defeated real attacks on certificate issuance |
+| **DNSSEC on our DNS lookups** | Our DNS queries during CAA/domain checks must verify DNSSEC signatures (mandatory March 2026) | Otherwise a DNS spoofer can feed us fake answers during the exact check that is supposed to prove ownership |
+| **CAA for email too** | Before issuing S/MIME, check the mail domain's CAA `issuemail` record (mandatory March 2025) | Domain owners can now publish "only these CAs may issue email certificates for us" — we must obey it |
+| **Never use WHOIS contacts** | Do not validate domains via emails/phones found in WHOIS | In 2024, researchers took over an expired WHOIS server and could have received validation emails for thousands of domains. The industry retired this method |
+| **Short-lived certificate option** | Certificates valid ≤ 7 days may skip revocation infrastructure (2026 rule) — but still need full domain validation | A certificate that dies in a week is often safer than a revocation system nobody checks |
+
+### Stricter parsing (from Boulder / zlint practice)
+
+| Check | What we do | Why |
+|-------|-----------|-----|
+| Named curves only | EC keys must name a standard curve (P-256/P-384); keys with custom "explicit" curve maths → reject | A custom curve can be secretly weak, and we cannot audit maths we did not choose |
+| Strict algorithm encoding | RSA algorithm field must carry exactly NULL parameters; ECDSA must carry none | Sloppy encodings are the raw material of parser-confusion attacks |
+| Redirect discipline in HTTP validation | When fetching the DCV token, follow only http/https redirects, only ports 80/443, limited chain length | Otherwise a clever redirect chain can trick our validator into "finding" the token somewhere the requester does not control |
+
+### If we add enrollment protocols later (SCEP / ACME / EST / CMP)
+
+| Check | What we do | Why |
+|-------|-----------|-----|
+| SCEP challenge is one-time and short-lived | Never a static shared password | A fixed SCEP password is a well-known way attackers mint certificates in AD CS environments |
+| ACME accounts bound to enterprise accounts | External Account Binding required | Anonymous ACME accounts must not reach enterprise certificate profiles |
+| ACME account key ≠ certificate key | Reject a CSR signed with the account's own key | Keeps "who asked" and "what is certified" as two separate keys |
+
+### Organizational (auditors check these)
+
+| Check | What we do | Why |
+|-------|-----------|-----|
+| 24/7 problem reporting | Anyone must be able to report a stolen key at 3 AM, and we must verify the proof (e.g. a signature made with the compromised key) | The industry's 24-hour revocation clock starts at the *report*, not at office hours |
+| Trained validation staff | People doing identity vetting need documented training and skill checks | An untrained officer approving vetting is an audit finding by itself |
+| Rate the data sources | Before trusting any registry/database for vetting, evaluate and document how reliable and tamper-resistant it is | Not every official-looking website qualifies as an authoritative source |
+| Pluggable validators | Build every check as a plug-in attached to certificate profiles (the EJBCA model) | Adding the next new rule (and they now arrive yearly) should be configuration, not a code rewrite |
+

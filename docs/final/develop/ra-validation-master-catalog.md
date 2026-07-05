@@ -3,7 +3,10 @@
 > Deep-research based complete list of validations for building an enterprise Registration Authority.
 > Sources: RFC 2986 (PKCS#10), RFC 5280, CA/Browser Forum TLS BR (incl. SC-081v3, effective Mar 2026),
 > Code Signing BR (CSBR, incl. Feb 2026 1-year cap), S/MIME BR, ETSI EN 319 411, WebTrust for RA, NIST SP 800-57.
-> Last updated: 2026-07-04
+> v1.1 additions cross-checked against worldwide RA implementations: EJBCA (Keyfactor), Boulder
+> (Let's Encrypt), Dogtag PKI, OpenXPKI, MS AD CS/NDES — plus 2025–26 CABF ballots SC-067 (MPIC),
+> SMC-05 (CAA issuemail), SC-063 (short-lived certs).
+> Last updated: 2026-07-05
 
 ## How to read this
 
@@ -362,3 +365,50 @@ Total: 201 validations across 15 tiers
 **Build order suggestion:** Tier 4–8 pehle banao (pure functions, easily unit-testable — aapka 7-layer
 service isi zone mein hai), phir Tier 0–3 (framework/filter layer), phir Tier 11–12 (workflow + CA
 integration), aur Tier 9–10 sabse aakhri mein kyunki wahan external registries/manual steps lagte hain.
+
+---
+
+## Addendum v1.1 — Gap Additions from Worldwide RA Review
+
+Yeh checks standard RA/CA projects (EJBCA, Boulder/Let's Encrypt, Dogtag, OpenXPKI, AD CS/NDES)
+aur 2025–26 ke naye CABF ballots ke against review karne pe mile — original 201 mein nahi the.
+
+### New mandatory industry rules (2025–2026)
+
+| ID | Validation | Detail | Fits in |
+|----|-----------|--------|---------|
+| G-01 | **MPIC — Multi-Perspective Issuance Corroboration** | DCV **aur** CAA checks kam se kam 2 geographically separate network perspectives (≥500 km apart) se corroborate hon; single-vantage validation ab BR-non-compliant hai (SC-067, enforced 2025-09-15; perspectives count 2026 mein badh raha hai, multiple RIR regions) | Tier 8A (DCV ke saath) |
+| G-02 | **DNSSEC validation on CAA/DCV lookups** | Primary perspective ke CAA DNS queries pe IANA root tak DNSSEC validation MANDATORY (2026-03-15 se); Boulder yeh pehle se karta hai — DNS spoofing se DCV bypass band | Tier 8A |
+| G-03 | **CAA `issuemail` for S/MIME (RFC 9495)** | Email domain ke CAA record mein `issuemail` tag check karo — hamari CA authorized hai? (SMBR via SMC-05, mandatory 2025-03-15 se) | Tier 8C |
+| G-04 | **WHOIS-sourced contacts retired** | DCV ke liye WHOIS/RDAP se nikale email/phone use MAT karo — 2024 ke .mobi WHOIS-server takeover research ke baad industry ne Domain-Contact methods retire kar diye | Tier 8A (DCV method list se remove) |
+| G-05 | **Short-lived certificate profile (SC-063)** | ≤7-day certs (2026-03-15 se; pehle 10) revocation-exempt hain — alag profile flag, full DCV still required, CRL entry optional | Tier 8A / 12 |
+
+### Encoding strictness (zlint/Boulder practice)
+
+| ID | Validation | Detail | Fits in |
+|----|-----------|--------|---------|
+| G-06 | **Explicit EC parameters forbidden** | SPKI mein curve sirf namedCurve OID se aaye (RFC 5480); explicit/specifiedCurve parameters reject — parser bloat + hidden weak curve risk | Tier 5 |
+| G-07 | **AlgorithmIdentifier params strict** | RSA ke liye params = NULL exactly; ECDSA sig ke liye params absent; mismatch = malformed encoder | Tier 5 |
+| G-08 | **HTTP-01 redirect discipline** | DCV HTTP token fetch: sirf http/https redirects, sirf ports 80/443, redirect chain cap (e.g. 10), IP-literal redirects reject (Boulder rules) | Tier 8A |
+
+### Enrollment protocol validations (jab SCEP/EST/ACME/CMP channel ho)
+
+| ID | Validation | Detail | Fits in |
+|----|-----------|--------|---------|
+| G-09 | **SCEP challengePassword one-time + expiry** | NDES/SCEP flow mein challenge single-use, short TTL, device-bound (RFC 8894); static shared secret = classic AD CS attack path | Tier 1/2 |
+| G-10 | **ACME External Account Binding (EAB)** | ACME account ko pre-registered enterprise account se bind karo (RFC 8555 §7.3.4) — anonymous ACME account enterprise profile na le sake | Tier 1/2 |
+| G-11 | **ACME account key ≠ certificate key** | CSR jo account key se hi signed ho → reject (Boulder rule) — account takeover aur cert issuance collapse na ho | Tier 5 |
+| G-12 | **EST/CMP channel auth** | EST (RFC 7030): TLS client-cert ya HTTP auth binding; CMP (RFC 9483): shared-secret/cert-based message protection verify | Tier 0/1 |
+
+### Operational/organizational (WebTrust/BR audit ke liye)
+
+| ID | Validation | Detail | Fits in |
+|----|-----------|--------|---------|
+| G-13 | **24/7 problem-reporting channel** | Key-compromise/misuse reports round-the-clock accept karo; compromise proof verify karo (e.g. signed nonce with the compromised key) — 24h revocation clock yahin se start hota hai (BR 4.9.3) | Tier 13 |
+| G-14 | **Validation Specialist qualification** | Vetting karne wale personnel documented training + skills verification ke saath (BR 5.3.3); EJBCA/commercial RAs mein role-gated validation queues isi liye hain | Tier 14 |
+| G-15 | **Data-source reliability evaluation** | Kisi registry/QIIS pe rely karne se PEHLE uski accuracy/manipulation-resistance evaluate + document karo (BR 3.2.2.7) — har "government-looking" site QIIS nahi hoti | Tier 9 |
+| G-16 | **Pluggable validator architecture** | EJBCA pattern: key blacklist validator, domain blocklist validator, lint validator, external command validator — sab profile se attach hote hain; naya check = config, code nahi | Cross-cutting |
+
+```
+Updated totals: 201 (v1.0) + 16 (v1.1 addendum) = 217 validations
+```
