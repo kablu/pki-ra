@@ -215,23 +215,35 @@ Extra checks:
 
 ## 5. DOCUMENT SIGNING certificate
 
-**Use:** a person legally signs PDFs/contracts (India DSC / eIDAS).
+**Use:** a person legally signs PDFs/contracts (advanced / qualified
+electronic signatures, eIDAS / ETSI).
 **Example:** `CN=Salman Khan`, `O=...`, `C=IN`,
 KeyUsage includes `nonRepudiation`.
 
 Extra checks:
-1. **Full personal KYC** — Aadhaar eKYC, or PAN with attested documents,
-   or bank KYC.
-2. **Fresh video verification** — video KYC done within 2 days before
-   issuing (CCA India rule).
+1. **Verify the person's identity (enterprise + ID document)** — confirm
+   the applicant against the enterprise identity source (Active Directory /
+   HR record) and a valid government-issued photo ID (passport, national
+   ID, or driving licence).
+   *WLCA scope: identity is proven through enterprise records plus ID-
+   document verification — NOT a national KYC scheme such as Aadhaar / PAN /
+   bank KYC.*
+2. **Identity proofing at the right assurance level** — for higher
+   assurance, perform supervised verification: in person, or a recorded
+   remote video session, performed close to issuance
+   (per ETSI EN 319 411 / eIDAS levels).
 3. **KeyUsage includes nonRepudiation** — this is what makes a signature
    legally undeniable in court.
 4. **No TLS or code-signing EKUs** — the certificate's scope is signing
    documents only.
-5. **Key is on a crypto token** — FIPS 140-2 L2 (CCA rule).
+5. **Key is in a secure device** — the signing key is generated and held
+   in FIPS 140-2 Level 2 / EAL4+ hardware (or a QSCD for qualified
+   signatures), proven by key attestation.
 6. **Company link (if named)** — employment proof + company authorization.
-7. **Validity = 1, 2, or 3 years only.**
-8. **Approval:** manual officer review; keep evidence for 7 years.
+7. **Validity** — as set by the WLCA certificate policy (CP/CPS),
+   typically up to 3 years.
+8. **Approval:** manual officer review; keep the identity evidence for the
+   retention period defined in the WLCA policy.
 
 ---
 
@@ -257,12 +269,12 @@ Extra checks:
 
 | Question | TLS Server | TLS Client | S/MIME | Code Signing | Doc Signing |
 |----------|-----------|-----------|--------|--------------|-------------|
-| Main control check | Domain (DCV) | Identity binding | Mailbox challenge | Key attestation + callback | KYC + video |
+| Main control check | Domain (DCV) | Identity binding | Mailbox challenge | Key attestation + callback | ID + video proofing |
 | Required EKU | serverAuth | clientAuth | emailProtection | codeSigning | (none; nonRepudiation KU) |
 | serverAuth allowed? | Yes | **No** | No | No | No |
 | SAN | domain (must) | optional | email (must) | none | optional |
 | Key floor | RSA 2048 | RSA 2048 | RSA 2048 | **RSA 3072** | RSA 2048 |
-| Identity depth | DV / OV | AD/CMDB record | mailbox + HR | full legal + callback | full KYC |
+| Identity depth | DV / OV | AD/CMDB record | mailbox + HR | full legal + callback | enterprise ID + video |
 | Auto-approve? | Yes (DV) | Yes (after binding) | Yes | **No — 2 officers** | **No — manual** |
 | Validity cap (2026) | 200 days | 1 year | 824 days | 1 year | 3 years |
 
