@@ -129,7 +129,46 @@ Extra checks:
    as `*.something.com`.
 3. **Domain Control Validation (DCV)** — the requester must place an
    RA-given random token in the domain's DNS or web server; the RA checks
-   it. *This proves they control the domain.*
+   it. *This proves they control the domain: only someone who controls the
+   domain can place the token where the RA looks for it.*
+
+   **How the RA proves control — DNS TXT method (example):**
+   ```
+   Domain requested:  api.salmantech.com
+
+   Step 1  RA generates a random, unguessable token:
+           8f3a1c9e5b7d2049a6c1e0f4
+
+   Step 2  RA tells the requester to publish it as a DNS TXT record:
+           _wlca-challenge.api.salmantech.com.  TXT  "8f3a1c9e5b7d2049a6c1e0f4"
+
+   Step 3  The requester (who controls the DNS zone) adds that record.
+
+   Step 4  The RA looks it up from its OWN resolvers and compares:
+           dig TXT _wlca-challenge.api.salmantech.com
+             → "8f3a1c9e5b7d2049a6c1e0f4"   ✓ matches  → control proven
+             → no record / wrong value       ✗ mismatch → DCV fails, reject
+   ```
+
+   **Alternative — HTTP file method (example):**
+   ```
+   Step 1  RA generates a token:  8f3a1c9e5b7d2049a6c1e0f4
+   Step 2  Requester places a file on that exact host:
+           http://api.salmantech.com/.well-known/pki-validation/wlca.txt
+           (file content = 8f3a1c9e5b7d2049a6c1e0f4)
+   Step 3  RA fetches that URL and compares the content.   ✓ / ✗
+   ```
+
+   **Why it proves control:** the token is random and unguessable, so a
+   stranger cannot produce it; and only the party who controls the domain's
+   DNS zone (or its web root) can place the token where the RA checks.
+   Match = the requester really controls the domain.
+
+   **WLCA scope note:** for internal enterprise domains, WLCA may instead
+   confirm the domain is on the organization's **approved domain list**
+   (held in AD / RA configuration) and that the requesting AD account's
+   organization owns it — used in place of, or in addition to, the public
+   DNS/HTTP challenge above.
 4. **Wildcard uses the DNS method** — a file proves one host, DNS proves
    the whole domain.
 5. **DCV checked from 2+ locations (MPIC)** and with **DNSSEC** — so a
