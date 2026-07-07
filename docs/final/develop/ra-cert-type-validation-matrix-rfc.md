@@ -26,6 +26,71 @@ RA-SPEC-002 (why each check exists).
 > RA does not use external KYC, government photo-ID, video proofing, or
 > eIDAS/QSCD identity schemes.
 
+## Abbreviations
+
+| Abbr. | Full form |
+|-------|-----------|
+| ACME | Automatic Certificate Management Environment (RFC 8555) |
+| AD | Active Directory |
+| AKID / SKID | Authority / Subject Key Identifier |
+| BER / DER | Basic / Distinguished Encoding Rules (ASN.1) |
+| BR / CSBR / SMBR | (CA/Browser Forum) Baseline Requirements / Code Signing BR / S/MIME BR |
+| CA | Certification Authority |
+| CAA | Certification Authority Authorization (DNS record) |
+| CABF | CA/Browser Forum |
+| CMDB | Configuration Management Database |
+| CN | Common Name (a Subject DN attribute) |
+| CP / CPS | Certificate Policy / Certification Practice Statement |
+| CSR | Certificate Signing Request (PKCS#10) |
+| CT | Certificate Transparency (RFC 6962) |
+| DCV | Domain Control Validation |
+| DN | Distinguished Name |
+| DNS | Domain Name System |
+| DNSSEC | DNS Security Extensions |
+| DV / OV / EV | Domain / Organization / Extended Validated |
+| EC / ECDSA | Elliptic Curve / EC Digital Signature Algorithm |
+| eIDAS | EU electronic IDentification, Authentication and trust Services |
+| EKU | Extended Key Usage |
+| ETSI | European Telecommunications Standards Institute |
+| FIPS | Federal Information Processing Standards |
+| FQDN | Fully Qualified Domain Name |
+| HR | Human Resources (system) |
+| HSM | Hardware Security Module |
+| HTTP / HTTPS | HyperText Transfer Protocol (Secure) |
+| IP | Internet Protocol (address) |
+| ISO | International Organization for Standardization |
+| KU | Key Usage |
+| KYC | Know Your Customer |
+| LDAP / LDAPS | Lightweight Directory Access Protocol (Secure) |
+| MCV | Mailbox Control Validation |
+| MDM | Mobile Device Management |
+| MFA | Multi-Factor Authentication |
+| ML-DSA / SLH-DSA | Post-quantum signature algorithms (FIPS 204 / 205) |
+| MPIC | Multi-Perspective Issuance Corroboration |
+| mTLS | mutual TLS |
+| OID | Object Identifier |
+| PEM | Privacy-Enhanced Mail (Base64 certificate encoding) |
+| PKCS#10 | Public-Key Cryptography Standards #10 (CSR format) |
+| PoP | Proof of Possession |
+| PQC | Post-Quantum Cryptography |
+| QSCD | Qualified Signature Creation Device |
+| RA | Registration Authority |
+| RBAC | Role-Based Access Control |
+| RFC | Request for Comments (IETF standard) |
+| ROCA | Return of Coppersmith's Attack (RSA key vulnerability) |
+| RSA | Rivest–Shamir–Adleman (cryptosystem) |
+| SAN | Subject Alternative Name |
+| SC-081 / SC-067 / SC-063 | CA/Browser Forum ballot numbers |
+| SCT | Signed Certificate Timestamp |
+| S/MIME | Secure/Multipurpose Internet Mail Extensions |
+| SoD | Separation of Duties |
+| SPKI | Subject Public Key Info |
+| TLS | Transport Layer Security |
+| TXT | DNS Text record |
+| UPN | User Principal Name (Active Directory) |
+| WLCA | Worldline Certificate Authority (this project's CA) |
+| zlint / cablint | Certificate linting tools |
+
 ## How the RA processes a CSR
 
 ```
