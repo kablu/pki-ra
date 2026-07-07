@@ -300,8 +300,29 @@ Extra checks:
    (`clientAuth` may be allowed alongside serverAuth only if the profile
    explicitly permits the same cert for mutual TLS both ways.)
 9. **Validity ≤ 200 days.**
-10. **Look-alike domain screen** — bank/brand look-alikes go to human
-    review (a phisher can control `salrnantech.com` and pass DCV honestly).
+10. **Look-alike domain screen** — DCV proves *control*, not *honesty*. A
+    phisher who registers `salrnantech.com` (rn ≈ m) genuinely owns it and
+    passes DCV honestly, then uses the valid padlock to make phishing look
+    real. The RA fuzzy-matches the requested domain against a protected
+    brand / high-value list (typo distance + homoglyph normalisation) and
+    flags close matches.
+
+    **How a flagged request is resolved (maker-checker):**
+    - A flag **suppresses auto-approval** — the request cannot be issued
+      automatically; it is routed to the human review queue.
+    - The **Maker** (an RA officer) investigates *intent*: is this a
+      legitimate business/partner/second domain, or an impersonation
+      attempt? Findings and evidence are recorded on the request.
+    - A separate **Checker** independently reviews the Maker's findings and
+      makes the final decision (approve or reject) — the submitter/Maker
+      cannot approve their own review (separation of duties).
+    - It is **not auto-rejected**, because legitimate similar names exist;
+      a human decides intent, and every decision is audit-logged.
+
+    *WLCA / AD scope note:* mostly N/A for internal issuance — the approved
+    domain list already prevents requesting an external look-alike domain,
+    so a phisher's domain never reaches this stage. Relevant only if WLCA
+    issues for public/external domains.
 11. **Approval:** may be automatic (DV) once DCV passes.
 
 ## 2. TLS CLIENT certificate
