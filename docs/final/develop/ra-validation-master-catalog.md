@@ -375,10 +375,18 @@ aur 2025–26 ke naye CABF ballots ke against review karne pe mile — original 
 
 ### New mandatory industry rules (2025–2026)
 
+> **Scope note (WLCA).** G-01 (MPIC) and G-02 (DNSSEC-on-DCV) are
+> **public-trust CABF requirements only** — they apply when the CA issues
+> publicly-trusted TLS certificates over public-internet DCV. **They are
+> NOT in WLCA's current scope**, which validates internal domains through
+> Active Directory (approved-domain-list / computer-object), not public DNS
+> token challenges. Keep them here for reference; implement only if WLCA
+> ever issues publicly-trusted certificates.
+
 | ID | Validation | Detail | Fits in |
 |----|-----------|--------|---------|
-| G-01 | **MPIC — Multi-Perspective Issuance Corroboration** | DCV **aur** CAA checks kam se kam 2 geographically separate network perspectives (≥500 km apart) se corroborate hon; single-vantage validation ab BR-non-compliant hai (SC-067, enforced 2025-09-15; perspectives count 2026 mein badh raha hai, multiple RIR regions) | Tier 8A (DCV ke saath) |
-| G-02 | **DNSSEC validation on CAA/DCV lookups** | Primary perspective ke CAA DNS queries pe IANA root tak DNSSEC validation MANDATORY (2026-03-15 se); Boulder yeh pehle se karta hai — DNS spoofing se DCV bypass band | Tier 8A |
+| G-01 | **MPIC — Multi-Perspective Issuance Corroboration** *(public-trust only; out of WLCA scope)* | DCV **aur** CAA checks kam se kam 2 geographically separate network perspectives (≥500 km apart) se corroborate hon; single-vantage validation ab BR-non-compliant hai (SC-067, enforced 2025-09-15; perspectives count 2026 mein badh raha hai, multiple RIR regions) | Tier 8A (DCV ke saath) |
+| G-02 | **DNSSEC validation on CAA/DCV lookups** *(public-trust only; out of WLCA scope)* | Primary perspective ke CAA DNS queries pe IANA root tak DNSSEC validation MANDATORY (2026-03-15 se); Boulder yeh pehle se karta hai — DNS spoofing se DCV bypass band | Tier 8A |
 | G-03 | **CAA `issuemail` for S/MIME (RFC 9495)** | Email domain ke CAA record mein `issuemail` tag check karo — hamari CA authorized hai? (SMBR via SMC-05, mandatory 2025-03-15 se) | Tier 8C |
 | G-04 | **WHOIS-sourced contacts retired** | DCV ke liye WHOIS/RDAP se nikale email/phone use MAT karo — 2024 ke .mobi WHOIS-server takeover research ke baad industry ne Domain-Contact methods retire kar diye | Tier 8A (DCV method list se remove) |
 | G-05 | **Short-lived certificate profile (SC-063)** | ≤7-day certs (2026-03-15 se; pehle 10) revocation-exempt hain — alag profile flag, full DCV still required, CRL entry optional | Tier 8A / 12 |
