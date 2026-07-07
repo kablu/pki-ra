@@ -217,18 +217,16 @@ Extra checks:
    Rule (CA/Browser Forum BR 3.2.2.4): the scope of the proof must equal
    the scope of the certificate — so a wildcard is validated by DNS only,
    never by the HTTP file method.
-5. **DCV checked from 2+ locations (MPIC)** and with **DNSSEC** — so a
-   network hijack near the RA cannot fake it.
-6. **DCV is fresh** — proof not older than 200 days (2026 rule; shrinks to
+5. **DCV is fresh** — proof not older than 200 days (2026 rule; shrinks to
    10 days by 2029).
-7. **CAA record allows our CA** — check the domain's CAA DNS record, ≤ 8h
+6. **CAA record allows our CA** — check the domain's CAA DNS record, ≤ 8h
    before issuing.
-8. **No private/internal addresses** — no 10.x, localhost, or `.local`.
-9. **EKU = serverAuth.**
-10. **Validity ≤ 200 days.**
-11. **Look-alike domain screen** — bank/brand look-alikes go to human
+7. **No private/internal addresses** — no 10.x, localhost, or `.local`.
+8. **EKU = serverAuth.**
+9. **Validity ≤ 200 days.**
+10. **Look-alike domain screen** — bank/brand look-alikes go to human
     review (a phisher can control `salrnantech.com` and pass DCV honestly).
-12. **Approval:** may be automatic (DV) once DCV passes.
+11. **Approval:** may be automatic (DV) once DCV passes.
 
 ## 2. TLS CLIENT certificate
 
