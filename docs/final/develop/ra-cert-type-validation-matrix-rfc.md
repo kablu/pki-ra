@@ -195,8 +195,28 @@ Extra checks:
 
    State flow: `SUBMITTED → PENDING_DCV → VALIDATED → APPROVED → SENT_TO_CA
    → ISSUED` (DCV failure keeps the request in PENDING_DCV until it expires).
-4. **Wildcard uses the DNS method** — a file proves one host, DNS proves
-   the whole domain.
+4. **Wildcard certificates must use the DNS method.**
+   A wildcard such as `*.pluto.com` is valid for *every* subdomain at that
+   level (`www.`, `api.`, `mail.`, `shop.` … unlimited). It is a claim over
+   the **whole namespace**, so the proof of control must cover the whole
+   namespace too:
+   - **HTTP file method proves only ONE host.** Placing a file at
+     `http://api.pluto.com/.well-known/pki-validation/wlca.txt` proves the
+     requester controls the `api.pluto.com` server — but different
+     subdomains can live on different servers run by different teams
+     (`blog.` on WordPress, `shop.` on Shopify). Controlling one host does
+     not prove control of the whole domain, so it MUST NOT authorize a
+     wildcard.
+   - **DNS TXT method proves the WHOLE domain.** The record
+     `_wlca-challenge.pluto.com` is added in the domain's **DNS zone**,
+     which is managed from a single place (the authoritative nameservers /
+     registrar account) — the same place where *all* subdomains are
+     defined. Whoever can write to the DNS zone controls the entire
+     namespace, which matches exactly what a wildcard grants.
+
+   Rule (CA/Browser Forum BR 3.2.2.4): the scope of the proof must equal
+   the scope of the certificate — so a wildcard is validated by DNS only,
+   never by the HTTP file method.
 5. **DCV checked from 2+ locations (MPIC)** and with **DNSSEC** — so a
    network hijack near the RA cannot fake it.
 6. **DCV is fresh** — proof not older than 200 days (2026 rule; shrinks to
