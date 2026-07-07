@@ -169,6 +169,32 @@ Extra checks:
    (held in AD / RA configuration) and that the requesting AD account's
    organization owns it — used in place of, or in addition to, the public
    DNS/HTTP challenge above.
+
+   **Implementation flow (how the RA runs DCV, end to end):**
+   ```
+   Client                                RA
+     │ ① POST /requests (CSR) ─────────▶ │ validate CSR (common checks)
+     │                                   │ generate SecureRandom token (128-bit)
+     │                                   │ save challenge (request, token,
+     │                                   │   expiry e.g. 7 days), state=PENDING_DCV
+     │ ◀── 202 { recordName, token } ─── │
+     │                                   │
+     │ ② adds TXT record at registrar    │        (outside the RA)
+     │                                   │
+     │ ③ POST /requests/{id}/dcv/verify ▶│ RA does its OWN DNS lookup
+     │      (empty body — no "proof")    │   (own resolver, no cache)
+     │                                   │ compare found value == stored token
+     │ ◀── VERIFIED / FAILED ─────────── │ match → state=VALIDATED,
+     │                                   │   evidence saved, token single-use
+     │                                   │ no match → retry allowed until expiry
+   ```
+
+   Key rules: the client only *triggers* verification and never supplies
+   proof; the RA always looks up DNS itself; the token is single-use and
+   expires; every lookup result is stored as audit evidence.
+
+   State flow: `SUBMITTED → PENDING_DCV → VALIDATED → APPROVED → SENT_TO_CA
+   → ISSUED` (DCV failure keeps the request in PENDING_DCV until it expires).
 4. **Wildcard uses the DNS method** — a file proves one host, DNS proves
    the whole domain.
 5. **DCV checked from 2+ locations (MPIC)** and with **DNSSEC** — so a
