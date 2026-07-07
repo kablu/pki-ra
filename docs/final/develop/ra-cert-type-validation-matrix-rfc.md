@@ -243,8 +243,36 @@ Extra checks:
    store the AD domain-ownership evidence with a timestamp and periodically
    re-confirm the requesting org still owns the domain — do not trust a
    one-time check forever.
-6. **CAA record allows our CA** — check the domain's CAA DNS record, ≤ 8h
-   before issuing.
+6. **CAA record allows our CA** — before issuing, read the domain's CAA
+   DNS record and confirm our CA is permitted; do this ≤ 8 hours before
+   issuance.
+
+   Important points:
+   - **CAA is the inverse of DCV** — DCV asks "does the *requester* control
+     the domain?"; CAA asks "has the domain *owner* authorized *our CA* to
+     issue?" The owner declares this in advance in DNS.
+   - **Record format** — e.g. `pluto.com  CAA  0 issue "ourca.salmantech.in"`.
+     Tags: `issue` (who may issue normal certs), `issuewild` (wildcards),
+     `iodef` (where to report an unauthorized attempt).
+   - **Decision logic:**
+     - no CAA record → any CA may issue (allowed);
+     - CAA present and our CA listed → allowed;
+     - CAA present and our CA **not** listed → **reject**, even if DCV
+       passed.
+   - **It is a defense-in-depth kill switch owned by the domain owner** —
+     it can stop mis-issuance the RA would otherwise allow (e.g. if DCV
+     were somehow fooled). The owner, not the RA, controls it.
+   - **Why ≤ 8 hours** — owners can change CAA at any time; a fresh check
+     honors a recently-published "block this CA" decision instead of acting
+     on a stale record.
+
+   *WLCA / AD scope note:* CAA is a **public-trust, public-DNS mechanism**
+   (it exists because any public CA could otherwise issue for any domain).
+   In WLCA's **internal, single-CA, AD-based scope it is N/A** — there is
+   one internal CA, the answer to "which CA may issue" is always WLCA, and
+   validation is via AD, not public DNS. The internal equivalent, only if
+   multiple internal CAs ever exist, is a **policy/config mapping** of which
+   CA may serve which domain namespace — not a public CAA DNS record.
 7. **No private/internal addresses** — no 10.x, localhost, or `.local`.
 8. **EKU = serverAuth.**
 9. **Validity ≤ 200 days.**
