@@ -19,6 +19,13 @@ skipped; it is just written as simple points instead of a matrix.
 Detailed versions with code and reasons: RA-SPEC-001 (full requirements),
 RA-SPEC-002 (why each check exists).
 
+> **Scope note (WLCA).** In this project, applicant and certificate-subject
+> identity is verified through **Active Directory only** (plus linked HR /
+> CMDB records for services and devices). Wherever a check below says
+> "verify identity", it means "verify the Active Directory identity" — the
+> RA does not use external KYC, government photo-ID, video proofing, or
+> eIDAS/QSCD identity schemes.
+
 ## How the RA processes a CSR
 
 ```
@@ -221,29 +228,24 @@ electronic signatures, eIDAS / ETSI).
 KeyUsage includes `nonRepudiation`.
 
 Extra checks:
-1. **Verify the person's identity (enterprise + ID document)** — confirm
-   the applicant against the enterprise identity source (Active Directory /
-   HR record) and a valid government-issued photo ID (passport, national
-   ID, or driving licence).
-   *WLCA scope: identity is proven through enterprise records plus ID-
-   document verification — NOT a national KYC scheme such as Aadhaar / PAN /
-   bank KYC.*
-2. **Identity proofing at the right assurance level** — for higher
-   assurance, perform supervised verification: in person, or a recorded
-   remote video session, performed close to issuance
-   (per ETSI EN 319 411 / eIDAS levels).
+1. **Verify identity via Active Directory** — confirm the applicant is an
+   active AD user and that the requester is authorized to obtain a
+   document-signing certificate. In WLCA, identity **is** the applicant's
+   verified AD identity.
+   *WLCA scope: identity verification is Active Directory based only — no
+   external KYC, government photo-ID, or video proofing.*
+2. **CN matches the AD identity** — the name in the certificate matches the
+   applicant's AD record.
 3. **KeyUsage includes nonRepudiation** — this is what makes a signature
    legally undeniable in court.
 4. **No TLS or code-signing EKUs** — the certificate's scope is signing
    documents only.
-5. **Key is in a secure device** — the signing key is generated and held
-   in FIPS 140-2 Level 2 / EAL4+ hardware (or a QSCD for qualified
-   signatures), proven by key attestation.
-6. **Company link (if named)** — employment proof + company authorization.
-7. **Validity** — as set by the WLCA certificate policy (CP/CPS),
-   typically up to 3 years.
-8. **Approval:** manual officer review; keep the identity evidence for the
-   retention period defined in the WLCA policy.
+5. **Key protection** — the signing key is generated and held as required
+   by the WLCA certificate policy (e.g. HSM / token).
+6. **Organization link (if named)** — O= matches the applicant's
+   organization in AD.
+7. **Validity** — as set by the WLCA certificate policy (CP/CPS).
+8. **Approval:** manual officer review; audit-logged.
 
 ---
 
@@ -269,12 +271,12 @@ Extra checks:
 
 | Question | TLS Server | TLS Client | S/MIME | Code Signing | Doc Signing |
 |----------|-----------|-----------|--------|--------------|-------------|
-| Main control check | Domain (DCV) | Identity binding | Mailbox challenge | Key attestation + callback | ID + video proofing |
+| Main control check | Domain (DCV) | Identity binding | Mailbox challenge | Key attestation + callback | AD identity |
 | Required EKU | serverAuth | clientAuth | emailProtection | codeSigning | (none; nonRepudiation KU) |
 | serverAuth allowed? | Yes | **No** | No | No | No |
 | SAN | domain (must) | optional | email (must) | none | optional |
 | Key floor | RSA 2048 | RSA 2048 | RSA 2048 | **RSA 3072** | RSA 2048 |
-| Identity depth | DV / OV | AD/CMDB record | mailbox + HR | full legal + callback | enterprise ID + video |
+| Identity depth | DV / OV | AD/CMDB record | mailbox + AD | full legal + callback | AD identity |
 | Auto-approve? | Yes (DV) | Yes (after binding) | Yes | **No — 2 officers** | **No — manual** |
 | Validity cap (2026) | 200 days | 1 year | 824 days | 1 year | 3 years |
 
