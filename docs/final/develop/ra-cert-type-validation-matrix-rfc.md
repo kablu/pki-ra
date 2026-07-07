@@ -251,9 +251,20 @@ Extra checks:
    - **CAA is the inverse of DCV** — DCV asks "does the *requester* control
      the domain?"; CAA asks "has the domain *owner* authorized *our CA* to
      issue?" The owner declares this in advance in DNS.
-   - **Record format** — e.g. `pluto.com  CAA  0 issue "ourca.salmantech.in"`.
+   - **Record format** — each CAA record has a flag, a tag, and a value.
      Tags: `issue` (who may issue normal certs), `issuewild` (wildcards),
-     `iodef` (where to report an unauthorized attempt).
+     `iodef` (where to report an unauthorized attempt). Example for
+     `pluto.com`:
+
+     | Domain | Flag | Tag | Value | Meaning |
+     |--------|:----:|-----|-------|---------|
+     | pluto.com | 0 | issue | `"digicert.com"` | DigiCert may issue normal certs |
+     | pluto.com | 0 | issue | `"ourca.salmantech.in"` | Our CA may also issue |
+     | pluto.com | 0 | iodef | `"mailto:security@pluto.com"` | Send unauthorized-attempt reports here |
+
+     Here two CAs are authorized (DigiCert and our CA); any other CA must
+     refuse. The `iodef` line tells a refusing CA where to report the
+     attempt.
    - **Decision logic:**
      - no CAA record → any CA may issue (allowed);
      - CAA present and our CA listed → allowed;
