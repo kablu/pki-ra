@@ -285,7 +285,20 @@ Extra checks:
    multiple internal CAs ever exist, is a **policy/config mapping** of which
    CA may serve which domain namespace — not a public CAA DNS record.
 7. **No private/internal addresses** — no 10.x, localhost, or `.local`.
-8. **EKU = serverAuth.**
+8. **EKU = serverAuth.** The Extended Key Usage says what the certificate
+   may be used for; a TLS server certificate must be usable as a server.
+   The RA reads the EKU from the CSR's requested extensions and checks:
+   - **serverAuth present?** — `serverAuth` (OID 1.3.6.1.5.5.7.3.1) must be
+     there; the browser checks this at the TLS handshake and rejects a
+     server cert that lacks it.
+   - **No cross-type EKU?** — `codeSigning`, `emailProtection`, etc. must
+     NOT be present; a server certificate must not also be able to sign
+     code or email (scope separation limits the blast radius if it leaks).
+   - **No anyExtendedKeyUsage?** — the "do-everything" EKU is forbidden; it
+     would dissolve all scope boundaries.
+
+   (`clientAuth` may be allowed alongside serverAuth only if the profile
+   explicitly permits the same cert for mutual TLS both ways.)
 9. **Validity ≤ 200 days.**
 10. **Look-alike domain screen** — bank/brand look-alikes go to human
     review (a phisher can control `salrnantech.com` and pass DCV honestly).
