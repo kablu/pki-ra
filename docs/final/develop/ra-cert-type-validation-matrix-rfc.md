@@ -325,6 +325,28 @@ Extra checks:
     issues for public/external domains.
 11. **Approval:** may be automatic (DV) once DCV passes.
 
+    Important points:
+    - **What "DV" means** — Domain Validated: the only thing verified is
+      domain control (DCV); the organization's legal identity is NOT
+      vetted.
+    - **Why it can be automatic** — DCV is a deterministic, machine-checkable
+      proof (the token either matches or it does not); there is no judgment
+      call for a human to add, so the RA can issue without an officer.
+      (This is how ACME / Let's Encrypt issues certificates in seconds with
+      no human involved.)
+    - **"May be" — not always** — auto-approval is suppressed and the request
+      goes to human review when any judgment is needed: an OV/EV profile
+      (organization identity must be vetted), a look-alike/high-value flag
+      (see point 10), or any other flag raised in Stages A–H.
+    - **Auto-approve still logs and verifies** — even without a human, the RA
+      still runs pre-issuance lint, verifies the CA's returned certificate
+      matches the request, and audit-logs the decision.
+
+    *WLCA / AD scope note:* internal issuance can be automatic when
+    validation is fully deterministic (AD group + approved-domain-list, both
+    machine-checkable). Many enterprises still require a single approver on
+    internal certs for control/audit — this is a WLCA policy choice.
+
 ## 2. TLS CLIENT certificate
 
 **Use:** a user, service, or device proves its identity (mutual TLS).
