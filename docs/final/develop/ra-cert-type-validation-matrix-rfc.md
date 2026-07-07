@@ -217,8 +217,32 @@ Extra checks:
    Rule (CA/Browser Forum BR 3.2.2.4): the scope of the proof must equal
    the scope of the certificate — so a wildcard is validated by DNS only,
    never by the HTTP file method.
-5. **DCV is fresh** — proof not older than 200 days (2026 rule; shrinks to
-   10 days by 2029).
+5. **DCV is fresh (validation reuse window)** — a passed DCV can be reused
+   for a while so renewals don't re-validate every time, but the proof
+   expires and must then be re-run. Public-trust window: ≤ 200 days (2026),
+   shrinking to 100 (2027) and 10 (2029).
+
+   Important points:
+   - **Two different clocks** — the *reuse window* (how old the DCV proof
+     may be) is not the same as the *certificate validity* (how long the
+     issued cert lasts). One valid DCV can back several certificates.
+   - **Why it expires** — domains change owners; reusing a stale proof
+     could issue a certificate to a previous owner after the domain was
+     sold or transferred.
+   - **Checked at issuance time, not submission time** — if a request sits
+     in the approval queue, re-check freshness just before sending to the
+     CA; an expired proof means re-run DCV.
+   - **It is one case of a bigger rule** — every piece of vetting evidence
+     has a shelf life (e.g. organization identity, mailbox control); store
+     each with a timestamp and re-evaluate validity at issuance.
+   - **Shrinking window → automation** — as the window shrinks, one-time
+     manual validation stops scaling; DCV must be automated and repeatable.
+
+   *WLCA scope note:* the exact public-trust numbers (200/100/10) are not in
+   scope. The principle still applies for internal AD-based validation:
+   store the AD domain-ownership evidence with a timestamp and periodically
+   re-confirm the requesting org still owns the domain — do not trust a
+   one-time check forever.
 6. **CAA record allows our CA** — check the domain's CAA DNS record, ≤ 8h
    before issuing.
 7. **No private/internal addresses** — no 10.x, localhost, or `.local`.
