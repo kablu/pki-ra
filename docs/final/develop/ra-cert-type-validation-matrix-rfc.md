@@ -416,6 +416,21 @@ Extra checks:
 **Example:** `CN=service-a`, `O=Example Corp`,
 EKU `clientAuth`, no server hostname.
 
+**Most important validations (the ones that matter most):**
+1. **Proof of Possession** — the CSR signature is valid (the requester holds
+   the private key).
+2. **Identity exists in AD** — the CN/UPN maps to a real AD object
+   (anchored on `objectGUID`), and the account is enabled.
+3. **Requester owns the identity** — self, or a service/device owned via AD
+   `managedBy` / owning group (the impersonation guard — #1 in practice).
+4. **EKU = clientAuth only** — `serverAuth` and `anyEKU` absent.
+5. **CN is an identity name, not a hostname** — no FQDN in the CN.
+6. **Key strength** — RSA ≥ 2048 or EC P-256/P-384; short validity (≤ 1 year).
+
+Together these answer the two questions a client cert must satisfy: *is
+this a real, owned identity?* (2–3) and *is the cert scoped so it can only
+be a client?* (4–5).
+
 Extra checks:
 1. **Identity exists in our records** — the certificate subject must
    correspond to a *real object* in an authoritative registry, not just a
@@ -484,8 +499,13 @@ Extra checks:
      service-to-service calls.
    - **Rule of thumb:** one cert, one role. Only allow both EKUs if a
      service genuinely acts as client and server, and the profile says so.
-4. **CN is not a hostname** — an FQDN in a client cert is suspicious
-   (type-confusion); reject/flag.
+4. **CN is not a hostname** — the CN should be an identity name (`jdoe`,
+   `service-a`), not an FQDN like `api.example.com`. A hostname here is
+   suspicious: the client-cert path needs no DCV, so an attacker could
+   sneak a server-style name through it and later misuse the cert where the
+   CN is read as a hostname (type confusion). Reject or flag. This pairs
+   with the serverAuth rule (point 3) — one closes the EKU door, the other
+   the naming door, so a client cert can never act as a server.
 5. **UPN / email in SAN matches the directory** exactly (for smartcard
    login).
 6. **Device/service is active** — the AD computer object / service account
