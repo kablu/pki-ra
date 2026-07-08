@@ -749,8 +749,23 @@ Extra checks:
      chain of custody.
    Either way, a plain software key — or a failed attestation — is rejected.
    (A per-request check; applies in every scope.)
-6. **Company is real** — looked up in the government registry ourselves
-   (not from uploaded documents).
+6. **Company is real — verified in the government registry, not from
+   uploaded documents.**
+   *Reason:* the company must be a real, legally registered entity. The RA
+   looks it up **itself** in the authoritative registry (e.g. Germany's
+   Handelsregister, India's MCA) — never trusting documents the applicant
+   uploads, which can be forged (independence of evidence).
+   *How the RA validates (two phases):*
+   - **At onboarding (once):** the RA looks up the customer (e.g. Siemens
+     AG) in the registry, confirms the legal name, registration identifier
+     (e.g. `HRB 6684`), country and active status, then stores this
+     verified data when the customer is imported into AD — legal name → AD
+     `o`, registration identifier → a custom/extension attribute (AD has no
+     standard field for it), country → AD `c`.
+   - **At request time (per cert):** the RA does **no** fresh registry
+     lookup; it matches the CSR against the stored AD data — `O` → AD `o`,
+     `subject:serialNumber` (the HRB, in EV code signing) → the custom
+     registration-ID attribute, `C` → AD `c`. Any mismatch → reject.
 7. **Independent callback** — phone the company on a registry-sourced
    number (never the number on the application) to confirm the request and
    the requester's authority.
