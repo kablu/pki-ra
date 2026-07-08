@@ -448,9 +448,26 @@ Extra checks:
      workloads, and non-domain-joined devices have no AD object; either
      reject them or handle them with a separate, explicitly-scoped
      mechanism (not part of the current AD-only scope).
-2. **Requester owns the identity** — you can request for yourself, or for
-   a service your team owns; NOT for someone else. *This is the #1 check —
-   the impersonation guard.*
+2. **Requester owns the identity** — you can request a certificate for
+   yourself, or for a service your team owns; NOT for someone else. *This
+   is the #1 check — the impersonation guard.*
+
+   Point 1 asks "does this identity exist?"; this point asks "does the
+   requester have the right to it?" Both are needed. Ownership comes from
+   AD: for a person, the requester's AD identity must equal the subject;
+   for a service/device, the requester must be its owner (AD `managedBy`
+   or the owning AD group).
+
+   Examples:
+   - `jdoe` requests `CN=jdoe` (self) → allowed.
+   - `jdoe` requests `CN=service-a`, and jdoe's team owns service-a → allowed.
+   - `jdoe` requests `CN=payment-gateway` (another team's service) → reject.
+   - `jdoe` requests `CN=asmith` (another person) → reject.
+
+   Why it matters: a certificate *is* the identity — every mTLS service
+   trusts the subject name. Without this check, any logged-in user could
+   get a cert for `payment-gateway` and impersonate it, with no exploit
+   needed.
 3. **EKU = clientAuth only** — serverAuth must be ABSENT.
    *Why: a client cert that can also be a server turns one hacked laptop
    into a man-in-the-middle tool.*
