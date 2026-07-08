@@ -579,7 +579,12 @@ match to the directory is the critical check.
 EKU `emailProtection`.
 
 Extra checks:
-1. **Email in SAN** — a valid `rfc822Name` must be present.
+1. **Email in SAN** — a valid `rfc822Name` must be present (mail clients
+   match on the SAN, not the CN). Validate the email against Active
+   Directory: it must equal the user's **`mail`** attribute (primary
+   email), or — if aliases are allowed — be one of the `smtp:` entries in
+   **`proxyAddresses`**. Do NOT use `userPrincipalName` as the email; that
+   is the AD login identity, which only looks like an email.
 2. **Mailbox Control Validation** — the RA emails a random code to that
    exact address; the requester enters it back. *Proves they can read that
    inbox.*
