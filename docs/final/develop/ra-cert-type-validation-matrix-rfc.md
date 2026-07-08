@@ -425,7 +425,7 @@ EKU `clientAuth`, no server hostname.
    `managedBy` / owning group (the impersonation guard — #1 in practice).
 4. **EKU = clientAuth only** — `serverAuth` and `anyEKU` absent.
 5. **CN is an identity name, not a hostname** — no FQDN in the CN.
-6. **Key strength** — RSA ≥ 2048 or EC P-256/P-384; short validity (≤ 1 year).
+6. **Key strength** — RSA ≥ 2048 or EC P-256/P-384.
 
 Together these answer the two questions a client cert must satisfy: *is
 this a real, owned identity?* (2–3) and *is the cert scoped so it can only
@@ -526,10 +526,13 @@ Extra checks:
    `(!(userAccountControl:1.2.840.113556.1.4.803:=2))`.
    The same attributes apply to both computer objects (devices) and service
    accounts.
-7. **Validity ≤ 1 year** — client identities change faster than servers.
-8. **Leaver hook** — if the user/service is disabled in AD, revoke the
+7. **Leaver hook** — if the user/service is disabled in AD, revoke the
    certificate.
-9. **Approval:** single officer, or automatic once identity binding passes.
+8. **Approval:** single officer, or automatic once identity binding passes.
+
+*(Validity is not validated here — it is set and enforced by the CA
+through the mapped certificate profile; the RA only selects the correct
+profile.)*
 
 **Attributes to check (TLS client) — quick reference:**
 
