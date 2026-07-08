@@ -617,15 +617,41 @@ Extra checks:
    internal single-CA, AD-based scope it is **N/A** — there is one CA
    (always WLCA) and validation is via AD, not public DNS. Only relevant if
    WLCA ever issues publicly-trusted S/MIME certs.
-5. **Person is verified** — for sponsored certificates, the name matches
-   HR records.
+5. **Person is verified (against AD)** — for sponsored certificates the CN
+   carries a person's name, so it must match that person's Active Directory
+   record: the cert CN must equal the AD **`displayName`** (anchored on
+   `objectGUID`). In WLCA, "HR records" means Active Directory — no separate
+   HR system is used.
 6. **Evidence is fresh** — mailbox proof ≤ 398 days, identity proof
    ≤ 825 days.
 7. **EKU = emailProtection**; KeyUsage includes keyEncipherment (RSA) for
    encryption.
 8. **Profile is Strict or Multipurpose** (the old Legacy profile is
    retired) and **validity ≤ 824 days.**
-9. **Approval:** automatic once the mailbox challenge passes.
+9. **Approval:** automatic once the email matches AD (mailbox challenge
+   optional — see point 2).
+
+**Attributes to check (S/MIME) — quick reference:**
+
+From the CSR:
+
+| Attribute | Check |
+|-----------|-------|
+| SAN → rfc822Name | Valid email; present (mandatory for S/MIME) |
+| Subject → CN | Person name (sponsored) or organization name |
+| KeyUsage | `digitalSignature` + `keyEncipherment` (RSA, for encryption) |
+| ExtendedKeyUsage | `emailProtection` present; `serverAuth`/`clientAuth` absent |
+
+From Active Directory:
+
+| AD attribute | Check |
+|--------------|-------|
+| `mail` / `proxyAddresses` | SAN email matches (primary email, or `smtp:` alias) |
+| `displayName` | Matches the cert CN (person name, for sponsored certs) |
+| accepted domains / UPN suffixes | Email domain is organization-owned |
+| `userAccountControl` / `accountExpires` | Account is enabled, not locked or expired |
+| `objectGUID` | Store as the immutable identity anchor |
+| self / `managedBy` | Requester owns the mailbox (impersonation guard) |
 
 ## 4. CODE SIGNING certificate
 
