@@ -471,6 +471,19 @@ Extra checks:
 3. **EKU = clientAuth only** — serverAuth must be ABSENT.
    *Why: a client cert that can also be a server turns one hacked laptop
    into a man-in-the-middle tool.*
+
+   - **clientAuth** = the cert may act as a *client* (call a server);
+     **serverAuth** = it may act as a *server* (accept connections). A TLS
+     client cert should only be a client.
+   - **The risk:** if a client cert also has serverAuth and is stolen, the
+     attacker can stand up a fake *trusted server* with it and intercept
+     other users' traffic (MITM). With serverAuth absent, a stolen cert can
+     only impersonate that one client — the damage is contained.
+   - **When to use clientAuth-only:** any cert that authenticates a user,
+     device, or service *to* a server — mTLS, VPN, smartcard login,
+     service-to-service calls.
+   - **Rule of thumb:** one cert, one role. Only allow both EKUs if a
+     service genuinely acts as client and server, and the profile says so.
 4. **CN is not a hostname** — an FQDN in a client cert is suspicious
    (type-confusion); reject/flag.
 5. **UPN / email in SAN matches the directory** exactly (for smartcard
