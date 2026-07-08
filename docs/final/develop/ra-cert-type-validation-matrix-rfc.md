@@ -647,8 +647,10 @@ Extra checks:
 
    *(This is a CSR-content check — it applies in WLCA scope too, not just
    public trust.)*
-8. **Profile is Strict or Multipurpose** (the old Legacy profile is
-   retired) and **validity ≤ 824 days.**
+8. **Profile and validity — enforced by the CA.** The certificate profile
+   (e.g. Strict / Multipurpose) and the validity period are validated at
+   the CA end through the mapped profile ID; the RA only selects the
+   correct profile.
 9. **Approval:** automatic once the email matches AD (mailbox challenge
    optional — see point 2).
 
