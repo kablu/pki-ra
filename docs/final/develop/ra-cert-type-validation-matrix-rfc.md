@@ -718,7 +718,18 @@ Extra checks:
    extension is present, flag or reject it (code signing needs no SAN). This
    keeps the cert single-purpose, together with point 4 (EKU = codeSigning
    only).
-4. **EKU = codeSigning only**; KeyUsage = digitalSignature only.
+4. **EKU = codeSigning only; KeyUsage = digitalSignature only.**
+   *Reason:* the EKU (`codeSigning`, OID 1.3.6.1.5.5.7.3.3) is what the OS
+   loader checks before trusting the software. Keeping it single-purpose
+   (no `serverAuth`/`clientAuth`/`emailProtection`) means a stolen
+   code-signing key cannot also be misused for TLS or email — least
+   privilege for the highest-risk cert type. Code signing only signs (it
+   does not encrypt), so the only KeyUsage bit is `digitalSignature`.
+   *How the RA validates:* parse the CSR extensions — EKU must contain
+   `codeSigning` and nothing else (no `serverAuth`/`clientAuth`/
+   `emailProtection`, no `anyExtendedKeyUsage`); KeyUsage must be
+   `digitalSignature` only (no `keyEncipherment`/`keyAgreement`, no CA bits
+   `keyCertSign`/`cRLSign`). A CSR-content check — applies in every scope.
 5. **Private key is in hardware** — proven by key attestation
    (FIPS 140-2 L2 / EAL4+ token). Software keys are rejected.
 6. **Company is real** — looked up in the government registry ourselves
