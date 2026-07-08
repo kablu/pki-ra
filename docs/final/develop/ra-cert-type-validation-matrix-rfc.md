@@ -697,8 +697,17 @@ Extra checks:
    size — for RSA the modulus must be ≥ 3072 bits; for EC the curve must be
    P-256/P-384; otherwise reject. (A CSR-content check — applies in every
    scope.)
-2. **CN = the verified legal company name**; O and C are mandatory.
-   *This name is what users see as "Publisher".*
+2. **CN = the verified legal company name; O and C are mandatory.**
+   *This name is what users see as "Publisher"* (e.g. `Publisher: Siemens
+   AG`) when they install the software, so it must be a real, verified name
+   — otherwise an attacker could put "Microsoft Corporation" and sign
+   malware under it.
+   *How the RA validates:* the legal name is verified once at customer
+   onboarding (e.g. via the Handelsregister) and stored in AD when the
+   customer is imported. At request time the RA matches the CSR's CN and O
+   against that imported AD organization name, checks C is a valid ISO
+   3166-1 country code, and rejects metadata-only values (`.`, `-`, ` `).
+   No fresh registry lookup is done per request.
 3. **No SAN** — its presence is suspicious.
 4. **EKU = codeSigning only**; KeyUsage = digitalSignature only.
 5. **Private key is in hardware** — proven by key attestation
