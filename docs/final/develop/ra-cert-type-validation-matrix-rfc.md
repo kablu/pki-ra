@@ -632,8 +632,21 @@ Extra checks:
    evidence. In WLCA they are **N/A** — the RA reads Active Directory
    **live at each issuance** (current `mail`, `displayName`, account
    state), so there is no cached proof to expire; freshness is inherent.
-7. **EKU = emailProtection**; KeyUsage includes keyEncipherment (RSA) for
-   encryption.
+7. **EKU = emailProtection; KeyUsage for sign + encrypt.** An S/MIME cert
+   does two jobs — signs outgoing mail and lets others send encrypted mail
+   to the owner — so the RA checks both the role (EKU) and the two key-usage
+   bits. The RA reads these from the CSR's requested extensions:
+
+   | What the RA checks | How |
+   |--------------------|-----|
+   | EKU `emailProtection` present | Parse EKU; must contain `id-kp-emailProtection` (the email role) |
+   | `serverAuth` / `clientAuth` absent | Reject if present (scope separation — not a TLS cert) |
+   | KeyUsage `digitalSignature` | Present — used to **sign** the owner's outgoing mail |
+   | KeyUsage `keyEncipherment` (RSA) or `keyAgreement` (EC) | Present per key type — lets senders **encrypt** mail to the owner (RSA wraps the AES key; EC derives it) |
+   | KU matches key algorithm | An EC key must not carry `keyEncipherment` (it uses `keyAgreement`) |
+
+   *(This is a CSR-content check — it applies in WLCA scope too, not just
+   public trust.)*
 8. **Profile is Strict or Multipurpose** (the old Legacy profile is
    retired) and **validity ≤ 824 days.**
 9. **Approval:** automatic once the email matches AD (mailbox challenge
