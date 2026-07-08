@@ -585,9 +585,16 @@ Extra checks:
    email), or — if aliases are allowed — be one of the `smtp:` entries in
    **`proxyAddresses`**. Do NOT use `userPrincipalName` as the email; that
    is the AD login identity, which only looks like an email.
-2. **Mailbox Control Validation** — the RA emails a random code to that
-   exact address; the requester enters it back. *Proves they can read that
-   inbox.*
+2. **Mailbox Control Validation (MCV) — optional in WLCA.**
+   *What MCV does:* it proves the requester can actually read the mailbox.
+   The RA emails a random code to that exact address; the requester reads
+   their inbox and enters the code back. If it matches, they control the
+   mailbox.
+
+   *In WLCA this is achieved by AD instead:* the AD `mail` attribute
+   authoritatively says the address belongs to the user (point 1), so
+   matching AD already proves the mailbox is theirs. **MCV is therefore
+   optional** and only needed for a mailbox that is not backed by AD.
 3. **Company owns the mail domain** — the domain after @ must be on the
    organization's verified list.
 4. **CAA `issuemail` allows our CA** — check the mail domain's CAA record
