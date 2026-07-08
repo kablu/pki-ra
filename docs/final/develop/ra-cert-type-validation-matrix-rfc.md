@@ -538,6 +538,21 @@ From Active Directory:
 | userAccountControl / accountExpires | Account is enabled, not locked or expired |
 | managedBy / owning AD group | Requester owns the identity (impersonation guard) |
 
+**SAN entry types (what each may hold and how the RA validates it):**
+
+| SAN type | ASN.1 tag | Example value | RA validation |
+|----------|:---------:|---------------|---------------|
+| otherName (UPN) | `[0]` | `jdoe@example.com` | UPN format valid; **exact match to AD `userPrincipalName`** |
+| rfc822Name (email) | `[1]` | `jdoe@example.com` | Valid email format; domain org-owned; matches AD `mail` |
+| dNSName (device) | `[2]` | `laptop-4021.corp.example.com` | Matches AD computer object `dNSHostName`; not a public/server name |
+| URI (service) | `[6]` | `spiffe://example.com/service-a` | Valid SPIFFE URI; trust domain is ours; maps to a registered service |
+
+The ASN.1 tag `[n]` identifies the entry type. `otherName` (UPN) is the most
+nested — an OID (`1.3.6.1.4.1.311.20.2.3`) plus a UTF8String — while email,
+DNS, and URI are plain strings. UPN and email can look identical but are
+different entries; the UPN is what smartcard/AD logon maps on, so its exact
+match to the directory is the critical check.
+
 ## 3. S/MIME (email) certificate
 
 **Use:** a person signs and encrypts email.
