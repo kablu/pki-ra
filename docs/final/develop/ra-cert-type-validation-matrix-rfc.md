@@ -651,8 +651,10 @@ Extra checks:
    (e.g. Strict / Multipurpose) and the validity period are validated at
    the CA end through the mapped profile ID; the RA only selects the
    correct profile.
-9. **Approval:** automatic once the email matches AD (mailbox challenge
-   optional — see point 2).
+9. **Approval:** maker-checker required. A Maker (RA officer) reviews and
+   submits the request, and a separate Checker approves it; the
+   submitter/Maker cannot approve their own request (separation of duties).
+   Even when the email matches AD, issuance is not automatic.
 
 **Attributes to check (S/MIME) — quick reference:**
 
@@ -758,7 +760,7 @@ Extra checks:
 | SAN | domain (must) | optional | email (must) | none | optional |
 | Key floor | RSA 2048 | RSA 2048 | RSA 2048 | **RSA 3072** | RSA 2048 |
 | Identity depth | DV / OV | AD record | mailbox + AD | full legal + callback | AD identity |
-| Auto-approve? | Yes (DV) | Yes (after binding) | Yes | **No — 2 officers** | **No — manual** |
+| Auto-approve? | Yes (DV) | Yes (after binding) | No — maker-checker | **No — 2 officers** | **No — manual** |
 | Validity cap (2026) | 200 days | 1 year | 824 days | 1 year | 3 years |
 
 *End of RA-SPEC-003*
