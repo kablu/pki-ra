@@ -419,8 +419,36 @@ Extra checks:
 EKU `clientAuth`, no server hostname.
 
 Extra checks:
-1. **Identity exists in our records** — the name must be a real person in
-   AD/HR, or a real service/device in the CMDB inventory.
+1. **Identity exists in our records** — the certificate subject must
+   correspond to a *real object* in an authoritative registry, not just a
+   name typed into the CSR. In WLCA the authoritative registry is **Active
+   Directory**, which holds all three identity kinds — so AD alone can
+   validate them (a separate CMDB is optional and only used if it exists).
+
+   **AD architecture — one registry, three object types:**
+
+   | Subject kind | AD object type | Matched on | Example |
+   |--------------|---------------|-----------|---------|
+   | Human user | User object | `userPrincipalName` / `sAMAccountName` | `CN=salman.khan` → AD user `salman.khan@salmantech.in` |
+   | Device / machine | **Computer object** (domain-joined machines auto-register) | `dNSHostName` / `sAMAccountName` | `CN=laptop-4021` → AD computer `laptop-4021` |
+   | Service / app | **Service account** or **gMSA** (group Managed Service Account) | `sAMAccountName` | `CN=service-a` → AD service account `svc-service-a` |
+
+   Important details:
+   - **Anchor on `objectGUID`, not the name.** Store and bind the AD
+     object's immutable `objectGUID` (or `objectSid`), because display
+     names and `sAMAccountName` can change or be reused — a new employee
+     called "Salman Khan" must not inherit the old one's certificates.
+   - **Check the object is enabled/active** — verify `userAccountControl`
+     (not ACCOUNTDISABLE / LOCKOUT) and `accountExpires`, so a disabled AD
+     object cannot get a certificate.
+   - **Define one mapping rule** — decide exactly which AD attribute the
+     cert CN/SAN maps to, so the "exists" check is unambiguous.
+   - **Ownership via AD** — model "who owns this service/device" with the
+     `managedBy` attribute or an AD group, in place of a CMDB owner field.
+   - **Non-AD entities are a known gap** — containers, Kubernetes/cloud
+     workloads, and non-domain-joined devices have no AD object; either
+     reject them or handle them with a separate, explicitly-scoped
+     mechanism (not part of the current AD-only scope).
 2. **Requester owns the identity** — you can request for yourself, or for
    a service your team owns; NOT for someone else. *This is the #1 check —
    the impersonation guard.*
