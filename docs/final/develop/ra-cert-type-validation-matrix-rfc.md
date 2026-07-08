@@ -1,5 +1,5 @@
 ```text
-Internal Specification                              Salman Technologies
+Internal Specification                              Example Corp
 Category: Standards Track (Internal)                        PKI-RA Team
 Companion to: RA-SPEC-001, RA-SPEC-002                      RA-SPEC-003
                                                             7 July 2026
@@ -184,7 +184,7 @@ Each type below runs ALL of Part 1, PLUS the extra checks listed here.
 ## 1. TLS SERVER certificate
 
 **Use:** a website/server proves it owns a domain (HTTPS).
-**Example:** `CN=api.salmantech.com`, SAN `DNS:api.salmantech.com`,
+**Example:** `CN=api.example.com`, SAN `DNS:api.example.com`,
 EKU `serverAuth`.
 
 Extra checks:
@@ -199,18 +199,18 @@ Extra checks:
 
    **How the RA proves control — DNS TXT method (example):**
    ```
-   Domain requested:  api.salmantech.com
+   Domain requested:  api.example.com
 
    Step 1  RA generates a random, unguessable token:
            8f3a1c9e5b7d2049a6c1e0f4
 
    Step 2  RA tells the requester to publish it as a DNS TXT record:
-           _wlca-challenge.api.salmantech.com.  TXT  "8f3a1c9e5b7d2049a6c1e0f4"
+           _wlca-challenge.api.example.com.  TXT  "8f3a1c9e5b7d2049a6c1e0f4"
 
    Step 3  The requester (who controls the DNS zone) adds that record.
 
    Step 4  The RA looks it up from its OWN resolvers and compares:
-           dig TXT _wlca-challenge.api.salmantech.com
+           dig TXT _wlca-challenge.api.example.com
              → "8f3a1c9e5b7d2049a6c1e0f4"   ✓ matches  → control proven
              → no record / wrong value       ✗ mismatch → DCV fails, reject
    ```
@@ -219,7 +219,7 @@ Extra checks:
    ```
    Step 1  RA generates a token:  8f3a1c9e5b7d2049a6c1e0f4
    Step 2  Requester places a file on that exact host:
-           http://api.salmantech.com/.well-known/pki-validation/wlca.txt
+           http://api.example.com/.well-known/pki-validation/wlca.txt
            (file content = 8f3a1c9e5b7d2049a6c1e0f4)
    Step 3  RA fetches that URL and compares the content.   ✓ / ✗
    ```
@@ -324,7 +324,7 @@ Extra checks:
      | Domain | Flag | Tag | Value | Meaning |
      |--------|:----:|-----|-------|---------|
      | pluto.com | 0 | issue | `"digicert.com"` | DigiCert may issue normal certs |
-     | pluto.com | 0 | issue | `"ourca.salmantech.in"` | Our CA may also issue |
+     | pluto.com | 0 | issue | `"ourca.example.com"` | Our CA may also issue |
      | pluto.com | 0 | iodef | `"mailto:security@pluto.com"` | Send unauthorized-attempt reports here |
 
      Here two CAs are authorized (DigiCert and our CA); any other CA must
@@ -366,7 +366,7 @@ Extra checks:
    explicitly permits the same cert for mutual TLS both ways.)
 9. **Validity ≤ 200 days.**
 10. **Look-alike domain screen** — DCV proves *control*, not *honesty*. A
-    phisher who registers `salrnantech.com` (rn ≈ m) genuinely owns it and
+    phisher who registers `exarnple.com` (rn ≈ m) genuinely owns it and
     passes DCV honestly, then uses the valid padlock to make phishing look
     real. The RA fuzzy-matches the requested domain against a protected
     brand / high-value list (typo distance + homoglyph normalisation) and
@@ -415,7 +415,7 @@ Extra checks:
 ## 2. TLS CLIENT certificate
 
 **Use:** a user, service, or device proves its identity (mutual TLS).
-**Example:** `CN=service-a`, `O=Salman Technologies Pvt Ltd`,
+**Example:** `CN=service-a`, `O=Example Corp`,
 EKU `clientAuth`, no server hostname.
 
 Extra checks:
@@ -429,7 +429,7 @@ Extra checks:
 
    | Subject kind | AD object type | Matched on | Example |
    |--------------|---------------|-----------|---------|
-   | Human user | User object | `userPrincipalName` / `sAMAccountName` | `CN=salman.khan` → AD user `salman.khan@salmantech.in` |
+   | Human user | User object | `userPrincipalName` / `sAMAccountName` | `CN=jdoe` → AD user `jdoe@example.com` |
    | Device / machine | **Computer object** (domain-joined machines auto-register) | `dNSHostName` / `sAMAccountName` | `CN=laptop-4021` → AD computer `laptop-4021` |
    | Service / app | **Service account** or **gMSA** (group Managed Service Account) | `sAMAccountName` | `CN=service-a` → AD service account `svc-service-a` |
 
@@ -437,7 +437,7 @@ Extra checks:
    - **Anchor on `objectGUID`, not the name.** Store and bind the AD
      object's immutable `objectGUID` (or `objectSid`), because display
      names and `sAMAccountName` can change or be reused — a new employee
-     called "Salman Khan" must not inherit the old one's certificates.
+     called "John Doe" must not inherit the old one's certificates.
    - **Check the object is enabled/active** — verify `userAccountControl`
      (not ACCOUNTDISABLE / LOCKOUT) and `accountExpires`, so a disabled AD
      object cannot get a certificate.
@@ -468,7 +468,7 @@ Extra checks:
 ## 3. S/MIME (email) certificate
 
 **Use:** a person signs and encrypts email.
-**Example:** `CN=Salman Khan`, SAN `email:salman@salmantech.com`,
+**Example:** `CN=John Doe`, SAN `email:jdoe@example.com`,
 EKU `emailProtection`.
 
 Extra checks:
@@ -494,7 +494,7 @@ Extra checks:
 
 **Use:** a company signs software (.exe/.jar) so the OS trusts it.
 This is the most dangerous type — a mistake becomes signed malware.
-**Example:** `CN=Salman Technologies Pvt Ltd`, `O=...`, `C=IN`,
+**Example:** `CN=Example Corp`, `O=...`, `C=IN`,
 EKU `codeSigning`, no SAN.
 
 Extra checks:
@@ -519,7 +519,7 @@ Extra checks:
 
 **Use:** a person legally signs PDFs/contracts (advanced / qualified
 electronic signatures, eIDAS / ETSI).
-**Example:** `CN=Salman Khan`, `O=...`, `C=IN`,
+**Example:** `CN=John Doe`, `O=...`, `C=IN`,
 KeyUsage includes `nonRepudiation`.
 
 Extra checks:
