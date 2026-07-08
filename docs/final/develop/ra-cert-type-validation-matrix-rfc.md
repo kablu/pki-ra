@@ -766,10 +766,10 @@ Extra checks:
      lookup; it matches the CSR against the stored AD data — `O` → AD `o`,
      `subject:serialNumber` (the HRB, in EV code signing) → the custom
      registration-ID attribute, `C` → AD `c`. Any mismatch → reject.
-7. **Reputation screen** — check against malware databases, prior abuse,
-   sanctions lists, and typosquat names ("Microsofft") → human review.
-8. **Validity ≤ 1 year.**
-9. **Approval:** NEVER automatic — two officers must both approve.
+7. **Approval:** NEVER automatic — two officers must both approve.
+
+*(Validity is set and enforced by the CA through the mapped profile ID;
+the RA only selects the correct profile.)*
 
 ## 5. DOCUMENT SIGNING certificate
 
