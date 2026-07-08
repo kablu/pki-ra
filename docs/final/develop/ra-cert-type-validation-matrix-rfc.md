@@ -622,8 +622,16 @@ Extra checks:
    record: the cert CN must equal the AD **`displayName`** (anchored on
    `objectGUID`). In WLCA, "HR records" means Active Directory — no separate
    HR system is used.
-6. **Evidence is fresh** — mailbox proof ≤ 398 days, identity proof
-   ≤ 825 days.
+6. **Evidence is fresh — public-trust windows; N/A in WLCA.**
+   *Purpose:* verification proof does not stay valid forever and may be
+   reused only within a window — mailbox-control proof ≤ 398 days, identity
+   proof ≤ 825 days. The windows differ because a mailbox changes faster
+   (an employee leaves and the address is reassigned) than a person's
+   identity.
+   *Scope:* these are public-trust (CABF SMBR) reuse windows for cached
+   evidence. In WLCA they are **N/A** — the RA reads Active Directory
+   **live at each issuance** (current `mail`, `displayName`, account
+   state), so there is no cached proof to expire; freshness is inherent.
 7. **EKU = emailProtection**; KeyUsage includes keyEncipherment (RSA) for
    encryption.
 8. **Profile is Strict or Multipurpose** (the old Legacy profile is
