@@ -686,7 +686,17 @@ This is the most dangerous type — a mistake becomes signed malware.
 EKU `codeSigning`, no SAN.
 
 Extra checks:
-1. **Bigger key** — RSA ≥ 3072.
+1. **Bigger key — RSA ≥ 3072** (higher than the 2048 used by other types;
+   ECDSA P-256/P-384 also accepted).
+   *Why bigger:* a code signature must stay trustworthy for many years —
+   software signed today is verified for 5–15+ years — so the key must be
+   strong enough that it cannot be broken over that lifetime (≈128-bit
+   security). A weak key broken later would let an attacker forge trusted
+   signatures on malware.
+   *How the RA validates:* read the public key from the CSR and check its
+   size — for RSA the modulus must be ≥ 3072 bits; for EC the curve must be
+   P-256/P-384; otherwise reject. (A CSR-content check — applies in every
+   scope.)
 2. **CN = the verified legal company name**; O and C are mandatory.
    *This name is what users see as "Publisher".*
 3. **No SAN** — its presence is suspicious.
