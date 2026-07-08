@@ -708,7 +708,16 @@ Extra checks:
    against that imported AD organization name, checks C is a valid ISO
    3166-1 country code, and rejects metadata-only values (`.`, `-`, ` `).
    No fresh registry lookup is done per request.
-3. **No SAN** — its presence is suspicious.
+3. **No SAN.** A code signing cert identifies an **organization
+   (publisher)** — not a domain, mailbox, or device — so its whole identity
+   sits in the Subject DN (CN/O/C); there is nothing for a SAN to hold.
+   *Why a SAN is suspicious:* it is either a mistake (wrong template) or an
+   attempt at scope confusion — tying the cert to a domain/email so it can
+   be misused for more than code signing.
+   *How the RA validates:* parse the CSR extensions; if a `subjectAltName`
+   extension is present, flag or reject it (code signing needs no SAN). This
+   keeps the cert single-purpose, together with point 4 (EKU = codeSigning
+   only).
 4. **EKU = codeSigning only**; KeyUsage = digitalSignature only.
 5. **Private key is in hardware** — proven by key attestation
    (FIPS 140-2 L2 / EAL4+ token). Software keys are rejected.
