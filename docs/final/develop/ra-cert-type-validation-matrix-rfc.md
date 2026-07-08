@@ -509,7 +509,23 @@ Extra checks:
 5. **UPN / email in SAN matches the directory** exactly (for smartcard
    login).
 6. **Device/service is active** — the AD computer object / service account
-   is enabled, not retired or disabled.
+   is enabled, not retired or disabled. Existing in AD is not enough; a
+   retired object may still exist but be disabled. Check these AD
+   attributes:
+
+   | AD attribute / bit | Value | Meaning |
+   |--------------------|-------|---------|
+   | `userAccountControl` → ACCOUNTDISABLE | `0x0002` | Set = account disabled → reject |
+   | `userAccountControl` → LOCKOUT | `0x0010` | Account locked out |
+   | `accountExpires` | past timestamp | Expired → reject (`0` or max value = never expires) |
+   | `lastLogonTimestamp` | very old (e.g. > 90 days) | Dormant/stale → flag for review |
+
+   The primary check is the ACCOUNTDISABLE bit: `userAccountControl & 0x2
+   == 0` means enabled. The cleanest query is an LDAP filter that returns
+   only enabled objects:
+   `(!(userAccountControl:1.2.840.113556.1.4.803:=2))`.
+   The same attributes apply to both computer objects (devices) and service
+   accounts.
 7. **Validity ≤ 1 year** — client identities change faster than servers.
 8. **Leaver hook** — if the user/service is disabled in AD, revoke the
    certificate.
