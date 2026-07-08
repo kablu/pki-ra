@@ -495,6 +495,29 @@ Extra checks:
    certificate.
 9. **Approval:** single officer, or automatic once identity binding passes.
 
+**Attributes to check (TLS client) — quick reference:**
+
+From the CSR:
+
+| Attribute | Check |
+|-----------|-------|
+| Subject → CN | Identity name (`jdoe`, `service-a`); not an FQDN |
+| SAN → rfc822Name / otherName UPN | Valid email / UPN format (if present) |
+| Public key | RSA ≥ 2048 or EC P-256/P-384 |
+| Signature (PoP) | CSR self-signature valid (key ownership) |
+| KeyUsage | `digitalSignature` present; CA bits absent |
+| ExtendedKeyUsage | `clientAuth` present; `serverAuth` / `anyEKU` absent |
+| basicConstraints | `cA=TRUE` absent |
+
+From Active Directory:
+
+| AD attribute | Check |
+|--------------|-------|
+| userPrincipalName / sAMAccountName / dNSHostName | Matches the CN/UPN — the identity exists |
+| objectGUID | Store as the immutable identity anchor (not the name) |
+| userAccountControl / accountExpires | Account is enabled, not locked or expired |
+| managedBy / owning AD group | Requester owns the identity (impersonation guard) |
+
 ## 3. S/MIME (email) certificate
 
 **Use:** a person signs and encrypts email.
