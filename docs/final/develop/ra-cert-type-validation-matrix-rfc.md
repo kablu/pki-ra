@@ -605,8 +605,18 @@ Extra checks:
    (AD accepted domains / UPN suffixes / RA config); not on the list →
    reject. This is a fast guardrail alongside point 1 (the full email must
    also match the AD `mail` attribute).
-4. **CAA `issuemail` allows our CA** — check the mail domain's CAA record
-   (RFC 9495).
+4. **CAA `issuemail` allows our CA — public-trust only; N/A in WLCA.**
+   *Purpose:* the email version of CAA (RFC 9495). Before issuing an S/MIME
+   cert for `jdoe@example.com`, the CA reads the mail domain's CAA record
+   and checks the `issuemail` tag lists our CA; if a record exists and our
+   CA is not listed, refuse.
+   *Reason:* it lets the domain **owner** declare which CAs may issue S/MIME
+   certs for their domain — the inverse of MCV (MCV proves the requester
+   controls the mailbox; `issuemail` is the owner authorizing the CA).
+   *Scope:* this is a public-trust, public-DNS mechanism. In WLCA's
+   internal single-CA, AD-based scope it is **N/A** — there is one CA
+   (always WLCA) and validation is via AD, not public DNS. Only relevant if
+   WLCA ever issues publicly-trusted S/MIME certs.
 5. **Person is verified** — for sponsored certificates, the name matches
    HR records.
 6. **Evidence is fresh** — mailbox proof ≤ 398 days, identity proof
