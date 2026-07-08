@@ -20,11 +20,11 @@ Detailed versions with code and reasons: RA-SPEC-001 (full requirements),
 RA-SPEC-002 (why each check exists).
 
 > **Scope note (WLCA).** In this project, applicant and certificate-subject
-> identity is verified through **Active Directory only** (plus linked HR /
-> CMDB records for services and devices). Wherever a check below says
-> "verify identity", it means "verify the Active Directory identity" — the
-> RA does not use external KYC, government photo-ID, video proofing, or
-> eIDAS/QSCD identity schemes.
+> identity is verified through **Active Directory only** — users, devices,
+> and services are all AD objects, so there is **no separate CMDB**.
+> Wherever a check below says "verify identity", it means "verify the Active
+> Directory identity" — the RA does not use external KYC, government
+> photo-ID, video proofing, or eIDAS/QSCD identity schemes.
 
 ## Abbreviations
 
@@ -38,7 +38,6 @@ RA-SPEC-002 (why each check exists).
 | CA | Certification Authority |
 | CAA | Certification Authority Authorization (DNS record) |
 | CABF | CA/Browser Forum |
-| CMDB | Configuration Management Database |
 | CN | Common Name (a Subject DN attribute) |
 | CP / CPS | Certificate Policy / Certification Practice Statement |
 | CSR | Certificate Signing Request (PKCS#10) |
@@ -63,7 +62,6 @@ RA-SPEC-002 (why each check exists).
 | KYC | Know Your Customer |
 | LDAP / LDAPS | Lightweight Directory Access Protocol (Secure) |
 | MCV | Mailbox Control Validation |
-| MDM | Mobile Device Management |
 | MFA | Multi-Factor Authentication |
 | ML-DSA / SLH-DSA | Post-quantum signature algorithms (FIPS 204 / 205) |
 | MPIC | Multi-Perspective Issuance Corroboration |
@@ -421,9 +419,10 @@ EKU `clientAuth`, no server hostname.
 Extra checks:
 1. **Identity exists in our records** — the certificate subject must
    correspond to a *real object* in an authoritative registry, not just a
-   name typed into the CSR. In WLCA the authoritative registry is **Active
-   Directory**, which holds all three identity kinds — so AD alone can
-   validate them (a separate CMDB is optional and only used if it exists).
+   name typed into the CSR. In WLCA the **single authoritative registry is Active
+   Directory** — it holds all three identity kinds (users, devices,
+   services). **All identity validation is done against AD; WLCA does not
+   use a CMDB.**
 
    **AD architecture — one registry, three object types:**
 
@@ -444,7 +443,7 @@ Extra checks:
    - **Define one mapping rule** — decide exactly which AD attribute the
      cert CN/SAN maps to, so the "exists" check is unambiguous.
    - **Ownership via AD** — model "who owns this service/device" with the
-     `managedBy` attribute or an AD group, in place of a CMDB owner field.
+     `managedBy` attribute or an AD group (WLCA uses no CMDB owner field).
    - **Non-AD entities are a known gap** — containers, Kubernetes/cloud
      workloads, and non-domain-joined devices have no AD object; either
      reject them or handle them with a separate, explicitly-scoped
@@ -459,7 +458,8 @@ Extra checks:
    (type-confusion); reject/flag.
 5. **UPN / email in SAN matches the directory** exactly (for smartcard
    login).
-6. **Device/service is active** — not retired or lost in the CMDB.
+6. **Device/service is active** — the AD computer object / service account
+   is enabled, not retired or disabled.
 7. **Validity ≤ 1 year** — client identities change faster than servers.
 8. **Leaver hook** — if the user/service is disabled in AD, revoke the
    certificate.
@@ -571,7 +571,7 @@ Extra checks:
 | serverAuth allowed? | Yes | **No** | No | No | No |
 | SAN | domain (must) | optional | email (must) | none | optional |
 | Key floor | RSA 2048 | RSA 2048 | RSA 2048 | **RSA 3072** | RSA 2048 |
-| Identity depth | DV / OV | AD/CMDB record | mailbox + AD | full legal + callback | AD identity |
+| Identity depth | DV / OV | AD record | mailbox + AD | full legal + callback | AD identity |
 | Auto-approve? | Yes (DV) | Yes (after binding) | Yes | **No — 2 officers** | **No — manual** |
 | Validity cap (2026) | 200 days | 1 year | 824 days | 1 year | 3 years |
 
