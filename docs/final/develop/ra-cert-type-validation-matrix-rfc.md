@@ -595,8 +595,16 @@ Extra checks:
    authoritatively says the address belongs to the user (point 1), so
    matching AD already proves the mailbox is theirs. **MCV is therefore
    optional** and only needed for a mailbox that is not backed by AD.
-3. **Company owns the mail domain** — the domain after @ must be on the
-   organization's verified list.
+3. **Company owns the mail domain** — the domain after `@` (e.g.
+   `example.com`) must be one the organization owns.
+   *Reason:* the company can only vouch for its own domains; otherwise
+   someone could obtain a company-trusted cert for `jdoe@gmail.com` or
+   `sales@competitor.com` and impersonate under the company's CA.
+   *Validation (WLCA):* extract the domain from the SAN email and match it
+   (case-insensitive) against the organization's **verified domain list**
+   (AD accepted domains / UPN suffixes / RA config); not on the list →
+   reject. This is a fast guardrail alongside point 1 (the full email must
+   also match the AD `mail` attribute).
 4. **CAA `issuemail` allows our CA** — check the mail domain's CAA record
    (RFC 9495).
 5. **Person is verified** — for sponsored certificates, the name matches
