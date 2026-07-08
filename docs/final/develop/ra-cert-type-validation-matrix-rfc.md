@@ -766,13 +766,10 @@ Extra checks:
      lookup; it matches the CSR against the stored AD data — `O` → AD `o`,
      `subject:serialNumber` (the HRB, in EV code signing) → the custom
      registration-ID attribute, `C` → AD `c`. Any mismatch → reject.
-7. **Independent callback** — phone the company on a registry-sourced
-   number (never the number on the application) to confirm the request and
-   the requester's authority.
-8. **Reputation screen** — check against malware databases, prior abuse,
+7. **Reputation screen** — check against malware databases, prior abuse,
    sanctions lists, and typosquat names ("Microsofft") → human review.
-9. **Validity ≤ 1 year.**
-10. **Approval:** NEVER automatic — two officers must both approve.
+8. **Validity ≤ 1 year.**
+9. **Approval:** NEVER automatic — two officers must both approve.
 
 ## 5. DOCUMENT SIGNING certificate
 
