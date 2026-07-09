@@ -584,8 +584,9 @@ Extra checks:
    Directory: it must equal the user's **`mail`** attribute (primary
    email), or — if aliases are allowed — be one of the `smtp:` entries in
    **`proxyAddresses`**. Do NOT use `userPrincipalName` as the email; that
-   is the AD login identity, which only looks like an email.
-2. **Mailbox Control Validation (MCV) — optional in WLCA.**
+   is the AD login identity, which only looks like an email. Must be encoded
+   as IA5String(Strictly).
+3. **Mailbox Control Validation (MCV) — optional in WLCA.**
    *What MCV does:* it proves the requester can actually read the mailbox.
    The RA emails a random code to that exact address; the requester reads
    their inbox and enters the code back. If it matches, they control the
@@ -595,7 +596,7 @@ Extra checks:
    authoritatively says the address belongs to the user (point 1), so
    matching AD already proves the mailbox is theirs. **MCV is therefore
    optional** and only needed for a mailbox that is not backed by AD.
-3. **Company owns the mail domain** — the domain after `@` (e.g.
+4. **Company owns the mail domain** — the domain after `@` (e.g.
    `example.com`) must be one the organization owns.
    *Reason:* the company can only vouch for its own domains; otherwise
    someone could obtain a company-trusted cert for `jdoe@gmail.com` or
@@ -605,7 +606,7 @@ Extra checks:
    (AD accepted domains / UPN suffixes / RA config); not on the list →
    reject. This is a fast guardrail alongside point 1 (the full email must
    also match the AD `mail` attribute).
-4. **CAA `issuemail` allows our CA — public-trust only; N/A in WLCA.**
+5. **CAA `issuemail` allows our CA — public-trust only; N/A in WLCA.**
    *Purpose:* the email version of CAA (RFC 9495). Before issuing an S/MIME
    cert for `jdoe@example.com`, the CA reads the mail domain's CAA record
    and checks the `issuemail` tag lists our CA; if a record exists and our
@@ -617,12 +618,12 @@ Extra checks:
    internal single-CA, AD-based scope it is **N/A** — there is one CA
    (always WLCA) and validation is via AD, not public DNS. Only relevant if
    WLCA ever issues publicly-trusted S/MIME certs.
-5. **Person is verified (against AD)** — for sponsored certificates the CN
+6. **Person is verified (against AD)** — for sponsored certificates the CN
    carries a person's name, so it must match that person's Active Directory
    record: the cert CN must equal the AD **`displayName`** (anchored on
    `objectGUID`). In WLCA, "HR records" means Active Directory — no separate
    HR system is used.
-6. **Evidence is fresh — public-trust windows; N/A in WLCA.**
+7. **Evidence is fresh — public-trust windows; N/A in WLCA.**
    *Purpose:* verification proof does not stay valid forever and may be
    reused only within a window — mailbox-control proof ≤ 398 days, identity
    proof ≤ 825 days. The windows differ because a mailbox changes faster
@@ -632,7 +633,7 @@ Extra checks:
    evidence. In WLCA they are **N/A** — the RA reads Active Directory
    **live at each issuance** (current `mail`, `displayName`, account
    state), so there is no cached proof to expire; freshness is inherent.
-7. **EKU = emailProtection; KeyUsage for sign + encrypt.** An S/MIME cert
+8. **EKU = emailProtection; KeyUsage for sign + encrypt.** An S/MIME cert
    does two jobs — signs outgoing mail and lets others send encrypted mail
    to the owner — so the RA checks both the role (EKU) and the two key-usage
    bits. The RA reads these from the CSR's requested extensions:
@@ -647,11 +648,11 @@ Extra checks:
 
    *(This is a CSR-content check — it applies in WLCA scope too, not just
    public trust.)*
-8. **Profile and validity — enforced by the CA.** The certificate profile
+9. **Profile and validity — enforced by the CA.** The certificate profile
    (e.g. Strict / Multipurpose) and the validity period are validated at
    the CA end through the mapped profile ID; the RA only selects the
    correct profile.
-9. **Approval:** maker-checker required. A Maker (RA officer) reviews and
+10. **Approval:** maker-checker required. A Maker (RA officer) reviews and
    submits the request, and a separate Checker approves it; the
    submitter/Maker cannot approve their own request (separation of duties).
    Even when the email matches AD, issuance is not automatic.
