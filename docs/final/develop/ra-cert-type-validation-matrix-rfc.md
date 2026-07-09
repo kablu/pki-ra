@@ -174,15 +174,27 @@ Signing — always.
 21. **No junk values** — reject "-", "N/A", "." and stray spaces.
 22. **Organization matches records** — the O= field must equal a company
     name already verified for this requester.
+23. **DN string type** — each Subject DN value must be a `UTF8String` or
+    `PrintableString`; reject `TeletexString`/`BMPString` and other exotic
+    types.
+    *Why: exotic string types render differently across software (spoofing)
+    and cause interop bugs. (R-44-03; RFC 5280.)*
 
 ## E. Requested-power (extension) checks
 
-23. **Cannot ask to be a CA** — basicConstraints cA=TRUE → reject.
-24. **No CA-only key usage** — keyCertSign / cRLSign → reject.
-25. **No "do-everything" usage** — anyExtendedKeyUsage → reject.
-26. **Only known extensions** — anything not on the allow-list → reject.
-27. **Ignore RA-owned fields** — client-supplied SKID/AKID/policies/SCT
+24. **Cannot ask to be a CA** — basicConstraints cA=TRUE → reject.
+25. **No CA-only key usage** — keyCertSign / cRLSign → reject.
+26. **No "do-everything" usage** — anyExtendedKeyUsage → reject.
+27. **Only known extensions** — anything not on the allow-list → reject.
+28. **Ignore RA-owned fields** — client-supplied SKID/AKID/policies/SCT
     are discarded; the RA/CA set these.
+29. **KeyUsage matches the key type** — an EC key must not carry
+    `keyEncipherment` (EC uses `keyAgreement`); reject the mismatch.
+    *Why: cryptographically meaningless usage bits confuse relying parties.
+    (R-45-05.)*
+30. **SAN entries capped and unique** — reject duplicate SAN entries and
+    cap the count (e.g. ≤ 100).
+    *Why: prevents abuse/DoS amplification and log bloat. (R-45-08.)*
 
 *(Detailed IDs for the above: R-41.., R-42.., R-43.., R-44.., R-45.. and
 the AD checks R-AD-01..15 — see RA-SPEC-001.)*
