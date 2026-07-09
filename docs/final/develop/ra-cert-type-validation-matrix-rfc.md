@@ -135,6 +135,14 @@ Signing — always.
 12. **No private key pasted** — if a PRIVATE KEY block is found: reject
     AND blocklist that key forever.
     *Why: a key that travelled the network is compromised for good.*
+13. **Strict algorithm encoding** — in the `AlgorithmIdentifier`, the
+    `parameters` field must match the algorithm: for **RSA (PKCS#1 v1.5)**
+    it MUST be **NULL**; for **ECDSA** it MUST be **absent**. Malformed or
+    extra parameters → reject.
+    *Why: loose encoding enables parser-differential and signature-
+    malleability attacks, and zlint flags it as mis-issuance. Checked on
+    both the `signatureAlgorithm` and the `SubjectPublicKeyInfo` algorithm.
+    (CSBR 7.1.3.2 / RFC 4055 / RFC 5758.)*
 
 ## C. Key checks (cryptography)
 
