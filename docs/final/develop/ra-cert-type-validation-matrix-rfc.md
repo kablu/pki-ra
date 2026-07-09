@@ -24,7 +24,7 @@ RA-SPEC-002 (why each check exists).
 > and services are all AD objects, so there is **no separate CMDB**.
 > Wherever a check below says "verify identity", it means "verify the Active
 > Directory identity" — the RA does not use external KYC, government
-> photo-ID, video proofing, or eIDAS/QSCD identity schemes.
+> photo-ID, or video proofing.
 
 ## Abbreviations
 
@@ -48,7 +48,6 @@ RA-SPEC-002 (why each check exists).
 | DNSSEC | DNS Security Extensions |
 | DV / OV / EV | Domain / Organization / Extended Validated |
 | EC / ECDSA | Elliptic Curve / EC Digital Signature Algorithm |
-| eIDAS | EU electronic IDentification, Authentication and trust Services |
 | EKU | Extended Key Usage |
 | ETSI | European Telecommunications Standards Institute |
 | FIPS | Federal Information Processing Standards |
@@ -71,7 +70,6 @@ RA-SPEC-002 (why each check exists).
 | PKCS#10 | Public-Key Cryptography Standards #10 (CSR format) |
 | PoP | Proof of Possession |
 | PQC | Post-Quantum Cryptography |
-| QSCD | Qualified Signature Creation Device |
 | RA | Registration Authority |
 | RBAC | Role-Based Access Control |
 | RFC | Request for Comments (IETF standard) |
@@ -774,8 +772,7 @@ the RA only selects the correct profile.)*
 
 ## 5. DOCUMENT SIGNING certificate
 
-**Use:** a person legally signs PDFs/contracts (advanced / qualified
-electronic signatures, eIDAS / ETSI).
+**Use:** a person legally signs PDFs/contracts (digital signatures).
 **Example:** `CN=John Doe`, `O=...`, `C=IN`,
 EKU `documentSigning`, KeyUsage includes `nonRepudiation`.
 
