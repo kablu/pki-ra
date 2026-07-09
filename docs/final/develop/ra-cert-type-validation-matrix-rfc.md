@@ -129,8 +129,10 @@ Signing — always.
 
 8. **CSR is present** and within the size limit.
 9. **Valid PEM** — correct BEGIN/END markers, exactly one block.
-10. **Decodes and parses** — clean base64, valid PKCS#10 in strict DER.
-    *Why: strict parsing means the RA and CA read the exact same bytes.*
+10. **Decodes and parses** — clean base64, valid PKCS#10 in strict DER,
+    with **no trailing bytes** after the structure.
+    *Why: strict parsing with no leftover bytes means the RA and CA read the
+    exact same bytes — no room for smuggled data or parser differentials.*
 11. **Version is 0** — the only valid PKCS#10 version.
 12. **No private key pasted** — if a PRIVATE KEY block is found: reject
     AND blocklist that key forever.
