@@ -143,6 +143,12 @@ Signing — always.
     malleability attacks, and zlint flags it as mis-issuance. Checked on
     both the `signatureAlgorithm` and the `SubjectPublicKeyInfo` algorithm.
     (CSBR 7.1.3.2 / RFC 4055 / RFC 5758.)*
+14. **EC named curve only** — an EC public key must reference a standard
+    named curve by OID (P-256 / P-384), not spell out explicit curve
+    parameters.
+    *Why: explicit parameters can define a custom, unauditable curve that
+    may be secretly weak; named curves are known and vetted. Checked on the
+    `SubjectPublicKeyInfo`. (RFC 5480; zlint flags explicit EC parameters.)*
 
 ## C. Key checks (cryptography)
 
