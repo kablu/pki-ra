@@ -783,8 +783,8 @@ Extra checks:
    *Why:* the company must be a real, legally registered entity, and
    applicant-supplied documents can be forged.
    *How the RA validates:* at onboarding, look the customer up directly in
-   the authoritative registry (e.g. Handelsregister / MCA) and store the
-   verified legal name, registration ID and country in AD; at request time
+   the authoritative registry and store the verified legal name,
+   registration ID and country in AD; at request time
    match the CSR's `O`, `subject:serialNumber` and `C` against that stored
    AD data — no fresh lookup per request. Mismatch → reject.
 7. **Approval:** NEVER automatic — two officers must both approve.
