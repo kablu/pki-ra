@@ -771,24 +771,13 @@ Extra checks:
    `digitalSignature` only (no `keyEncipherment`/`keyAgreement`, no CA bits
    `keyCertSign`/`cRLSign`). A CSR-content check — applies in every scope.
 5. **Private key is in hardware; software keys are rejected.**
-   *Reason:* a code-signing key is the crown jewel for malware — a software
-   key (a file on disk) is easily stolen (e.g. NVIDIA/Lapsus$, 2022),
-   whereas a key inside a certified hardware token (FIPS 140-2 L2 / EAL4+ —
-   e.g. a YubiKey, SafeNet eToken, or HSM) is **non-exportable** and cannot
-   be copied out.
-   *Two accepted ways to assure the key is in hardware:*
-   - **Key attestation:** the subscriber's token produces a signed
-     statement ("this key was generated inside me and is non-exportable")
-     that chains to the hardware vendor's root. The RA verifies the chain,
-     checks the device meets FIPS 140-2 L2 / EAL4+, and confirms the
-     attested public key equals the CSR's public key.
-   - **CA/RA pre-provisioned token:** the CA generates the key inside a
-     certified token in its own secure facility and ships the physical token
-     to the customer. No attestation is needed — the CA controls the
-     hardware and key generation, so assurance comes from provisioning and
-     chain of custody.
-   Either way, a plain software key — or a failed attestation — is rejected.
-   (A per-request check; applies in every scope.)
+   *Why:* a code-signing key is the crown jewel for malware — a software key
+   (a file on disk) is easily stolen, whereas a key in a certified hardware
+   token (FIPS 140-2 L2 / EAL4+) is non-exportable.
+   *How the RA validates:* confirm the key is in hardware — via key
+   attestation (verify the token's signed statement and that the attested
+   key matches the CSR) or a CA-provisioned token — and reject any software
+   key. (Per-request; every scope.)
 6. **Company is real — verified in the government registry, not from
    uploaded documents.**
    *Reason:* the company must be a real, legally registered entity. The RA
