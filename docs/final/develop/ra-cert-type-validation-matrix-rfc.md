@@ -777,7 +777,7 @@ the RA only selects the correct profile.)*
 **Use:** a person legally signs PDFs/contracts (advanced / qualified
 electronic signatures, eIDAS / ETSI).
 **Example:** `CN=John Doe`, `O=...`, `C=IN`,
-KeyUsage includes `nonRepudiation`.
+EKU `documentSigning`, KeyUsage includes `nonRepudiation`.
 
 Extra checks:
 1. **Verify identity via Active Directory** — confirm the applicant is an
@@ -796,8 +796,15 @@ Extra checks:
    *How the RA validates:* parse the KeyUsage extension from the CSR; the
    `nonRepudiation` bit must be set — reject the request if it is absent —
    and it must be consistent with the key type. A CSR-content check.
-4. **No TLS or code-signing EKUs** — the certificate's scope is signing
-   documents only.
+4. **EKU = documentSigning; no TLS or code-signing EKUs.** The
+   certificate's role is signing documents only. The positive EKU is
+   `id-kp-documentSigning` (RFC 9336, OID `1.3.6.1.5.5.7.3.36`); some
+   ecosystems (e.g. Adobe PDF / AATL) use their own document-signing OID —
+   use whichever the WLCA profile requires. `serverAuth`, `clientAuth`, and
+   `codeSigning` MUST be absent (scope separation).
+   *How the RA validates:* parse the EKU from the CSR — the document-signing
+   EKU (per the WLCA profile) must be present, and TLS/code-signing EKUs
+   must be absent. A CSR-content check.
 5. **Key protection** — the signing key is generated and held as required
    by the WLCA certificate policy (e.g. HSM / token).
 6. **Organization link (if named)** — O= matches the applicant's
@@ -830,7 +837,7 @@ Extra checks:
 | Question | TLS Server | TLS Client | S/MIME | Code Signing | Doc Signing |
 |----------|-----------|-----------|--------|--------------|-------------|
 | Main control check | Domain (DCV) | Identity binding | Mailbox challenge | Key attestation + callback | AD identity |
-| Required EKU | serverAuth | clientAuth | emailProtection | codeSigning | (none; nonRepudiation KU) |
+| Required EKU | serverAuth | clientAuth | emailProtection | codeSigning | documentSigning (+ nonRepudiation KU) |
 | serverAuth allowed? | Yes | **No** | No | No | No |
 | SAN | domain (must) | optional | email (must) | none | optional |
 | Key floor | RSA 2048 | RSA 2048 | RSA 2048 | **RSA 3072** | RSA 2048 |
