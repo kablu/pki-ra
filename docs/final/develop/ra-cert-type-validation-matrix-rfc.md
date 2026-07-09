@@ -780,21 +780,13 @@ Extra checks:
    key. (Per-request; every scope.)
 6. **Company is real — verified in the government registry, not from
    uploaded documents.**
-   *Reason:* the company must be a real, legally registered entity. The RA
-   looks it up **itself** in the authoritative registry (e.g. Germany's
-   Handelsregister, India's MCA) — never trusting documents the applicant
-   uploads, which can be forged (independence of evidence).
-   *How the RA validates (two phases):*
-   - **At onboarding (once):** the RA looks up the customer (e.g. Siemens
-     AG) in the registry, confirms the legal name, registration identifier
-     (e.g. `HRB 6684`), country and active status, then stores this
-     verified data when the customer is imported into AD — legal name → AD
-     `o`, registration identifier → a custom/extension attribute (AD has no
-     standard field for it), country → AD `c`.
-   - **At request time (per cert):** the RA does **no** fresh registry
-     lookup; it matches the CSR against the stored AD data — `O` → AD `o`,
-     `subject:serialNumber` (the HRB, in EV code signing) → the custom
-     registration-ID attribute, `C` → AD `c`. Any mismatch → reject.
+   *Why:* the company must be a real, legally registered entity, and
+   applicant-supplied documents can be forged.
+   *How the RA validates:* at onboarding, look the customer up directly in
+   the authoritative registry (e.g. Handelsregister / MCA) and store the
+   verified legal name, registration ID and country in AD; at request time
+   match the CSR's `O`, `subject:serialNumber` and `C` against that stored
+   AD data — no fresh lookup per request. Mismatch → reject.
 7. **Approval:** NEVER automatic — two officers must both approve.
 
 *(Validity is set and enforced by the CA through the mapped profile ID;
