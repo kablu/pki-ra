@@ -788,8 +788,14 @@ Extra checks:
    external KYC, government photo-ID, or video proofing.*
 2. **CN matches the AD identity** — the name in the certificate matches the
    applicant's AD record.
-3. **KeyUsage includes nonRepudiation** — this is what makes a signature
-   legally undeniable in court.
+3. **KeyUsage MUST contain nonRepudiation** (also called
+   `contentCommitment`), normally together with `digitalSignature`.
+   *Why:* nonRepudiation is what makes the signature legally undeniable —
+   the signer cannot later claim "I did not sign this". Without this bit the
+   certificate is legally decorative.
+   *How the RA validates:* parse the KeyUsage extension from the CSR; the
+   `nonRepudiation` bit must be set — reject the request if it is absent —
+   and it must be consistent with the key type. A CSR-content check.
 4. **No TLS or code-signing EKUs** — the certificate's scope is signing
    documents only.
 5. **Key protection** — the signing key is generated and held as required
