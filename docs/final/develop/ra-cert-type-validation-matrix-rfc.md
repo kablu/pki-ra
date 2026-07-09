@@ -160,7 +160,14 @@ Signing — always.
 14. **Strong signature algorithm** — SHA-256 or better; reject MD5/SHA-1.
 15. **Adequate key size** — RSA ≥ 2048 (≥ 3072 for code signing);
     EC only P-256 or P-384.
-16. **Sensible RSA exponent** — odd, ≥ 65537.
+16. **Sensible RSA exponent** — the public exponent `e` must be **odd** and
+    **≥ 65537**.
+    *Why odd:* RSA math needs `e` to be coprime with an even value, so an
+    even exponent has no valid private key (broken RSA). *Why ≥ 65537:*
+    small exponents like `3` are attack-prone (low-exponent / cube-root
+    attacks); `65537` (`0x10001`) is the standard — safe yet fast (only two
+    bits set). `e = 1` would mean no encryption at all.
+    (CABF: odd ≥ 3 MUST, ≥ 65537 SHOULD.)
 17. **Not a weak/known-bad key** — screen against Debian, ROCA, Fermat,
     and leaked-key lists.
 18. **Key not reused wrongly** — same key under a different name, or
