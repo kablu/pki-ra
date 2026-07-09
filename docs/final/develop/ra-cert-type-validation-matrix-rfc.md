@@ -154,6 +154,15 @@ Signing — always.
 
 ## C. Key checks (cryptography)
 
+*Why these are needed:* a certificate is a public promise that "this key is
+safe to trust" for its whole validity period. So a key that is not really
+the requester's — or is weak, broken, or reused wrongly — must be caught
+here, before it is certified.
+*What the RA validates:* **ownership** (Proof of Possession), **strength**
+(algorithm, key size, exponent), **health** (not a known-weak or compromised
+key), and **no wrong reuse** (same key under a different name or certificate
+type).
+
 13. **Proof of Possession** — verify the CSR's own signature with its
     public key.
     *Why: proves the sender holds the private key. Most important check.*
