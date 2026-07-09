@@ -196,9 +196,6 @@ Signing — always.
     cap the count (e.g. ≤ 100).
     *Why: prevents abuse/DoS amplification and log bloat. (R-45-08.)*
 
-*(Detailed IDs for the above: R-41.., R-42.., R-43.., R-44.., R-45.. and
-the AD checks R-AD-01..15 — see RA-SPEC-001.)*
-
 ---
 
 # PART 2 — TYPE-SPECIFIC CHECKS (per certificate)
