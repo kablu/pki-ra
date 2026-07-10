@@ -162,7 +162,7 @@ that the key is not reused wrongly.*
 | M5 | Person verified (AD) | Cert CN must equal the AD `displayName` (anchored on `objectGUID`) | A sponsored cert names a real, verified person |
 | M6 | Evidence freshness | **Public-trust windows; N/A in WLCA** (AD is read live at each issuance) | Stale cached evidence lies |
 | M7 | EKU + KeyUsage | `emailProtection` present; `serverAuth`/`clientAuth` absent; KU `digitalSignature` (sign) + `keyEncipherment` (RSA) / `keyAgreement` (EC) for encryption | S/MIME signs and receives encrypted mail; scope separation |
-| M8 | Profile & validity | Enforced by the CA via the mapped profile; the RA selects it | — |
+| M8 | Profile & validity | The End Entity indicates the profile/type in its request; the RA validates that choice and maps it to the correct CA profile ID; the CA then enforces the profile content and validity | Validity and profile stay authoritative at the CA, not set by the client's CSR |
 | M9 | Approval | Maker-checker required (Maker submits, separate Checker approves) | Not automatic even when the email matches AD |
 
 ## 4. CODE SIGNING
