@@ -20,6 +20,61 @@ certificate type; Part 3 lists the post-validation / issuance checks.
 > are all AD objects; there is no separate CMDB, and no external KYC,
 > government photo-ID, or video proofing.
 
+## Abbreviations
+
+| Abbr. | Full form |
+|-------|-----------|
+| ACME | Automatic Certificate Management Environment (RFC 8555) |
+| AD | Active Directory |
+| AKID / SKID | Authority / Subject Key Identifier |
+| BER / DER | Basic / Distinguished Encoding Rules (ASN.1) |
+| BR / CSBR / SMBR | (CA/Browser Forum) Baseline Requirements / Code Signing BR / S/MIME BR |
+| CA | Certification Authority |
+| CAA | Certification Authority Authorization (DNS record) |
+| CABF | CA/Browser Forum |
+| CN | Common Name (a Subject DN attribute) |
+| CP / CPS | Certificate Policy / Certification Practice Statement |
+| CSR | Certificate Signing Request (PKCS#10) |
+| CT | Certificate Transparency (RFC 6962) |
+| DCV | Domain Control Validation |
+| DN | Distinguished Name |
+| DNS | Domain Name System |
+| DNSSEC | DNS Security Extensions |
+| DV / OV / EV | Domain / Organization / Extended Validated |
+| EC / ECDSA | Elliptic Curve / EC Digital Signature Algorithm |
+| EKU | Extended Key Usage |
+| FIPS | Federal Information Processing Standards |
+| FQDN | Fully Qualified Domain Name |
+| gMSA | group Managed Service Account (Active Directory) |
+| HSM | Hardware Security Module |
+| HTTP / HTTPS | HyperText Transfer Protocol (Secure) |
+| IA5String | ASN.1 ASCII string type |
+| IP | Internet Protocol (address) |
+| ISO | International Organization for Standardization |
+| KU | Key Usage |
+| KYC | Know Your Customer |
+| LDAP / LDAPS | Lightweight Directory Access Protocol (Secure) |
+| MCV | Mailbox Control Validation |
+| MITM | Man-in-the-Middle |
+| OID | Object Identifier |
+| PEM | Privacy-Enhanced Mail (Base64 certificate encoding) |
+| PKCS#10 | Public-Key Cryptography Standards #10 (CSR format) |
+| PoP | Proof of Possession |
+| RA | Registration Authority |
+| RBAC | Role-Based Access Control |
+| RFC | Request for Comments (IETF standard) |
+| ROCA | Return of Coppersmith's Attack (RSA key vulnerability) |
+| RSA | Rivest–Shamir–Adleman (cryptosystem) |
+| SAN | Subject Alternative Name |
+| S/MIME | Secure/Multipurpose Internet Mail Extensions |
+| SoD | Separation of Duties |
+| SPKI | Subject Public Key Info |
+| SPIFFE | Secure Production Identity Framework For Everyone |
+| TLS / mTLS | Transport Layer Security / mutual TLS |
+| UPN | User Principal Name (Active Directory) |
+| WLCA | Worldline Certificate Authority (this project's CA) |
+| zlint / cablint | Certificate linting tools |
+
 ## How the RA processes a CSR
 
 ```
