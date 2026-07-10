@@ -34,6 +34,12 @@ dependencies {
     implementation libs.springdoc.openapi.ui
 
     // -------------------------------------------------------------------------
+    // Crypto — Bouncy Castle for CSR parsing
+    // -------------------------------------------------------------------------
+    implementation libs.bcprov
+    implementation libs.bcpkix
+
+    // -------------------------------------------------------------------------
     // Development
     // -------------------------------------------------------------------------
     developmentOnly libs.spring.boot.devtools

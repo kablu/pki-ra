@@ -1,0 +1,232 @@
+
+================================================================================
+     MASTER FLOW: CSR SUBMISSION TO CERTIFICATE ISSUANCE
+     Project  : pki-ra (Enterprise Registration Authority)
+     Date     : 2026-06-20
+     Type     : Master Flow Document (links to internal sub-flow docs)
+================================================================================
+
+  This is the SINGLE SOURCE OF TRUTH for the complete flow.
+  Each numbered phase has a detailed internal document.
+
+  Related Internal Documents:
+    FLOW-01  → docs/internal/FLOW_01_Client_Preparation.txt
+    FLOW-02  → docs/internal/FLOW_02_Request_Reception.txt
+    FLOW-03  → docs/internal/FLOW_03_Validation_Engine.txt
+    FLOW-04  → docs/internal/FLOW_04_Approval_Workflow.txt
+    FLOW-05  → docs/internal/FLOW_05_CA_Submission.txt
+    FLOW-06  → docs/internal/FLOW_06_Post_Issuance.txt
+    FLOW-07  → docs/internal/FLOW_07_Error_Recovery.txt
+
+
+================================================================================
+  MASTER FLOW DIAGRAM
+================================================================================
+
+  CLIENT SIDE              RA SYSTEM                              CA SIDE
+  ===========              =========                              =======
+
+  FLOW-01                  FLOW-02
+  Client                   Request
+  Preparation              Reception
+  +-----------+            +------------------+
+  | Generate  |            | Receive HTTP     |
+  | key pair  |   CSR      | Parse protocol   |
+  | Create CSR| ---------> | Identify client  |
+  | Choose    |            | Rate limit check |
+  | protocol  |            +--------+---------+
+  +-----------+                     |
+                                    v
+                           FLOW-03
+                           Validation Engine
+                           (7 Layers)
+                           +------------------+
+                           | L1: Transport    |
+                           | L2: AuthN/AuthZ  |
+                           | L3: Envelope     |
+                           | L4: CSR Struct   |
+                           | L5: Crypto       |
+                           | L6: Policy       |
+                           | L7: Conflicts    |
+                           +--------+---------+
+                                    |
+                           ANY FAIL |---------> REJECT (HTTP 4xx)
+                                    |           Audit: FAILURE
+                           ALL PASS |           Notify requester
+                                    v
+                           Save to DB
+                           status = PENDING
+                           Audit: CSR_SUBMITTED
+                                    |
+                                    v
+                           FLOW-04
+                           Approval Workflow
+                           +------------------+
+                           | Auto-approve?    |
+                           | Single approval? |
+                           | Multi-level?     |
+                           | Delegation?      |
+                           +--------+---------+
+                                    |
+                           REJECTED |---------> REJECTED
+                                    |           Audit: CSR_REJECTED
+                           APPROVED |           Notify requester
+                                    v
+                           FLOW-05
+                           CA Submission
+                           +------------------+            +-----------+
+                           | Prepare CSR      |            |           |
+                           | Attach template  |  sign -->  | CA signs  |
+                           | Set extensions   |            | Returns   |
+                           | Call CaClient    | <-- cert   | X.509     |
+                           +--------+---------+            +-----------+
+                                    |
+                           FAILED?  |---------> FAILED
+                                    |           Audit: CERT_ISSUE_FAIL
+                           SUCCESS  |           Notify requester+approver
+                                    v
+                           FLOW-06
+                           Post-Issuance
+                           +------------------+
+                           | Store cert in DB |
+                           | Update request   |
+                           | Audit: CERT_ISSUE|
+                           | Notify requester |
+                           | Publish to LDAP  |
+                           | Submit to CT log |
+                           | Start expiry     |
+                           |   tracking       |
+                           +------------------+
+                                    |
+                                    v
+                           CERTIFICATE ACTIVE ✅
+
+                           If anything fails at any point:
+                           FLOW-07 → Error Recovery
+
+
+================================================================================
+  FLOW SEQUENCE — NUMBERED STEPS
+================================================================================
+
+  +------+-------------------+------------------+---------------------------+
+  | Step | Phase             | Internal Doc     | What Happens              |
+  +------+-------------------+------------------+---------------------------+
+  |  1   | Key Generation    | FLOW-01 Step 1   | Client generates RSA/EC   |
+  |      |                   |                  | key pair locally          |
+  |  2   | CSR Creation      | FLOW-01 Step 2   | Client creates PKCS#10    |
+  |      |                   |                  | with subject, SANs, signs |
+  |  3   | Protocol Choice   | FLOW-01 Step 3   | REST / EST / SCEP / CMP   |
+  |  4   | Trust Bootstrap   | FLOW-01 Step 4   | GET /cacerts (EST) or     |
+  |      |                   |                  | pre-installed CA certs    |
+  |  5   | Submit Request    | FLOW-01 Step 5   | POST to RA endpoint       |
+  +------+-------------------+------------------+---------------------------+
+  |  6   | TLS Handshake     | FLOW-02 Step 1   | TLS 1.2+ verified         |
+  |  7   | HTTP Receive      | FLOW-02 Step 2   | Method, Content-Type,     |
+  |      |                   |                  | size limit checked        |
+  |  8   | Rate Limit        | FLOW-02 Step 3   | IP + client throttle      |
+  |  9   | IP Allowlist      | FLOW-02 Step 4   | Network policy check      |
+  | 10   | Protocol Detect   | FLOW-02 Step 5   | REST/EST/SCEP/CMP detect  |
+  +------+-------------------+------------------+---------------------------+
+  | 11   | L1: Transport     | FLOW-03 Step 1   | TLS, Content-Type, size   |
+  | 12   | L2: AuthN         | FLOW-03 Step 2   | Identity verify, role     |
+  | 13   | L3: Envelope      | FLOW-03 Step 3   | Parse wrapper, extract    |
+  |      |                   |                  | PKCS#10, replay check     |
+  | 14   | L4: Structure     | FLOW-03 Step 4   | ASN.1, DN, SANs, exts     |
+  | 15   | L5: Crypto        | FLOW-03 Step 5   | Signature, key strength   |
+  | 16   | L6: Policy        | FLOW-03 Step 6   | Template, DN, domain      |
+  | 17   | L7: Conflicts     | FLOW-03 Step 7   | Duplicate, overlap, reuse |
+  | 18   | Verdict           | FLOW-03 Step 8   | PASS/WARN/FLAG/REJECT     |
+  | 19   | Save to DB        | FLOW-03 Step 9   | certificate_requests row  |
+  +------+-------------------+------------------+---------------------------+
+  | 20   | Determine Model   | FLOW-04 Step 1   | Auto/Single/Multi/Deleg   |
+  | 21   | Auto-Approve?     | FLOW-04 Step 2   | Check template conditions |
+  | 22   | Notify Approvers  | FLOW-04 Step 3   | Email + In-App to queue   |
+  | 23   | Approver Reviews  | FLOW-04 Step 4   | GET pending, GET details  |
+  | 24   | Approve/Reject    | FLOW-04 Step 5   | POST approve or reject    |
+  | 25   | Multi-Level?      | FLOW-04 Step 6   | Advance level or complete |
+  | 26   | Escalation?       | FLOW-04 Step 7   | Timeout → escalate/expire |
+  | 27   | Final Decision    | FLOW-04 Step 8   | APPROVED or REJECTED      |
+  +------+-------------------+------------------+---------------------------+
+  | 28   | Prepare for CA    | FLOW-05 Step 1   | Template extensions, EKU  |
+  | 29   | Call CaClient     | FLOW-05 Step 2   | REST call to CA backend   |
+  | 30   | Receive Cert      | FLOW-05 Step 3   | Parse CA response         |
+  | 31   | Handle Failure    | FLOW-05 Step 4   | Retry logic, FAILED state |
+  +------+-------------------+------------------+---------------------------+
+  | 32   | Store Certificate | FLOW-06 Step 1   | certificates table row    |
+  | 33   | Update Request    | FLOW-06 Step 2   | status=ISSUED, cert_id    |
+  | 34   | Compute Fingerprint| FLOW-06 Step 3  | SHA-256 of DER cert       |
+  | 35   | Store SANs        | FLOW-06 Step 4   | certificate_sans rows     |
+  | 36   | Store Key Hash    | FLOW-06 Step 5   | public_key_hashes row     |
+  | 37   | Audit Log         | FLOW-06 Step 6   | CERT_ISSUE entry          |
+  | 38   | Notify Requester  | FLOW-06 Step 7   | Email + In-App            |
+  | 39   | Publish to LDAP   | FLOW-06 Step 8   | AD userCertificate attr   |
+  | 40   | Submit to CT      | FLOW-06 Step 9   | Certificate Transparency  |
+  | 41   | Start Expiry Track| FLOW-06 Step 10  | Notification rules active |
+  | 42   | Return Response   | FLOW-06 Step 11  | HTTP 200/201 + cert data  |
+  +------+-------------------+------------------+---------------------------+
+
+  TOTAL: 42 steps from client key generation to certificate delivery
+
+
+================================================================================
+  CROSS-REFERENCE: WHERE EACH EXISTING DOC FITS
+================================================================================
+
+  +--------------------------------------+----------------------------------+
+  | Existing Document                    | Covers Steps                     |
+  +--------------------------------------+----------------------------------+
+  | CSR_Validation_7_Layer_Guide.txt     | Steps 11-18 (FLOW-03)           |
+  |                                      | 7-layer validation deep dive    |
+  +--------------------------------------+----------------------------------+
+  | RA_Approval_Workflow_Architecture.txt| Steps 20-27 (FLOW-04)           |
+  |                                      | 4 models, state machine, testing|
+  +--------------------------------------+----------------------------------+
+  | RA_CSR_Entity_Reference.txt          | Steps 19, 32-36 (DB operations) |
+  |                                      | All 39 tables with columns      |
+  +--------------------------------------+----------------------------------+
+  | RA_Architecture_Management_Brief.txt | Steps 1-42 (overview)           |
+  |                                      | High-level for management       |
+  +--------------------------------------+----------------------------------+
+  | PKI_RA_Enterprise_Plan.txt           | All phases roadmap              |
+  |                                      | 12 phases, priorities           |
+  +--------------------------------------+----------------------------------+
+
+  GAP IDENTIFIED:
+    Steps 1-5   (FLOW-01) → NOT documented in detail ❌
+    Steps 6-10  (FLOW-02) → NOT documented in detail ❌
+    Steps 28-31 (FLOW-05) → NOT documented in detail ❌
+    Steps 32-42 (FLOW-06) → NOT documented in detail ❌
+    Error Recovery (FLOW-07) → NOT documented ❌
+
+    These gaps are filled by the internal sub-flow documents below.
+
+
+================================================================================
+  REVIEW FINDINGS — CONSISTENCY CHECK
+================================================================================
+
+  Checked all 5 existing documents for consistency:
+
+  ✅ CONSISTENT:
+    - Validation layers (1-7) match across Management Brief and
+      Validation Guide — same order, same checks
+    - Approval models (A,B,C,D) match across Management Brief and
+      Approval Workflow Architecture
+    - Database tables match across Entity Reference and Plan
+    - Error codes match across Validation Guide and Approval doc
+    - State machine (PENDING→APPROVED→ISSUED) consistent everywhere
+
+  ⚠️ GAPS FOUND:
+    1. Management Brief Step 13 says "APPROVAL WORKFLOW" but doesn't
+       specify which model triggers when → FLOW-04 fixes this
+    2. Management Brief Step 15 "PREPARE FOR CA" is one line but
+       needs template extension attachment → FLOW-05 covers this
+    3. Validation Guide ends at "save to DB" but doesn't show
+       handoff to approval → FLOW-03 Step 9 bridges this
+    4. Approval doc assumes CSR is already validated but doesn't
+       show how it ENTERS the approval queue → FLOW-03→04 bridge
+    5. No doc covers what happens AFTER CA returns cert →
+       FLOW-06 fills this entirely
+
+  These internal documents close ALL gaps.

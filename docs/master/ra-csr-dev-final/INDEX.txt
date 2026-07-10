@@ -1,0 +1,40 @@
+
+================================================================================
+     PKI-RA DOCUMENTATION INDEX
+     Branch: ra-csr-dev
+     Location: docs/master/ra-csr-dev-final/
+     Date: 2026-06-20
+     Total: 15 documents | ~8,800 lines
+================================================================================
+
+  ARCHITECTURE & PLANNING
+  -----------------------------------------------------------------------
+  01. PKI_RA_Enterprise_Plan.txt          12-phase roadmap + HSM design
+  02. PKI_RA_Implementation_Plan.md       Markdown plan with priorities
+  03. RA_Architecture_Management_Brief.txt  Management-facing overview
+
+  TECHNICAL REFERENCE
+  -----------------------------------------------------------------------
+  04. RA_CSR_Entity_Reference.txt         39 tables, full column details
+  05. CSR_Validation_7_Layer_Guide.txt    57 validation checks, 30+ errors
+  06. RA_Approval_Workflow_Architecture.txt  4 models, 30+ test cases
+
+  MASTER FLOW
+  -----------------------------------------------------------------------
+  07. MASTER_FLOW_CSR_To_Certificate.txt  42-step end-to-end flow
+
+  INTERNAL SUB-FLOWS (docs/master/ra-csr-dev-final/internal/)
+  -----------------------------------------------------------------------
+  08. FLOW_01_Client_Preparation.txt      Steps 1-5: key gen, CSR, protocol
+  09. FLOW_02_Request_Reception.txt       Steps 6-10: TLS, HTTP, rate limit
+  10. FLOW_03_Validation_Engine.txt       Steps 11-19: 7 layers + DB save
+  11. FLOW_04_Approval_Workflow.txt       Steps 20-27: approve/reject flow
+  12. FLOW_05_CA_Submission.txt           Steps 28-31: send to CA, retry
+  13. FLOW_06_Post_Issuance.txt           Steps 32-42: store, notify, LDAP
+  14. FLOW_07_Error_Recovery.txt          All flows: error handling + retry
+
+  THIS FILE
+  -----------------------------------------------------------------------
+  15. INDEX.txt                           This document index
+
+================================================================================

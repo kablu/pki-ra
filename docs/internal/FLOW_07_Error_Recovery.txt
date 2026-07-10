@@ -1,0 +1,242 @@
+
+================================================================================
+  FLOW-07: ERROR RECOVERY (Cross-Flow)
+  Master Flow Reference: MASTER_FLOW_CSR_To_Certificate.txt
+  Applies to: All flows (FLOW-01 through FLOW-06)
+================================================================================
+
+  This document covers what happens when things go wrong at each
+  stage and how the system recovers.
+
+
+  1. CLIENT-SIDE ERRORS (FLOW-01)
+  ===================================================================
+
+  +-------------------------------+------------------------------------+
+  | Error                         | Recovery                           |
+  +-------------------------------+------------------------------------+
+  | Key generation fails          | Client retries — no RA involvement |
+  | (insufficient entropy,        | Check: /dev/urandom available?     |
+  | permission denied)            | Check: HSM/PKCS#11 accessible?    |
+  +-------------------------------+------------------------------------+
+  | CSR creation fails            | Client fixes subject DN or SANs    |
+  | (invalid DN, tool error)      | and regenerates CSR                |
+  +-------------------------------+------------------------------------+
+  | Trust bootstrap fails         | Check RA URL, check DNS, check     |
+  | (/cacerts unreachable)        | network. Try alternate bootstrap.  |
+  +-------------------------------+------------------------------------+
+  | Wrong Content-Type            | Client fixes header and resubmits  |
+  +-------------------------------+------------------------------------+
+
+
+  2. RECEPTION ERRORS (FLOW-02)
+  ===================================================================
+
+  +-------------------------------+------------------------------------+
+  | Error                         | Recovery                           |
+  +-------------------------------+------------------------------------+
+  | TLS handshake failure         | Check: client trusts RA's cert?    |
+  |                               | Check: TLS version compatible?     |
+  |                               | Check: client cert valid (mTLS)?   |
+  |                               | Fix: run /cacerts, update trust    |
+  +-------------------------------+------------------------------------+
+  | 429 Rate Limited              | Client waits (Retry-After header)  |
+  |                               | and resubmits after cooldown       |
+  +-------------------------------+------------------------------------+
+  | 403 IP Blocked                | Contact admin to add IP to         |
+  |                               | allowlist. Check VPN/proxy config. |
+  +-------------------------------+------------------------------------+
+  | 413 Payload Too Large         | CSR too big — check for extra data |
+  |                               | in PEM, reduce SAN count           |
+  +-------------------------------+------------------------------------+
+
+
+  3. VALIDATION ERRORS (FLOW-03)
+  ===================================================================
+
+  +-------------------------------+------------------------------------+
+  | Error                         | Recovery                           |
+  +-------------------------------+------------------------------------+
+  | 401 Auth Failed               | Check credentials. Reset password. |
+  | (Layer 2)                     | Check: user account active?        |
+  +-------------------------------+------------------------------------+
+  | 400 Invalid CSR format        | Regenerate CSR with correct tool.  |
+  | (Layer 4)                     | Check: PEM headers present?        |
+  |                               | Check: Base64 encoding correct?    |
+  +-------------------------------+------------------------------------+
+  | 422 Weak key (Layer 5)        | Generate new key pair with larger  |
+  |                               | size (e.g., RSA-2048 → RSA-4096)  |
+  +-------------------------------+------------------------------------+
+  | 422 Signature invalid         | CSR may be corrupted in transit.   |
+  | (Layer 5)                     | Regenerate CSR and resubmit.       |
+  +-------------------------------+------------------------------------+
+  | 422 Domain not allowed        | Contact admin to add domain to     |
+  | (Layer 6)                     | approved list, or use correct DN   |
+  +-------------------------------+------------------------------------+
+  | 409 Duplicate CSR             | Don't resubmit same CSR.           |
+  | (Layer 7)                     | Check existing request status.     |
+  |                               | If REJECTED/FAILED, generate new   |
+  |                               | CSR with new key pair.             |
+  +-------------------------------+------------------------------------+
+
+  IMPORTANT: Rejected CSRs do NOT create a DB row.
+  Only audit_log entry is created (FAILURE).
+  Client must fix the issue and submit a NEW request.
+
+
+  4. APPROVAL ERRORS (FLOW-04)
+  ===================================================================
+
+  +-------------------------------+------------------------------------+
+  | Error                         | Recovery                           |
+  +-------------------------------+------------------------------------+
+  | Request stuck in PENDING      | Check: are approvers notified?     |
+  | (nobody approves)             | Check: escalation policy exists?   |
+  |                               | Manual: admin approves or escalates|
+  |                               | Auto: ApprovalEscalationJob runs   |
+  +-------------------------------+------------------------------------+
+  | EXPIRED_REQUEST               | Requester must submit NEW CSR.     |
+  | (timeout exceeded)            | Old request cannot be re-activated.|
+  |                               | Admin reviews: why wasn't it       |
+  |                               | approved? staffing issue?          |
+  +-------------------------------+------------------------------------+
+  | Approver accidentally rejects | Cannot undo rejection.             |
+  |                               | Requester must submit new CSR.     |
+  |                               | Rejected request stays for audit.  |
+  +-------------------------------+------------------------------------+
+  | Wrong person approved         | Approval is logged and permanent.  |
+  | (role confusion)              | If cert already issued → revoke    |
+  |                               | and re-issue with correct process. |
+  +-------------------------------+------------------------------------+
+  | Delegation expired mid-review | Delegate can no longer approve.    |
+  |                               | Original approver must act, or     |
+  |                               | admin creates new delegation.      |
+  +-------------------------------+------------------------------------+
+
+
+  5. CA SUBMISSION ERRORS (FLOW-05)
+  ===================================================================
+
+  +-------------------------------+------------------------------------+
+  | Error                         | Recovery                           |
+  +-------------------------------+------------------------------------+
+  | CA unreachable (network)      | Auto-retry once (30s timeout).     |
+  |                               | If retry fails → status = FAILED.  |
+  |                               | Admin checks: CA server running?   |
+  |                               | Network policy allows connection?  |
+  |                               | Manual retry: POST /requests/{id}/ |
+  |                               |   retry                            |
+  +-------------------------------+------------------------------------+
+  | CA returns error (4xx)        | CSR issue — no auto-retry.         |
+  |                               | Status = FAILED.                   |
+  |                               | Check CA logs for specific error.  |
+  |                               | May need new CSR with corrections. |
+  +-------------------------------+------------------------------------+
+  | CA returns error (5xx)        | CA internal error — auto-retry once|
+  |                               | If retry fails → FAILED.           |
+  |                               | Admin checks CA health.            |
+  +-------------------------------+------------------------------------+
+  | CA response invalid           | CA returned garbage — no retry.    |
+  | (unparseable cert)            | Status = FAILED.                   |
+  |                               | Escalate to CA admin.              |
+  +-------------------------------+------------------------------------+
+  | Serial collision              | Extremely rare (128-bit random).   |
+  | (duplicate serial)            | Auto-regenerate serial and retry.  |
+  |                               | Max 3 attempts, then FAILED.       |
+  +-------------------------------+------------------------------------+
+  | All CA connectors down        | Status = FAILED for all requests.  |
+  | (Phase 8 multi-CA)            | Alert admin: "ALL CAs DOWN"        |
+  |                               | No failover possible.              |
+  |                               | Manual retry after CA restored.    |
+  +-------------------------------+------------------------------------+
+
+  RETRY MECHANISM:
+    Admin API: POST /api/ra/requests/{id}/retry
+    Pre-conditions:
+      - Request status = FAILED
+      - Original approval still valid (not expired)
+      - No re-approval needed (already approved)
+    Actions:
+      - Re-send same CSR to CA
+      - If success → ISSUED
+      - If fail again → stay FAILED (admin investigates)
+
+  ORPHANED REQUEST DETECTION:
+    Quartz job: OrphanedRequestCleanupJob
+    Runs: every 1 hour
+    Query: SELECT * FROM certificate_requests
+           WHERE status = 'APPROVED'
+           AND updated_at < NOW() - INTERVAL 1 HOUR
+    Action: retry CA call or mark FAILED
+
+
+  6. POST-ISSUANCE ERRORS (FLOW-06)
+  ===================================================================
+
+  +-------------------------------+------------------------------------+
+  | Error                         | Recovery                           |
+  +-------------------------------+------------------------------------+
+  | DB save fails                 | Transaction rollback.              |
+  | (certificate row)             | Status stays APPROVED (not ISSUED) |
+  |                               | Retry: same as CA retry flow       |
+  |                               | Certificate not lost — CA has it   |
+  +-------------------------------+------------------------------------+
+  | LDAP publish fails            | Certificate still ACTIVE (not      |
+  |                               | affected). LDAP publish is async.  |
+  |                               | Error logged to ldap_publish_log.  |
+  |                               | Retry: POST /api/ra/ldap/sync     |
+  +-------------------------------+------------------------------------+
+  | CT submission fails           | Certificate still ACTIVE.          |
+  |                               | CT is async, non-blocking.         |
+  |                               | Retry automatically on next scan.  |
+  +-------------------------------+------------------------------------+
+  | Notification fails            | Certificate still ACTIVE.          |
+  | (email server down)           | Notification status = FAILED.      |
+  |                               | Retry on next notification cycle.  |
+  |                               | User can check status via API.     |
+  +-------------------------------+------------------------------------+
+  | Fingerprint computation fails | Should never happen (SHA-256).     |
+  |                               | If it does: log error, cert still  |
+  |                               | ACTIVE but fingerprint = null.     |
+  |                               | Admin manually computes later.     |
+  +-------------------------------+------------------------------------+
+
+  KEY PRINCIPLE: Post-issuance failures are NON-BLOCKING.
+  The certificate is ALREADY issued by the CA.
+  LDAP, CT, notification failures do not revoke or invalidate it.
+  They are logged and retried independently.
+
+
+  7. GENERAL RECOVERY PRINCIPLES
+  ===================================================================
+
+  a. NEVER silently swallow errors
+     Every failure creates an audit_log entry (REQUIRES_NEW transaction)
+     Even if the main transaction rolls back, the audit entry survives
+
+  b. NEVER lose a certificate
+     If CA signed it, it exists. Even if DB save fails, the cert data
+     is in the CA's response logs. Manual recovery is always possible.
+
+  c. NEVER auto-retry more than once
+     Infinite retry loops can overwhelm a struggling CA.
+     One retry → if fail → FAILED state → human investigates.
+
+  d. ALWAYS notify on failure
+     Requester knows their cert didn't come through.
+     Admin knows the system has an issue.
+     Nobody is left wondering.
+
+  e. ALWAYS allow manual retry
+     POST /api/ra/requests/{id}/retry — admin can trigger at any time
+     for FAILED requests. No re-approval needed.
+
+  f. IDEMPOTENT operations
+     Retry is safe — if cert was already issued, don't issue again.
+     Check: certificate_requests.certificate_id != null → already done.
+
+
+================================================================================
+  END OF FLOW-07
+  This document covers error recovery for ALL flows.
+================================================================================

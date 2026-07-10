@@ -1,0 +1,947 @@
+
+================================================================================
+  CSR / CMP REQUEST VALIDATION — 7-LAYER GUIDE
+  Project  : pki-ra (Enterprise Registration Authority)
+  Date     : 2026-06-20
+  Applies  : All protocols — REST API, EST, SCEP, CMP
+================================================================================
+
+
+================================================================================
+  OVERVIEW — VALIDATION FLOW
+================================================================================
+
+  Client Request (PKCS#10 / CMP / EST / SCEP)
+      |
+      v
+  LAYER 1: TRANSPORT & PROTOCOL VALIDATION
+      |     (Is the connection itself valid?)
+      v
+  LAYER 2: AUTHENTICATION & AUTHORIZATION
+      |     (Who is the requester? Are they allowed?)
+      v
+  LAYER 3: REQUEST ENVELOPE VALIDATION
+      |     (Is the wrapper format correct?)
+      v
+  LAYER 4: CSR STRUCTURE & SYNTAX VALIDATION
+      |     (Is the PKCS#10 itself well-formed?)
+      v
+  LAYER 5: CRYPTOGRAPHIC VALIDATION
+      |     (Is the signature valid? Key strong?)
+      v
+  LAYER 6: POLICY & BUSINESS RULE VALIDATION
+      |     (Does it comply with org certificate policies?)
+      v
+  LAYER 7: DUPLICATE & CONFLICT DETECTION
+            (Has this been submitted before? Conflicts?)
+
+
+================================================================================
+  LAYER 1: TRANSPORT & PROTOCOL VALIDATION
+================================================================================
+
+  Purpose: Request RA tak pahunchne se pehle — kya connection valid hai?
+
+  Step 1.1 — TLS/mTLS Connection Check
+  -------------------------------------------------------------------------
+    - Client ne TLS se connect kiya hai ya plain HTTP?
+    - If mTLS required:
+        - Client certificate present hai?
+        - Client cert trusted CA se issued hai?
+        - Client cert expired/revoked toh nahi?
+    - TLS version >= 1.2 hai? (TLS 1.0/1.1 reject)
+
+  Step 1.2 — HTTP Method & Content-Type
+  -------------------------------------------------------------------------
+    - Method = POST hai? (GET/PUT/DELETE reject for CSR submission)
+    - Content-Type header correct hai?
+        +------------------+--------------------------------------+
+        | Protocol         | Expected Content-Type                |
+        +------------------+--------------------------------------+
+        | REST (JSON)      | application/json                     |
+        | REST (raw PEM)   | application/pkcs10                   |
+        | EST              | application/pkcs10                   |
+        | CMP              | application/pkixcmp                  |
+        | SCEP             | application/x-pki-message            |
+        +------------------+--------------------------------------+
+    - Content-Length within allowed limit? (max 64KB for CSR)
+
+  Step 1.3 — Rate Limiting & Throttle
+  -------------------------------------------------------------------------
+    - Same IP se kitne requests last 1 minute mein?
+    - Threshold exceed? --> 429 Too Many Requests
+    - Same client cert / username se kitne pending requests?
+    - Burst protection: max 10 CSR/minute per client
+
+  Step 1.4 — IP Allowlist / Network Policy
+  -------------------------------------------------------------------------
+    - Client IP allowed network range mein hai?
+    - If internal RA: only corporate network IPs allowed
+    - If protocol endpoint (EST/SCEP/CMP): specific IP ranges?
+    - Reverse proxy headers (X-Forwarded-For) properly validated?
+
+  Result:
+    PASS --> proceed to Layer 2
+    FAIL --> HTTP 400/401/403/429 with no internal details exposed
+
+
+================================================================================
+  LAYER 2: AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+  Purpose: Kaun hai ye requester? Permission hai?
+
+  Step 2.1 — Identify the Requester
+  -------------------------------------------------------------------------
+    +------------------+-------------------------------------------+
+    | Protocol         | Authentication Method                     |
+    +------------------+-------------------------------------------+
+    | REST API         | HTTP Basic / Bearer JWT / OAuth2 token    |
+    | EST (RFC 7030)   | HTTP Basic OR client certificate (mTLS)   |
+    | SCEP             | Challenge password (shared secret in CSR) |
+    | CMP (RFC 4210)   | Signature-based (existing cert) OR        |
+    |                  | MAC-based (shared secret / PBMAC)         |
+    +------------------+-------------------------------------------+
+
+    - Credential present? (missing --> 401 Unauthorized)
+    - Credential format valid? (malformed --> 401)
+    - Credential expired? (expired token --> 401)
+
+  Step 2.2 — Verify the Credential
+  -------------------------------------------------------------------------
+    REST:  username:password verify in DB/LDAP, or JWT signature verify
+    EST:   Client cert chain validation, or HTTP Basic LDAP lookup
+    SCEP:  Challenge password hash match against protocol_clients table
+    CMP:   Signature verify using sender cert, or PBMAC1 shared secret
+
+  Step 2.3 — Resolve Identity to Internal User
+  -------------------------------------------------------------------------
+    - Map authenticated identity --> users table
+    - User found? NO --> 401 "Unknown requester"
+    - User is_active = true? NO --> 403 "Account deactivated"
+    - Resolve userId for audit logging
+
+  Step 2.4 — Check Role & Permission
+  -------------------------------------------------------------------------
+    +---------------------------+----------------------------------+
+    | Action                    | Required Role                    |
+    +---------------------------+----------------------------------+
+    | Submit CSR                | ROLE_USER or ROLE_OPERATOR       |
+    | Submit CSR for others     | ROLE_OPERATOR or ROLE_RA_OFFICER |
+    | Submit via EST/SCEP/CMP   | protocol_clients.is_active=true  |
+    | Approve/Reject CSR        | ROLE_OPERATOR or ROLE_ADMIN      |
+    +---------------------------+----------------------------------+
+
+    - Template-level permission: user role in template_permissions?
+    - NO --> 403 "Not authorized for this certificate type"
+
+  Step 2.5 — Audit the Authentication Attempt
+  -------------------------------------------------------------------------
+    - Both SUCCESS and FAILURE logged to audit_log table
+    - 5 consecutive failures --> temporarily lock account (15 min)
+    - Failed IP logged for SIEM monitoring
+
+  Result:
+    PASS --> requester identified, userId resolved, role verified
+    FAIL --> 401 Unauthorized or 403 Forbidden
+
+
+================================================================================
+  LAYER 3: REQUEST ENVELOPE VALIDATION
+================================================================================
+
+  Purpose: Wrapper/envelope format correct hai? Content nikalne layak hai?
+
+  Step 3.1 — Protocol-Specific Envelope Parsing
+  -------------------------------------------------------------------------
+    +------------------+------------------------------------------------+
+    | Protocol         | Envelope Format                                |
+    +------------------+------------------------------------------------+
+    | REST (JSON)      | { "pkcs10": "-----BEGIN...", ... }              |
+    | REST (raw)       | Raw PKCS#10 PEM body                           |
+    | EST              | Base64-encoded PKCS#10                         |
+    | SCEP             | PKCS#7 SignedData --> EnvelopedData --> PKCS#10 |
+    | CMP              | PKIMessage --> PKIBody --> CertRequest          |
+    +------------------+------------------------------------------------+
+
+    - Envelope parseable? (malformed --> 400)
+    - Expected structure present? (missing fields --> 400)
+
+  Step 3.2 — JSON Envelope Validation (REST API)
+  -------------------------------------------------------------------------
+    - "pkcs10" field: NOT NULL, NOT BLANK, must be string
+    - "validityDays": integer, positive, within range
+    - "subjectAltNames": string, comma-separated
+    - pkcs10 max 32KB, total body max 64KB
+
+  Step 3.3 — CMP Envelope Validation (RFC 4210)
+  -------------------------------------------------------------------------
+    A. DER decode outer PKIMessage (valid ASN.1?)
+    B. PKIHeader: pvno=2, sender, recipient, messageTime (+-5 min skew),
+       transactionID, senderNonce, protectionAlg OID
+    C. PKIBody type: ir(0), cr(2), kur(7) -- reject unexpected types
+    D. Protection: signature verify or PBMAC1 verify
+    E. Extract inner CertRequest / PKCS#10
+
+  Step 3.4 — SCEP Envelope Validation
+  -------------------------------------------------------------------------
+    A. Outer PKCS#7 SignedData valid? Signature verifiable?
+    B. Inner EnvelopedData decryptable with RA's private key?
+    C. Inner PKCS#10 extractable?
+    D. messageType = PKCSReq(19)? senderNonce present?
+
+  Step 3.5 — EST Envelope Validation (RFC 7030)
+  -------------------------------------------------------------------------
+    - Body is Base64-encoded PKCS#10? Decodable?
+    - For simplereenroll: client TLS cert subject matches CSR subject?
+
+  Step 3.6 — Replay Protection
+  -------------------------------------------------------------------------
+    - CMP:  senderNonce stored in DB, reject if seen before (24h window)
+    - SCEP: senderNonce + transactionID unique check
+    - EST:  TLS session binding (implicit)
+    - REST: optional request-id idempotency check
+
+    Table: replay_protection (protocol, nonce, transaction_id,
+           received_at, expires_at)
+    Quartz job: purge expired entries daily
+
+  Step 3.7 — Extract Raw PKCS#10
+  -------------------------------------------------------------------------
+    Regardless of protocol, at this point we have:
+      - Raw PKCS#10 CSR (PEM or DER)
+      - Protocol metadata (type, transaction ID, requester)
+      - Nonce stored for replay protection
+
+  Result:
+    PASS --> envelope parsed, PKCS#10 extracted, replay checked
+    FAIL --> 400 Bad Request / 409 Conflict (replay)
+             CMP: failInfo = badMessageCheck / badDataFormat
+
+
+================================================================================
+  LAYER 4: CSR STRUCTURE & SYNTAX VALIDATION
+================================================================================
+
+  Purpose: PKCS#10 CSR structure valid hai? Fields sahi hain?
+
+  Step 4.1 — PEM / DER Format Detection & Decode
+  -------------------------------------------------------------------------
+    - PEM headers match? ("CERTIFICATE REQUEST" or "NEW CERTIFICATE REQUEST")
+    - Base64 content decodable? (invalid chars --> reject)
+    - DER bytes valid ASN.1? Decoded size max 16KB?
+
+  Step 4.2 — ASN.1 Structure Parsing (RFC 2986)
+  -------------------------------------------------------------------------
+    CertificationRequest ::= SEQUENCE {
+        certificationRequestInfo   CertificationRequestInfo,
+        signatureAlgorithm         AlgorithmIdentifier,
+        signature                  BIT STRING
+    }
+
+    - All three fields present? (missing --> reject)
+    - No trailing garbage bytes?
+
+  Step 4.3 — Version Check
+  -------------------------------------------------------------------------
+    - version = 0 (v1, the only defined version)
+    - version > 0 --> reject "Unsupported CSR version"
+
+  Step 4.4 — Subject DN Validation
+  -------------------------------------------------------------------------
+    A. Subject present? (empty OK only if SAN extension exists)
+    B. Valid X.500 Name? (parseable RDN sequence)
+    C. Individual field validation:
+       +----------+---------------------------------------------------+
+       | Field    | Validation                                        |
+       +----------+---------------------------------------------------+
+       | CN       | 1-64 chars, no injection chars, no IP address     |
+       | O        | 1-64 chars, must match org if policy enforced     |
+       | OU       | 1-64 chars                                        |
+       | C        | Exactly 2 chars, ISO 3166-1 alpha-2               |
+       | ST       | 1-128 chars                                       |
+       | L        | 1-128 chars                                       |
+       | E/Email  | Valid email format if present                     |
+       +----------+---------------------------------------------------+
+    D. Dangerous content: null bytes, control chars, LDAP injection,
+       unicode homoglyph attacks --> reject or flag
+
+  Step 4.5 — Subject Public Key Info Validation
+  -------------------------------------------------------------------------
+    A. Algorithm OID recognized?
+       +---------------------------+---------------------------+
+       | OID                       | Algorithm                 |
+       +---------------------------+---------------------------+
+       | 1.2.840.113549.1.1.1      | RSA                       |
+       | 1.2.840.10045.2.1         | EC (ECDSA)                |
+       | 1.3.101.112               | Ed25519                   |
+       +---------------------------+---------------------------+
+    B. Public key decodable? (RSA modulus+exponent, EC point on curve)
+    C. Key well-formed? (RSA: modulus odd, exponent valid;
+       EC: point on curve, not at infinity)
+
+  Step 4.6 — Attributes / Extensions Validation
+  -------------------------------------------------------------------------
+    A. Attributes block parseable?
+    B. Extension Request: valid Extensions SEQUENCE? No duplicate OIDs?
+    C. SAN validation:
+       +-------------------+--------------------------------------------+
+       | SAN Type          | Validation                                 |
+       +-------------------+--------------------------------------------+
+       | dNSName           | Valid FQDN, max 253 chars, no bare TLD     |
+       | rfc822Name        | Valid email, RFC 5321 compliant             |
+       | iPAddress         | Valid IPv4/IPv6, not loopback/link-local    |
+       +-------------------+--------------------------------------------+
+       - Empty SAN list? --> reject
+       - More than 100 SANs? --> reject (DoS protection)
+    D. Challenge Password: max 256 chars (SCEP only)
+
+  Step 4.7 — Signature Algorithm in CSR
+  -------------------------------------------------------------------------
+    Accepted:  SHA256/384/512 with RSA or ECDSA, Ed25519, RSASSA-PSS
+    Rejected:  SHA1withRSA (weak), MD5withRSA (broken)
+    Mismatch:  RSA key + ECDSA sig algorithm --> reject
+
+  Result:
+    PASS --> CSR fully parsed, all fields valid
+    FAIL --> 400/422 with PKI_VAL_002 through PKI_VAL_006
+
+
+================================================================================
+  LAYER 5: CRYPTOGRAPHIC VALIDATION
+================================================================================
+
+  Purpose: Cryptographic integrity sahi hai? Key strong hai?
+
+  Step 5.1 — CSR Self-Signature Verification (Proof of Possession)
+  -------------------------------------------------------------------------
+    - THE MOST IMPORTANT CHECK
+    - CSR is self-signed: requester proves private key possession
+    - Verify: signature over certificationRequestInfo using public key
+    - Invalid --> REJECT immediately (PKI_CRYPTO_001)
+      Means: requester does NOT possess private key, or CSR tampered
+
+  Step 5.2 — Key Size / Strength Validation
+  -------------------------------------------------------------------------
+    +------------------+------------------+------------------------------+
+    | Algorithm        | Minimum Size     | Recommended                  |
+    +------------------+------------------+------------------------------+
+    | RSA              | 2048 bits        | 3072 or 4096 bits            |
+    | ECDSA P-256      | 256 bits         | Equivalent to RSA-3072       |
+    | ECDSA P-384      | 384 bits         | Equivalent to RSA-7680       |
+    | ECDSA P-521      | 521 bits         | Equivalent to RSA-15360      |
+    | Ed25519          | 256 bits (fixed) | Always acceptable            |
+    +------------------+------------------+------------------------------+
+
+    RSA-1024 --> REJECT (PKI_CRYPTO_002)
+    RSA-512  --> REJECT
+    EC secp192r1 --> REJECT (PKI_CRYPTO_003)
+
+  Step 5.3 — RSA Public Key Quality Checks
+  -------------------------------------------------------------------------
+    A. Exponent: e=65537 (preferred), e=3 (reject), e=1 (reject),
+       e=even (reject)
+    B. Modulus: must be odd, no small factors (trial division up to 1000)
+    C. Known weak keys: Debian OpenSSL weak key list check
+    D. ROCA vulnerability: CVE-2017-15361 Infineon chip flaw (optional)
+
+  Step 5.4 — EC Public Key Quality Checks
+  -------------------------------------------------------------------------
+    A. Point on curve? (y^2 = x^3 + ax + b mod p)
+    B. Not point at infinity?
+    C. In correct subgroup? (automatic for prime-order NIST curves)
+
+  Step 5.5 — Signature Algorithm Strength
+  -------------------------------------------------------------------------
+    REJECT:  MD5withRSA, SHA1withRSA, SHA1withECDSA
+    ACCEPT:  SHA256+ with RSA/ECDSA, Ed25519, RSASSA-PSS
+    CHECK:   Algorithm matches key type (RSA key + ECDSA sig --> reject)
+    RECOMMEND: P-256<->SHA256, P-384<->SHA384, P-521<->SHA512
+
+  Step 5.6 — Key Reuse Detection
+  -------------------------------------------------------------------------
+    Query certificates WHERE public_key_hash = SHA256(csr.publicKey)
+                       AND status IN ('ACTIVE', 'SUSPENDED')
+
+    +---------------------------+-------------------------------------------+
+    | Scenario                  | Action                                    |
+    +---------------------------+-------------------------------------------+
+    | Same key, no active cert  | ACCEPT                                    |
+    | Same key, same subject    | WARN (renewal scenario)                   |
+    | Same key, diff subject    | REJECT (key bound to different identity)  |
+    | Same key, revoked=comprom | REJECT (compromised key, never reuse)     |
+    +---------------------------+-------------------------------------------+
+
+  Result:
+    PASS --> CSR cryptographically sound, key strong, possession proven
+    FAIL --> 422 with PKI_CRYPTO_001 through PKI_CRYPTO_007
+
+
+================================================================================
+  LAYER 6: POLICY & BUSINESS RULE VALIDATION
+================================================================================
+
+  Purpose: Organization ki policies follow ho rahi hain?
+
+  Step 6.1 — Template Matching
+  -------------------------------------------------------------------------
+    - Explicit template_id provided? --> use it
+    - Auto-detect from CSR content:
+        SAN has dNSName only        --> TLS Server
+        Subject has email / SAN email --> S/MIME Email
+        No SAN, CN = username       --> TLS Client Auth
+        EKU = codeSigning           --> Code Signing
+    - Template active? User role permitted for template?
+
+  Step 6.2 — Key Algorithm vs Template Policy
+  -------------------------------------------------------------------------
+    - CSR key algo in template's allowed_algorithms?
+    - CSR key size >= template's min_key_size?
+    - EC curve in template's allowed_ec_curves?
+    - Max key size check (RSA-16384 --> reject, DoS risk)
+
+  Step 6.3 — Validity Period Policy
+  -------------------------------------------------------------------------
+    - Requested days <= template max_validity_days?
+    - Requested days >= template min_validity_days?
+    - Null --> use template default
+    - Resulting not_after MUST NOT exceed issuing CA's not_after
+
+  Step 6.4 — Subject DN Policy
+  -------------------------------------------------------------------------
+    - Required fields per template present? (CN, O, C etc.)
+    - Organization name matches approved org list?
+    - Country code in allowed list?
+    - CN follows naming convention per template type?
+    - No forbidden patterns (localhost, test, N/A, IP in CN)
+
+  Step 6.5 — SAN Policy
+  -------------------------------------------------------------------------
+    - SAN types allowed for template? (DNS for TLS, email for S/MIME)
+    - Domain in approved domain list? (*.evil.com --> reject)
+    - Wildcards allowed? Only left-most label?
+    - IP SANs: private only? Public needs approval?
+    - Email SANs: domain matches org? Self-service only?
+    - SAN count within template max?
+
+  Step 6.6 — Key Usage & EKU Policy
+  -------------------------------------------------------------------------
+    - Key Usage matches template? (digitalSignature for all,
+      keyEncipherment for TLS Server)
+    - keyCertSign or cRLSign requested --> REJECT (CA only)
+    - EKU matches template? (serverAuth, clientAuth, etc.)
+    - anyExtendedKeyUsage --> REJECT (too permissive)
+    - Conflicting combos (serverAuth + codeSigning) --> WARN
+
+  Step 6.7 — Requester Scope Validation
+  -------------------------------------------------------------------------
+
+  Context: The authenticated requestor (who logged in) is NOT always the
+  same as the certificate subject (what is in the CSR). This step validates
+  whether the requestor is authorized to obtain the type of certificate they
+  are requesting for the given subject.
+
+  A.  Certificate Type vs Expected Subject Identity
+
+    +----------------+-------------------------+----------------------------+
+    | Certificate    | Subject Must Be         | Requestor Must Be          |
+    | Type           |                         |                            |
+    +----------------+-------------------------+----------------------------+
+    | TLS Server     | FQDN or hostname        | Domain owner in            |
+    |                | e.g. api.acme.com       | domain_authorizations      |
+    |                | NOT a person's name     | OR ROLE_RA_OFFICER         |
+    +----------------+-------------------------+----------------------------+
+    | TLS Client     | Username or person DN   | That same authenticated    |
+    |                | e.g. CN=john.doe        | user (self-service only)   |
+    |                |                         | OR ROLE_RA_OFFICER         |
+    +----------------+-------------------------+----------------------------+
+    | S/MIME         | Person's full name +    | That same person --        |
+    |                | email SAN               | email in CSR must match    |
+    |                |                         | users.email for requestor  |
+    +----------------+-------------------------+----------------------------+
+    | Code Signing   | Developer or org name   | Authorized developer       |
+    |                |                         | OR ROLE_RA_OFFICER         |
+    +----------------+-------------------------+----------------------------+
+
+  B.  TLS Server Certificate — Requestor Authorization Check
+
+    This is the most critical check for the scenario where a person
+    (e.g., John) submits a CSR for a server (e.g., api.acme.com).
+
+    Step 1: Extract domain from CSR
+      - CN = api.acme.com --> domain = acme.com
+      - SAN dNSName = api.acme.com --> domain = acme.com
+      - SAN dNSName = *.acme.com   --> domain = acme.com
+
+    Step 2: Check CN format for TLS Server template
+      - CN must be a valid FQDN (e.g., api.acme.com)
+      - CN must NOT be a person's name (e.g., "John Doe")
+        Detection: CN contains spaces and no dots --> REJECT
+        Detection: CN matches users.display_name --> REJECT
+        Error: PKI_POL_013 "Subject CN is not a valid hostname
+               for TLS Server certificate"
+
+    Step 3: Check domain authorization
+      Query: domain_authorizations
+             WHERE user_id = :requestorUserId
+             AND   :domain LIKE CONCAT('%', authorized_domain)
+             AND   is_active = true
+
+      +----------------------------+-------------------------------------+
+      | Scenario                   | Action                              |
+      +----------------------------+-------------------------------------+
+      | John authorized for        | ALLOW -- proceed                    |
+      | acme.com                   |                                     |
+      +----------------------------+-------------------------------------+
+      | John NOT authorized for    | REJECT PKI_POL_012                  |
+      | acme.com, role = ROLE_USER | "Requester not authorized to        |
+      |                            |  obtain server certificate for      |
+      |                            |  this domain"                       |
+      +----------------------------+-------------------------------------+
+      | John has ROLE_RA_OFFICER   | ALLOW -- RA Officers can submit     |
+      | (regardless of domain)     | for any domain. Log for audit.      |
+      +----------------------------+-------------------------------------+
+      | John has ROLE_ADMIN        | ALLOW -- but flag for review        |
+      +----------------------------+-------------------------------------+
+
+  C.  S/MIME Certificate — Email Identity Check
+
+    - Extract email from CSR: Subject emailAddress field or SAN rfc822Name
+    - Query: users WHERE id = :requestorUserId --> get users.email
+    - CSR email == users.email? NO --> REJECT PKI_POL_007
+      "S/MIME certificate email must match your registered email address"
+    - Exception: ROLE_RA_OFFICER may submit for others
+
+  D.  TLS Client Certificate — Subject Match Check
+
+    - Extract CN from CSR (expected to be the username/person identifier)
+    - Resolve CN to a user: users WHERE username = :cn OR email = :cn
+    - Resolved user == requestor? NO AND requestor role = ROLE_USER
+      --> REJECT PKI_POL_007 "Cannot request client certificate
+          for a different identity"
+    - Exception: ROLE_RA_OFFICER may submit for others
+
+  E.  Table: domain_authorizations
+
+    Column          Type          Description
+    --------------  ------------  -------------------------------------------
+    id              BIGINT PK     Auto-increment
+    user_id         BIGINT FK     --> users.id (authorized person)
+    authorized_domain VARCHAR(253) Domain e.g. "acme.com" or "api.acme.com"
+    granted_by      BIGINT FK     --> users.id (Admin who granted)
+    granted_at      DATETIME(6)   When granted
+    expires_at      DATETIME(6)   NULL = no expiry
+    is_active       BOOLEAN       Whether active
+
+  Step 6.8 — Concurrent Request Limits
+  -------------------------------------------------------------------------
+    - Max 10 pending requests per user
+    - Max 50 requests per user per 24 hours
+    - Max 20 certs for same domain per day
+    - Max 5 active certs with same Subject DN
+
+  Step 6.9 — Blacklist / Blocklist Check
+  -------------------------------------------------------------------------
+    - Domain blocklist: localhost, internal, competitor domains
+    - Subject DN blocklist: government names, trademarks
+    - Key blocklist: known compromised keys, Debian weak keys
+    - Match --> REJECT with generic message (don't reveal blocklist)
+
+  Step 6.10 — Subject CN Format vs Certificate Type Cross-Check
+  -------------------------------------------------------------------------
+
+  This step explicitly catches mismatches where the CN in the CSR does not
+  match what is expected for the selected certificate type. It is the
+  primary guard against a person accidentally (or intentionally) placing
+  their personal name in a server certificate request or vice versa.
+
+  Detection Rules:
+
+    Rule A — TLS Server: CN must be a hostname, not a person's name
+      Checks:
+        1. CN contains at least one dot (.)
+           "John Doe" --> no dot --> REJECT PKI_POL_013
+           "api.acme.com" --> has dot --> continue
+
+        2. CN does not contain spaces
+           "John Doe" --> has space --> REJECT PKI_POL_013
+           "api.acme.com" --> no space --> continue
+
+        3. CN is not an email address (email belongs in S/MIME, not TLS Server)
+           "john@acme.com" --> REJECT PKI_POL_013
+
+        4. CN does not match requestor's display name or email prefix
+           users.display_name = "John Doe" and CN = "John Doe" --> REJECT
+           Error: PKI_POL_013 "Subject CN must be a valid hostname
+                  for TLS Server certificate, not a person's name"
+
+    Rule B — TLS Client: CN must be a person/username, not a hostname
+      Checks:
+        1. CN must NOT look like an FQDN (no trailing domain like .com/.in)
+           CN = "john.doe" --> acceptable (may have a dot)
+           CN = "api.acme.com" --> looks like FQDN --> WARN + flag
+           CN = "*.acme.com" --> wildcard --> REJECT PKI_POL_013
+
+        2. CN should resolve to a known user in users table (WARN if not found)
+
+    Rule C — S/MIME: CN must be a person's name, email SAN must be present
+      Checks:
+        1. SAN rfc822Name (email) must be present --> absence REJECT PKI_POL_003
+        2. CN should be a human name (WARN if CN looks like a hostname)
+
+    Rule D — Code Signing: CN must be a developer or organization name
+      Checks:
+        1. CN must NOT look like a hostname with dNSName SAN
+        2. EKU must include codeSigning only
+
+  Summary Decision Table (John's scenario):
+
+    +---------------------------+------------+--------------------------------+
+    | Requestor  | CSR Subject  | Template   | Outcome                        |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=John Doe  | TLS_SERVER | REJECT PKI_POL_013             |
+    | (person)   | (person name)|            | CN is not a valid hostname     |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=api.      | TLS_SERVER | Check domain_authorizations    |
+    | (person)   | acme.com     |            | John authorized? ALLOW         |
+    |            | (FQDN)       |            | Not authorized? REJECT POL_012 |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=api.      | TLS_SERVER | ALLOW -- RA Officer can        |
+    | ROLE_RA_   | acme.com     |            | submit for any domain. Audit   |
+    | OFFICER    |              |            | log: submitted on behalf.      |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=john.doe  | TLS_CLIENT | ALLOW -- self-service,         |
+    | (person)   | (own name)   |            | identity matches               |
+    +---------------------------+------------+--------------------------------+
+    | john@acme  | CN=jane.doe  | TLS_CLIENT | REJECT PKI_POL_007             |
+    | (person)   | (other name) |            | Cannot request for another     |
+    |            |              |            | user without RA_OFFICER role   |
+    +---------------------------+------------+--------------------------------+
+
+  Result:
+    PASS --> CSR complies with all organizational policies
+    FAIL --> 422 with PKI_POL_001 through PKI_POL_013
+
+
+================================================================================
+  LAYER 7: DUPLICATE & CONFLICT DETECTION
+================================================================================
+
+  Purpose: Duplicate ya conflicting request toh nahi?
+
+  Step 7.1 — Exact Duplicate CSR Detection
+  -------------------------------------------------------------------------
+    - SHA-256 hash of raw CSR bytes
+    - Query: certificate_requests WHERE csr_hash = :hash
+
+    +---------------------------+-------------------------------------------+
+    | Match Status              | Action                                    |
+    +---------------------------+-------------------------------------------+
+    | Same CSR, PENDING         | REJECT "Already pending: request #{id}"   |
+    | Same CSR, APPROVED        | REJECT "Already approved, in progress"    |
+    | Same CSR, ISSUED          | REJECT "Already issued: serial {serial}"  |
+    | Same CSR, REJECTED        | ALLOW  (retry after fixing reason)        |
+    | Same CSR, FAILED          | ALLOW  (retry after CA failure)           |
+    +---------------------------+-------------------------------------------+
+
+  Step 7.2 — Same Subject DN Conflict
+  -------------------------------------------------------------------------
+    - Query: certificates WHERE subject_dn = :dn AND status = 'ACTIVE'
+
+    +---------------------------+-------------------------------------------+
+    | Scenario                  | Action                                    |
+    +---------------------------+-------------------------------------------+
+    | No active cert            | ALLOW (first cert for this subject)       |
+    | Active cert, same user    | ALLOW + INFO "Consider revoking old cert" |
+    | Active cert, diff user    | WARN + flag for manual review             |
+    | Multiple active (>3)      | WARN "Review if all are needed"           |
+    +---------------------------+-------------------------------------------+
+
+  Step 7.3 — SAN Overlap Detection
+  -------------------------------------------------------------------------
+    - For each SAN in CSR, search active certs with same SAN
+
+    +---------------------------+-------------------------------------------+
+    | Scenario                  | Action                                    |
+    +---------------------------+-------------------------------------------+
+    | No overlap                | ALLOW                                     |
+    | Overlap, same user,       | ALLOW + INFO (renewal scenario)           |
+    |   old cert expiring <30d  |                                           |
+    | Overlap, same user,       | WARN "Duplicate coverage"                 |
+    |   old cert not expiring   |                                           |
+    | Overlap, different user   | FLAG for RA officer review                |
+    | Wildcard overlap          | WARN "Already covered by wildcard"        |
+    +---------------------------+-------------------------------------------+
+
+    Denormalized table for fast lookup:
+      certificate_sans (certificate_id, san_type, san_value)
+      INDEX on (san_value, san_type)
+
+  Step 7.4 — Public Key Conflict (Business Level)
+  -------------------------------------------------------------------------
+    +---------------------------+-------------------------------------------+
+    | Scenario                  | Action                                    |
+    +---------------------------+-------------------------------------------+
+    | Same key, same subject,   | ALLOW (renewal with same key)             |
+    |   same user               |                                           |
+    | Same key, same subject,   | REJECT "Key reuse by different user"      |
+    |   diff user               |                                           |
+    | Same key, diff subject    | REJECT "Key bound to different subject"   |
+    | Same key, revoked=comprom | REJECT "Compromised key, never reuse"     |
+    | Same key, expired cert    | ALLOW + WARN "New key recommended"        |
+    +---------------------------+-------------------------------------------+
+
+  Step 7.5 — Serial Number Pre-Check
+  -------------------------------------------------------------------------
+    - Pre-generate candidate serial (128-bit random)
+    - Check certificates table for collision
+    - Collision? --> regenerate (max 3 attempts)
+    - Informational only — actual assignment at issuance time
+
+  Step 7.6 — Velocity Anomaly Detection
+  -------------------------------------------------------------------------
+    +---------------------------+-------------------------------------------+
+    | Pattern                   | Action                                    |
+    +---------------------------+-------------------------------------------+
+    | >20 unique subjects/hour  | FLAG "Unusual volume — possible abuse"    |
+    |   from same requester     |                                           |
+    | Same domain, >3 different | FLAG "Multiple requesters for domain"     |
+    |   requesters in 24h       |                                           |
+    | >3 wildcard CSRs / hour   | FLAG "Unusual wildcard volume"            |
+    | New IP for this user      | WARN (log for monitoring)                 |
+    +---------------------------+-------------------------------------------+
+
+    These FLAG for review, they don't auto-reject.
+
+  Step 7.7 — Final Verdict Assembly
+  -------------------------------------------------------------------------
+    Decision logic:
+      All PASS, no flags   --> status = PENDING (auto-queue for approval)
+      All PASS, with WARNs --> status = PENDING (warnings attached)
+      Any FLAG             --> status = PENDING_REVIEW (RA officer needed)
+      Any REJECT           --> status = REJECTED (immediate, with reason)
+
+  Result:
+    PASS --> unique, no conflicts, ready for approval queue
+    FAIL --> 409 Conflict with PKI_DUP_001 through PKI_DUP_005
+
+
+================================================================================
+  COMPLETE ERROR CODE CATALOG — ALL LAYERS
+================================================================================
+
+  Layer 1 (Transport):
+    No app-level error codes — handled by web server (400/401/403/429)
+
+  Layer 2 (AuthN/AuthZ):
+    PKI_AUTH_001  "Authentication failed"
+    PKI_AUTH_002  "Access denied — insufficient permissions"
+    PKI_AUTH_003  "Session expired"
+
+  Layer 3 (Envelope):
+    PKI_ENV_001   "Malformed request envelope"
+    PKI_ENV_002   "Missing required field in request"
+    PKI_ENV_003   "Replay detected — duplicate nonce"
+    PKI_ENV_004   "Unsupported protocol version"
+    PKI_ENV_005   "CMP protection verification failed"
+
+  Layer 4 (CSR Structure):
+    PKI_VAL_002   "Invalid PKCS#10 format"
+    PKI_VAL_003   "Unsupported key algorithm"
+    PKI_VAL_004   "Invalid Subject DN"
+    PKI_VAL_005   "Invalid SAN entry"
+    PKI_VAL_006   "Weak signature algorithm in CSR"
+
+  Layer 5 (Cryptographic):
+    PKI_CRYPTO_001  "CSR signature verification failed"
+    PKI_CRYPTO_002  "Key size too small"
+    PKI_CRYPTO_003  "Unsupported or weak curve"
+    PKI_CRYPTO_004  "Weak RSA public exponent"
+    PKI_CRYPTO_005  "Weak signature algorithm"
+    PKI_CRYPTO_006  "Key already bound to different identity"
+    PKI_CRYPTO_007  "Key from compromised certificate"
+
+  Layer 6 (Policy):
+    PKI_POL_001   "Key does not meet template requirements"
+    PKI_POL_002   "Validity exceeds maximum allowed"
+    PKI_POL_003   "Subject DN missing required field"
+    PKI_POL_004   "Organization not in approved list"
+    PKI_POL_005   "Domain not in approved domain list"
+    PKI_POL_006   "SAN type not allowed for template"
+    PKI_POL_007   "Cannot request cert for another identity"
+    PKI_POL_008   "Daily request limit exceeded"
+    PKI_POL_009   "Blocked content detected in request"
+    PKI_POL_010   "Wildcard not allowed for this template"
+    PKI_POL_011   "Certificate would outlive issuing CA"
+    PKI_POL_012   "Requester not authorized to obtain server certificate for
+                   this domain -- domain authorization required"
+    PKI_POL_013   "Subject CN format does not match certificate type --
+                   TLS Server requires a valid hostname, not a person's name"
+
+  Layer 7 (Duplicate/Conflict):
+    PKI_DUP_001   "Duplicate CSR already submitted"
+    PKI_DUP_002   "Active certificate exists for subject"
+    PKI_DUP_003   "SAN conflict with active certificate"
+    PKI_DUP_004   "Key bound to different subject"
+    PKI_DUP_005   "Compromised key — reuse forbidden"
+
+
+================================================================================
+  COMPLETE VALIDATION FLOW DIAGRAM
+================================================================================
+
+  Client Request (PKCS#10 / CMP / EST / SCEP)
+      |
+      v
+  +===================================================+
+  | LAYER 1: TRANSPORT & PROTOCOL                     |
+  | TLS, Content-Type, rate limit, IP allowlist        |
+  +============================+=======================+
+                               |
+                               v
+  +===================================================+
+  | LAYER 2: AUTHENTICATION & AUTHORIZATION           |
+  | Identity verify, role check, audit attempt         |
+  +============================+=======================+
+                               |
+                               v
+  +===================================================+
+  | LAYER 3: REQUEST ENVELOPE                         |
+  | Protocol parse, replay protect, extract PKCS#10    |
+  +============================+=======================+
+                               |
+                               v
+  +===================================================+
+  | LAYER 4: CSR STRUCTURE & SYNTAX                   |
+  | ASN.1 parse, Subject DN, SANs, extensions          |
+  +============================+=======================+
+                               |
+                               v
+  +===================================================+
+  | LAYER 5: CRYPTOGRAPHIC VALIDATION                 |
+  | Signature verify, key strength, key reuse          |
+  +============================+=======================+
+                               |
+                               v
+  +===================================================+
+  | LAYER 6: POLICY & BUSINESS RULES                  |
+  | Template, DN policy, domain, key usage, scope      |
+  +============================+=======================+
+                               |
+                               v
+  +===================================================+
+  | LAYER 7: DUPLICATE & CONFLICT DETECTION           |
+  | CSR duplicate, subject/SAN overlap, key conflict   |
+  +============================+=======================+
+                               |
+                               v
+                 +-------------+--------------+
+                 |                            |
+           +-----v------+          +----------v---------+
+           |   PASS     |          |   REJECT           |
+           |            |          |                    |
+           | PENDING or |          | status = REJECTED  |
+           | PENDING_   |          | HTTP 400/409/422   |
+           | REVIEW     |          | Error code +       |
+           |            |          | correlationId      |
+           | --> Queue  |          | Audit: FAILURE     |
+           | for        |          +--------------------+
+           | Approval   |
+           +------------+
+
+
+================================================================================
+  SCENARIO GUIDE — PERSON REQUESTING SERVER CERTIFICATE
+================================================================================
+
+  Scenario: John (a person) is submitting a CSR. He is logged in as
+  john@acme.com. He wants a TLS Server certificate for api.acme.com.
+
+  This is a valid and common enterprise scenario. An admin or authorized
+  person submits a server certificate request on behalf of a server they
+  manage. The validation layers work together as follows:
+
+  +---------+-----------------------------------------------------------------+
+  | Layer   | What Happens                                                    |
+  +---------+-----------------------------------------------------------------+
+  | Layer 2 | John authenticates with his personal credentials.               |
+  |         | requestor_user_id = john's users.id                             |
+  |         | requestor role = ROLE_USER (or ROLE_RA_OFFICER if elevated)     |
+  +---------+-----------------------------------------------------------------+
+  | Layer 4 | CSR structure parsed.                                           |
+  |         | Step 4.4: Subject DN parsed.                                    |
+  |         |   Case A: CN=John Doe (personal name)                           |
+  |         |     --> valid DN syntax, but mismatch caught in Layer 6         |
+  |         |   Case B: CN=api.acme.com (hostname)                            |
+  |         |     --> valid FQDN format, proceed                              |
+  |         | Step 4.6: SAN dNSName=api.acme.com validated as valid FQDN.    |
+  +---------+-----------------------------------------------------------------+
+  | Layer 5 | CSR self-signature verified.                                    |
+  |         | John's key is in the CSR -- he possesses the private key.       |
+  |         | This is valid even for server certs -- the private key was      |
+  |         | generated on the server and John exported the CSR from it.      |
+  +---------+-----------------------------------------------------------------+
+  | Layer 6 | Step 6.1: Template auto-detected or explicitly set as           |
+  |         | TLS_SERVER (dNSName SAN present, no email SAN).                 |
+  |         |                                                                  |
+  |         | Step 6.4 (Subject DN Policy):                                   |
+  |         |   CN must follow hostname format for TLS_SERVER.                |
+  |         |   Case A: CN=John Doe --> spaces + no dots --> REJECT           |
+  |         |   Error: PKI_POL_013                                            |
+  |         |                                                                  |
+  |         | Step 6.7 (Requester Scope):                                     |
+  |         |   Case B: CN=api.acme.com -- DN format is fine.                 |
+  |         |   Extract domain: acme.com                                      |
+  |         |   Query domain_authorizations for john's user_id + acme.com     |
+  |         |   Found? --> ALLOW                                               |
+  |         |   Not found + ROLE_USER --> REJECT PKI_POL_012                  |
+  |         |   Not found + ROLE_RA_OFFICER --> ALLOW, audit log              |
+  |         |                                                                  |
+  |         | Step 6.10 (CN Format Cross-Check):                              |
+  |         |   Case A: CN=John Doe with TLS_SERVER template                  |
+  |         |     CN contains space --> REJECT PKI_POL_013                    |
+  |         |   Case B: CN=api.acme.com with TLS_SERVER template              |
+  |         |     CN is valid FQDN --> PASS                                   |
+  +---------+-----------------------------------------------------------------+
+  | Layer 7 | Duplicate and domain overlap checks run normally.               |
+  |         | If another active cert exists for api.acme.com:                 |
+  |         |   Same user -- ALLOW + INFO (renewal scenario)                  |
+  |         |   Different user -- WARN + FLAG for RA review                   |
+  +---------+-----------------------------------------------------------------+
+
+  Outcome Summary:
+
+    +----------------------+--------------------------------------------------+
+    | John's CSR           | Result                                           |
+    +----------------------+--------------------------------------------------+
+    | CN=John Doe +        | REJECT at Layer 6 Step 6.10                      |
+    | TLS_SERVER template  | PKI_POL_013: CN not a valid hostname             |
+    +----------------------+--------------------------------------------------+
+    | CN=api.acme.com +    | ALLOW if John is in domain_authorizations for    |
+    | ROLE_USER +          | acme.com.                                        |
+    | domain authorized    | Proceeds to approval queue.                      |
+    +----------------------+--------------------------------------------------+
+    | CN=api.acme.com +    | REJECT at Layer 6 Step 6.7                       |
+    | ROLE_USER +          | PKI_POL_012: Domain not authorized for John.     |
+    | NOT authorized       | Admin must grant domain_authorizations first.    |
+    +----------------------+--------------------------------------------------+
+    | CN=api.acme.com +    | ALLOW. RA Officers can submit for any domain.    |
+    | ROLE_RA_OFFICER      | Audit log records: submitted by john on behalf   |
+    |                      | of server api.acme.com.                          |
+    +----------------------+--------------------------------------------------+
+
+  Recommended Workflow for John's Scenario:
+    1. Admin grants John domain authorization for acme.com in
+       domain_authorizations table.
+    2. John generates key pair on the server.
+    3. John creates CSR with CN=api.acme.com, SAN=dns:api.acme.com.
+    4. John submits CSR via RA REST API using his credentials.
+    5. Layer 2 authenticates John. Layer 6.7 confirms domain authorization.
+    6. Request enters SUBMITTED status and approval workflow.
+    7. Operator reviews and approves. CA issues the certificate.
+    8. John downloads certificate and installs it on the server.
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================

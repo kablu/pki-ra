@@ -1,0 +1,151 @@
+
+================================================================================
+  FLOW-02: REQUEST RECEPTION (Steps 6-10)
+  Master Flow Reference: MASTER_FLOW_CSR_To_Certificate.txt
+  Previous: FLOW-01 (Client Preparation)
+  Next: FLOW-03 (Validation Engine)
+================================================================================
+
+  This flow happens at the RA's NETWORK EDGE — before any business
+  logic runs. It's the bouncer at the door.
+
+
+  STEP 1 (Master Step 6): TLS HANDSHAKE
+  ===================================================================
+  What:   Verify the transport connection is secure
+  When:   Before any HTTP content is read
+  Who:    Handled by web server (Tomcat/Nginx) + Spring Security
+
+  Actions:
+    a. Client initiates TLS connection
+    b. RA presents its TLS certificate
+    c. Client verifies RA cert against truststore (from FLOW-01 Step 4)
+    d. If mTLS required:
+         - Client presents its certificate
+         - RA verifies client cert chain
+         - RA checks: client cert not expired? not revoked?
+    e. TLS version check: must be >= 1.2
+         TLS 1.0 / 1.1 → connection refused
+
+  Failure:
+    → TLS handshake failure (no HTTP response — connection level)
+    → Client sees: "SSL handshake failed" or "Connection refused"
+
+  Spring Boot config:
+    server:
+      ssl:
+        enabled: true
+        protocol: TLS
+        enabled-protocols: TLSv1.2, TLSv1.3
+        client-auth: want  (optional mTLS, required for EST reenroll)
+
+
+  STEP 2 (Master Step 7): HTTP REQUEST PARSING
+  ===================================================================
+  What:   Validate HTTP-level properties before reading body
+  When:   After TLS handshake succeeds
+
+  Actions:
+    a. HTTP Method check:
+         POST for CSR submission → OK
+         GET for status queries → OK
+         PUT / DELETE / PATCH → 405 Method Not Allowed
+    b. Content-Type validation:
+         +------------------+--------------------------------------+
+         | Protocol         | Expected Content-Type                |
+         +------------------+--------------------------------------+
+         | REST (JSON)      | application/json                     |
+         | REST (raw PEM)   | application/pkcs10                   |
+         | EST              | application/pkcs10                   |
+         | CMP              | application/pkixcmp                  |
+         | SCEP             | application/x-pki-message            |
+         +------------------+--------------------------------------+
+         Wrong type → 415 Unsupported Media Type
+    c. Content-Length check:
+         Missing → 411 Length Required
+         > 64KB → 413 Payload Too Large
+         0 bytes → 400 Bad Request (empty body)
+    d. Accept header (optional):
+         Client says what response format it expects
+
+  Failure:
+    → HTTP error response (405, 411, 413, 415)
+    → No audit log entry (too early in pipeline)
+
+
+  STEP 3 (Master Step 8): RATE LIMITING
+  ===================================================================
+  What:   Prevent abuse / DoS by throttling requests
+  When:   After HTTP parsing, before authentication
+
+  Actions:
+    a. Count requests from this IP in last 1 minute
+         > 10 requests/minute → 429 Too Many Requests
+    b. Count requests from this IP in last 1 hour
+         > 100 requests/hour → 429
+    c. If authenticated (Basic header present):
+         Count pending requests for this user
+         > 10 pending → 429 "Too many pending requests"
+
+  Implementation:
+    Spring Boot: bucket4j or resilience4j RateLimiter
+    Or: custom filter with Redis/in-memory counter
+
+  Failure:
+    → 429 Too Many Requests
+    → Retry-After header with cooldown seconds
+    → Audit log: action=RATE_LIMIT, outcome=FAILURE
+
+
+  STEP 4 (Master Step 9): IP ALLOWLIST CHECK
+  ===================================================================
+  What:   Verify client IP is from allowed network range
+  When:   After rate limiting
+
+  Actions:
+    a. Resolve real client IP:
+         - Check X-Forwarded-For header (if behind reverse proxy)
+         - Normalize IPv6 loopback (::1 → 127.0.0.1)
+         - Use IpAddressResolver.resolve(request)
+    b. Check against allowlist (from app_config or security config):
+         allowed_networks: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+    c. Protocol-specific restrictions:
+         EST endpoints: only from device management network
+         REST API: only from corporate network
+         SCEP: specific MDM server IPs only
+
+  Failure:
+    → 403 Forbidden "Client IP not in allowed range"
+    → Audit log: action=IP_BLOCKED, outcome=FAILURE, ip=x.x.x.x
+
+
+  STEP 5 (Master Step 10): PROTOCOL DETECTION
+  ===================================================================
+  What:   Determine which enrollment protocol the client is using
+  When:   After IP check, before passing to validation engine
+
+  Actions:
+    a. Check request URL path:
+         /.well-known/est/*     → EST protocol
+         /scep/pkiclient.exe*   → SCEP protocol
+         /cmp                   → CMP protocol
+         /api/ra/requests       → REST API
+    b. Set protocol context:
+         RequestContext.protocol = "REST" | "EST" | "SCEP" | "CMP"
+    c. Protocol determines:
+         - Which envelope parser to use (FLOW-03 Layer 3)
+         - Which authentication method to expect (FLOW-03 Layer 2)
+         - Which response format to return (JSON, PKCS#7, PKIMessage)
+
+  Output:
+    Request is now ready for the Validation Engine (FLOW-03)
+    We know: IP is allowed, rate limit OK, TLS secure, protocol identified
+
+  Handoff to FLOW-03:
+    → ValidationEngine.validate(httpRequest, protocol)
+
+
+================================================================================
+  END OF FLOW-02
+  Next: FLOW-03 (Validation Engine) → docs/internal/FLOW_03_...
+================================================================================

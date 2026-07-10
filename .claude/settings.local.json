@@ -51,7 +51,8 @@
       "Bash(cp \"C:/eclipse-workspace/pki-ra/gradlew.bat\" \"C:/eclipse-workspace/ca-pki/gradlew.bat\")",
       "Read(//c/eclipse-workspace/ca-pki/**)",
       "Bash(./gradlew compileJava)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "PowerShell(py -3 \"C:\\\\Users\\\\Kablu\\\\AppData\\\\Roaming\\\\Claude\\\\local-agent-mode-sessions\\\\skills-plugin\\\\e903699b-a542-4677-9427-79c29b91fd96\\\\8e4b339b-a90d-4452-a1b2-d5b42522fe40\\\\skills\\\\xlsx\\\\create_feedback.py\")"
     ]
   }
 }

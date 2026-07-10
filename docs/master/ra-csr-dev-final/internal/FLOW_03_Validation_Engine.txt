@@ -1,0 +1,140 @@
+
+================================================================================
+  FLOW-03: VALIDATION ENGINE (Steps 11-19)
+  Master Flow Reference: MASTER_FLOW_CSR_To_Certificate.txt
+  Previous: FLOW-02 (Request Reception)
+  Next: FLOW-04 (Approval Workflow)
+  Deep Dive: CSR_Validation_7_Layer_Guide.txt (690 lines of detail)
+================================================================================
+
+  This flow runs the 7-layer validation pipeline and bridges
+  the gap between "CSR received" and "CSR enters approval queue."
+
+  IMPORTANT: This document is a SUMMARY. For full check-by-check
+  detail of each layer, see CSR_Validation_7_Layer_Guide.txt
+
+
+  STEPS 1-7 (Master Steps 11-17): 7-LAYER VALIDATION
+  ===================================================================
+
+  +------+-----+------------------------------------------+-----------+
+  | Step | Lyr | Checks (summary)                         | Fail Code |
+  +------+-----+------------------------------------------+-----------+
+  |  11  | L1  | TLS version, Content-Type, request size   | 400/429   |
+  |  12  | L2  | Identity verify, credential check, role   | 401/403   |
+  |  13  | L3  | Parse envelope (REST/EST/SCEP/CMP),      | 400/409   |
+  |      |     | extract PKCS#10, replay protection        |           |
+  |  14  | L4  | ASN.1 structure, Subject DN, SANs,       | 400/422   |
+  |      |     | extensions, signature algorithm           |           |
+  |  15  | L5  | Self-signature (proof of possession),     | 422       |
+  |      |     | key size, RSA/EC quality, key reuse       |           |
+  |  16  | L6  | Template match, DN policy, domain,       | 422       |
+  |      |     | validity, key usage, requester scope      |           |
+  |  17  | L7  | Duplicate CSR, subject/SAN overlap,      | 409       |
+  |      |     | key conflict, velocity anomaly            |           |
+  +------+-----+------------------------------------------+-----------+
+
+  Each layer runs ONLY if previous layer passed.
+  First failure → STOP immediately → return error.
+
+
+  STEP 8 (Master Step 18): VERDICT ASSEMBLY
+  ===================================================================
+  What:   Combine results from all 7 layers into a final decision
+  When:   After all layers pass (or first failure)
+
+  Three possible verdicts:
+
+    PASS (no warnings, no flags):
+      → status = PENDING
+      → enters normal approval queue
+
+    PASS WITH WARNINGS:
+      → status = PENDING
+      → warnings attached to request (approver will see them)
+      → examples: "SAN overlap with existing cert",
+                   "Key reuse from expired cert"
+
+    PASS WITH FLAGS:
+      → status = PENDING_REVIEW
+      → requires ROLE_RA_OFFICER (elevated approval)
+      → examples: "Multiple users requesting same domain",
+                   "Unusual request volume from this IP"
+
+    REJECT:
+      → status = REJECTED
+      → HTTP error response returned immediately
+      → requester sees external error code + message
+      → internal details logged (never in API response)
+
+  Output object:
+    ValidationVerdict {
+      result:    PASS | PASS_WITH_WARNINGS | PASS_WITH_FLAGS | REJECT
+      warnings:  List<String>    (for approver's review)
+      flags:     List<String>    (for RA officer's review)
+      errors:    List<ErrorCode> (for rejection response)
+      parsedCsr: ParsedCsr {
+        subjectDn, keyAlgorithm, keySize, sans, signatureAlgo
+      }
+    }
+
+
+  STEP 9 (Master Step 19): SAVE TO DATABASE
+  ===================================================================
+  What:   Persist the CSR and validation result to database
+  When:   ONLY if verdict is PASS (any variant), NOT on REJECT
+  Why:    REJECTED CSRs are NOT stored (no DB row created,
+          only audit log entry)
+
+  Actions:
+    a. Create certificate_requests row:
+         INSERT INTO certificate_requests (
+           csr_pem          = [full PEM],
+           subject_dn       = [parsed from CSR],
+           key_algorithm    = [RSA/ECDSA],
+           key_size         = [2048/4096/256/384],
+           subject_alt_names = [comma-separated SANs],
+           requested_validity_days = [from request or NULL],
+           status           = 'PENDING' or 'PENDING_REVIEW',
+           requester_id     = [resolved user ID],
+           certificate_id   = NULL (not issued yet)
+         )
+
+    b. Audit log entry:
+         AuditLogService.logSuccess(
+           username  = [requester],
+           action    = "CSR_SUBMIT",
+           resourceId = [new request ID],
+           description = "CSR submitted for [subjectDn]",
+           ipAddress = [client IP]
+         )
+
+    c. Attach validation metadata (optional, for approver):
+         validation_warnings = ["SAN overlap with cert ABC123"]
+         validation_flags    = []
+
+  HANDOFF TO FLOW-04:
+  ===================================================================
+  At this point:
+    - CSR is validated (7 layers passed)
+    - CSR is saved in database (status = PENDING)
+    - Audit log has CSR_SUBMIT entry
+    - Requester has received 201 Created response
+
+  The request now sits in the approval queue.
+  FLOW-04 determines WHAT HAPPENS NEXT:
+    - Auto-approve? → immediately send to CA (FLOW-05)
+    - Manual approval? → wait for operator action
+    - Multi-level? → wait for multiple approvers
+
+  The bridge:
+    FLOW-03 (Validation) ──saves to DB──> certificate_requests
+    FLOW-04 (Approval)   ──reads from DB──> same row
+    Connection point: certificate_requests.status = 'PENDING'
+
+
+================================================================================
+  END OF FLOW-03
+  Next: FLOW-04 (Approval Workflow) → docs/internal/FLOW_04_...
+  Detail: CSR_Validation_7_Layer_Guide.txt (full 57-check breakdown)
+================================================================================

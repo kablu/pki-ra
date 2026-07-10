@@ -1,0 +1,513 @@
+
+================================================================================
+     PKI REGISTRATION AUTHORITY (RA) — ARCHITECTURE BRIEF
+     For: Management Review
+     Project: pki-ra | Spring Boot 4.0 / Java 25
+     Date: 2026-06-20
+     Scope: RA Layer Only (CA is external — outside scope)
+================================================================================
+
+
+
+================================================================================
+  1. WHAT IS A REGISTRATION AUTHORITY (RA)?
+================================================================================
+
+  The RA sits BETWEEN the certificate requester and the Certificate
+  Authority (CA). It is the gatekeeper — it validates, verifies, and
+  approves every certificate request BEFORE it reaches the CA.
+
+  The CA blindly signs whatever the RA sends. Therefore, the RA is
+  the most critical security component in the PKI chain.
+
+    +-------------------+         +-------------------+         +----------+
+    |                   |  CSR    |                   |  Valid   |          |
+    |  Client / User    | ------> |   Registration    | -------> |    CA    |
+    |  (Browser, App,   |         |   Authority (RA)  |  CSR     | (Signs)  |
+    |   Server, Device) |         |                   |         |          |
+    |                   | <------ |  THIS IS OUR      | <------- |          |
+    |                   |  Cert   |  PROJECT SCOPE    |  Cert    |          |
+    +-------------------+         +-------------------+         +----------+
+                                         |
+                                         | RA Responsibilities:
+                                         | - Validate identity
+                                         | - Validate CSR format
+                                         | - Enforce policies
+                                         | - Approval workflow
+                                         | - Audit everything
+                                         | - Manage lifecycle
+
+
+================================================================================
+  2. HIGH-LEVEL ARCHITECTURE
+================================================================================
+
+
+    +=====================================================================+
+    |                         RA SYSTEM BOUNDARY                          |
+    |                                                                     |
+    |  +------------------+    +------------------+    +---------------+  |
+    |  |   REST API       |    |   EST / SCEP     |    |    CMP        |  |
+    |  |   (JSON/PEM)     |    |   (RFC 7030)     |    |  (RFC 4210)   |  |
+    |  +--------+---------+    +--------+---------+    +-------+-------+  |
+    |           |                       |                      |          |
+    |           +----------+------------+----------+-----------+          |
+    |                      |                       |                      |
+    |                      v                       v                      |
+    |           +----------+----------+ +----------+----------+           |
+    |           |   PROTOCOL LAYER    | |   SECURITY LAYER    |           |
+    |           |   - Envelope parse  | |   - TLS / mTLS      |           |
+    |           |   - Format detect   | |   - Authentication  |           |
+    |           |   - Replay protect  | |   - Authorization   |           |
+    |           +----------+----------+ |   - Rate limiting   |           |
+    |                      |            +----------+----------+           |
+    |                      v                       |                      |
+    |           +----------+-----------------------+----------+           |
+    |           |          VALIDATION ENGINE                  |           |
+    |           |          (7-Layer Pipeline)                  |           |
+    |           |                                             |           |
+    |           |   L1: Transport    L2: AuthN/AuthZ          |           |
+    |           |   L3: Envelope     L4: CSR Structure        |           |
+    |           |   L5: Crypto       L6: Policy               |           |
+    |           |   L7: Duplicate Detection                   |           |
+    |           +----------+----------------------------------+           |
+    |                      |                                              |
+    |                      v                                              |
+    |           +----------+----------+                                   |
+    |           |   APPROVAL ENGINE   |                                   |
+    |           |   - Single / Multi  |                                   |
+    |           |   - Auto-approve    |                                   |
+    |           |   - Delegation      |                                   |
+    |           |   - Escalation      |                                   |
+    |           +----------+----------+                                   |
+    |                      |                                              |
+    |                      v                                              |
+    |           +----------+----------+          +--------------------+   |
+    |           |   CERTIFICATE       | audit -> |   AUDIT & LOGGING  |   |
+    |           |   LIFECYCLE ENGINE  | -------> |   (Every action    |   |
+    |           |   - Issue           |          |    immutably logged)|   |
+    |           |   - Renew           |          +--------------------+   |
+    |           |   - Revoke          |                                   |
+    |           |   - Suspend         |          +--------------------+   |
+    |           +----------+----------+ notify-> |   NOTIFICATION     |   |
+    |                      |            -------> |   ENGINE           |   |
+    |                      |                     |   (Email, Webhook) |   |
+    |                      v                     +--------------------+   |
+    |           +----------+----------+                                   |
+    |           |   CA CLIENT         |                                   |
+    |           |   (CaClient iface)  |                                   |
+    |           |   Strategy Pattern  |                                   |
+    |           +----------+----------+                                   |
+    |                      |                                              |
+    +===================== | =============================================+
+                           |
+                           | Validated + Approved CSR
+                           | (RA guarantees this is safe to sign)
+                           v
+                  +--------+--------+
+                  |                 |
+                  |   EXTERNAL CA   |   <-- OUTSIDE OUR SCOPE
+                  |   (Signs cert)  |
+                  |                 |
+                  +-----------------+
+
+
+================================================================================
+  3. CSR PROCESSING FLOW — END TO END
+================================================================================
+
+  This is the complete journey of a certificate request through the RA.
+
+
+  CLIENT                     RA SYSTEM                           CA
+  ------                     ---------                           --
+
+  1. Generate
+     Key Pair
+     (RSA/ECDSA)
+         |
+  2. Create CSR
+     (PKCS#10)
+         |
+  3. Submit CSR ---------> 4. RECEIVE REQUEST
+     via REST/EST/             |
+     SCEP/CMP                  |
+                               v
+                          5. LAYER 1: TRANSPORT CHECK
+                             - TLS valid?
+                             - Content-Type correct?
+                             - Rate limit OK?
+                             - IP allowed?
+                               |
+                               | FAIL --> 400/429 Reject
+                               v
+                          6. LAYER 2: AUTHENTICATION
+                             - Who is this?
+                             - Credentials valid?
+                             - Role sufficient?
+                               |
+                               | FAIL --> 401/403 Reject
+                               v
+                          7. LAYER 3: ENVELOPE
+                             - Parse protocol wrapper
+                             - Extract raw PKCS#10
+                             - Check replay (nonce)
+                               |
+                               | FAIL --> 400/409 Reject
+                               v
+                          8. LAYER 4: CSR STRUCTURE
+                             - ASN.1 valid?
+                             - Subject DN proper?
+                             - SANs valid?
+                             - Extensions OK?
+                               |
+                               | FAIL --> 422 Reject
+                               v
+                          9. LAYER 5: CRYPTOGRAPHIC
+                             - Self-signature valid?
+                               (Proof of Possession)
+                             - Key size >= 2048?
+                             - Algorithm strong?
+                             - Key not compromised?
+                               |
+                               | FAIL --> 422 Reject
+                               v
+                         10. LAYER 6: POLICY CHECK
+                             - Matches template?
+                             - DN follows org rules?
+                             - Domain authorized?
+                             - Validity within limits?
+                             - Key usage appropriate?
+                               |
+                               | FAIL --> 422 Reject
+                               v
+                         11. LAYER 7: CONFLICT CHECK
+                             - Duplicate CSR?
+                             - Subject overlap?
+                             - SAN conflict?
+                             - Key reuse issue?
+                               |
+                               | FAIL --> 409 Reject
+                               v
+                         12. SAVE TO DATABASE
+                             Status = PENDING
+                             Audit log: CSR_SUBMITTED
+                               |
+                               v
+                         13. APPROVAL WORKFLOW
+                             - Auto-approve?
+                               YES --> skip to 14
+                               NO  --> notify approver
+                                         |
+                              Approver reviews -------> REJECT
+                              Approver approves            |
+                                   |                       v
+                                   v               Status = REJECTED
+                         14. STATUS = APPROVED     Audit: CSR_REJECTED
+                             Audit: CSR_APPROVED   Notify requester
+                               |
+                               v
+                         15. PREPARE FOR CA
+                             - Attach template config
+                             - Set validity period
+                             - Add extensions
+                               |
+                               v
+                         16. SEND TO CA -----------------------> SIGN CSR
+                             via CaClient                        |
+                             interface                           |
+                                                                 v
+                                                           Issue X.509
+                                                           Certificate
+                                                                 |
+  17. RECEIVE CERT <----- 18. RECEIVE FROM CA <-----------------+
+      (PEM/DER/P12)            |
+                               v
+                         19. STORE CERTIFICATE
+                             - Serial number registry
+                             - Fingerprint (SHA-256)
+                             - Full PEM + chain
+                             - Status = ACTIVE
+                               |
+                               v
+                         20. POST-ISSUANCE
+                             - Audit: CERT_ISSUED
+                             - Notify requester
+                             - Publish to LDAP/AD
+                             - Submit to CT log
+                             - Start expiry tracking
+                               |
+                               v
+                         21. REQUEST STATUS = ISSUED
+                             Link request --> certificate
+
+
+================================================================================
+  4. VALIDATION ENGINE — 7 LAYERS AT A GLANCE
+================================================================================
+
+  Each layer is a security gate. ALL must pass for a CSR to be accepted.
+  If ANY layer fails, the request is rejected immediately.
+
+  +-----+----------------------+----------------------------------------+
+  | #   | Layer                | What It Checks                         |
+  +-----+----------------------+----------------------------------------+
+  | L1  | Transport & Protocol | TLS version, Content-Type, rate limit, |
+  |     |                      | IP allowlist, request size              |
+  +-----+----------------------+----------------------------------------+
+  | L2  | Authentication &     | Identity verification, credential      |
+  |     | Authorization        | validation, role-based permission,     |
+  |     |                      | template authorization                 |
+  +-----+----------------------+----------------------------------------+
+  | L3  | Request Envelope     | Protocol-specific parsing (REST, EST,  |
+  |     |                      | SCEP, CMP), replay protection,        |
+  |     |                      | PKCS#10 extraction                     |
+  +-----+----------------------+----------------------------------------+
+  | L4  | CSR Structure        | ASN.1 validity, Subject DN fields,     |
+  |     |                      | SAN entries, extensions, signature     |
+  |     |                      | algorithm, injection prevention        |
+  +-----+----------------------+----------------------------------------+
+  | L5  | Cryptographic        | Self-signature verification (proof of  |
+  |     |                      | private key possession), key strength, |
+  |     |                      | RSA/EC quality, compromised key check  |
+  +-----+----------------------+----------------------------------------+
+  | L6  | Policy & Business    | Template compliance, org name lock,    |
+  |     |                      | domain restrictions, validity limits,  |
+  |     |                      | key usage, requester scope, blocklist  |
+  +-----+----------------------+----------------------------------------+
+  | L7  | Duplicate & Conflict | Exact CSR duplicate, subject/SAN       |
+  |     |                      | overlap with active certs, public key  |
+  |     |                      | conflicts, velocity anomaly detection  |
+  +-----+----------------------+----------------------------------------+
+
+
+================================================================================
+  5. APPROVAL WORKFLOW
+================================================================================
+
+  The RA supports multiple approval models:
+
+  MODEL A — SINGLE APPROVAL (Phase 1, Current)
+  +---------------------------------------------------------------------+
+  |                                                                     |
+  |  Requester --> CSR --> [Validation] --> PENDING --> Operator --> CA  |
+  |                                                    approves        |
+  +---------------------------------------------------------------------+
+
+  MODEL B — AUTO-APPROVE (Phase 2, Template-Based)
+  +---------------------------------------------------------------------+
+  |                                                                     |
+  |  Requester --> CSR --> [Validation] --> Template says auto-approve  |
+  |                                        --> skip manual step --> CA  |
+  |                                                                     |
+  |  Use case: Low-risk templates (internal TLS, dev certs)            |
+  +---------------------------------------------------------------------+
+
+  MODEL C — MULTI-LEVEL (Phase 5, Enterprise)
+  +---------------------------------------------------------------------+
+  |                                                                     |
+  |  Requester --> CSR --> [Validation] --> PENDING                     |
+  |                                          |                          |
+  |                              Level 1: Team Lead approves            |
+  |                                          |                          |
+  |                              Level 2: Security Officer approves     |
+  |                                          |                          |
+  |                                        --> CA                       |
+  |                                                                     |
+  |  Use case: Code Signing, high-value certificates                   |
+  +---------------------------------------------------------------------+
+
+  MODEL D — DELEGATION (Phase 5)
+  +---------------------------------------------------------------------+
+  |                                                                     |
+  |  Operator A is on leave                                            |
+  |  Operator A delegates to Operator B (valid_from / valid_until)     |
+  |  Operator B can approve on behalf of Operator A                    |
+  |                                                                     |
+  +---------------------------------------------------------------------+
+
+
+================================================================================
+  6. CERTIFICATE LIFECYCLE — STATES
+================================================================================
+
+                          +---> REVOKED (permanent, with reason)
+                          |
+  CSR --> PENDING --> APPROVED --> ISSUED --> ACTIVE --+
+              |                      |                 |
+              v                      v                 +---> SUSPENDED
+           REJECTED              FAILED                |     (temporary hold)
+                                                       |         |
+                                                       |         v
+                                                       |     UNSUSPENDED
+                                                       |     (back to ACTIVE)
+                                                       |
+                                                       +---> EXPIRED
+                                                             (not_after passed)
+
+
+  +------------------+---------------------------------------------------+
+  | State            | Meaning                                           |
+  +------------------+---------------------------------------------------+
+  | PENDING          | CSR submitted, waiting for approval               |
+  | APPROVED         | Approved by operator, being sent to CA            |
+  | REJECTED         | Denied by operator (with reason)                  |
+  | ISSUED           | CA signed successfully, certificate stored        |
+  | FAILED           | CA signing failed (network, config, etc.)         |
+  | ACTIVE           | Certificate in use, valid                         |
+  | SUSPENDED        | Temporarily on hold (reason: certificateHold)     |
+  | REVOKED          | Permanently revoked (key compromise, etc.)        |
+  | EXPIRED          | Validity period ended (not_after < now)           |
+  +------------------+---------------------------------------------------+
+
+
+================================================================================
+  7. PROTOCOL SUPPORT
+================================================================================
+
+  The RA accepts certificate requests via four industry-standard protocols:
+
+  +----------+------------+------------------------------------------+
+  | Protocol | Standard   | Primary Use Case                         |
+  +----------+------------+------------------------------------------+
+  | REST API | Custom     | Web applications, internal automation,   |
+  |          |            | admin portal, CI/CD pipelines            |
+  +----------+------------+------------------------------------------+
+  | EST      | RFC 7030   | Enterprise device enrollment, IoT,      |
+  |          |            | network equipment auto-provisioning      |
+  +----------+------------+------------------------------------------+
+  | SCEP     | Draft      | Legacy device enrollment, MDM            |
+  |          |            | (Mobile Device Management), printers     |
+  +----------+------------+------------------------------------------+
+  | CMP      | RFC 4210   | Automated cert management, CA-to-CA     |
+  |          |            | cross-certification, enterprise PKI      |
+  +----------+------------+------------------------------------------+
+
+  All protocols converge to the same 7-layer validation engine.
+  No protocol gets a shortcut — every request is fully validated.
+
+
+================================================================================
+  8. SECURITY ARCHITECTURE
+================================================================================
+
+  +---------------------------------------------------------------------+
+  |                     SECURITY LAYERS                                 |
+  +---------------------------------------------------------------------+
+  |                                                                     |
+  |  NETWORK LAYER                                                     |
+  |  +---------------------------------------------------------------+ |
+  |  | TLS 1.2+ mandatory | mTLS optional | IP allowlisting          | |
+  |  +---------------------------------------------------------------+ |
+  |                                                                     |
+  |  AUTHENTICATION LAYER                                              |
+  |  +---------------------------------------------------------------+ |
+  |  | AD/LDAP | HTTP Basic | JWT/OAuth2 | Client Cert | Shared Sec  | |
+  |  +---------------------------------------------------------------+ |
+  |                                                                     |
+  |  AUTHORIZATION LAYER                                               |
+  |  +---------------------------------------------------------------+ |
+  |  | ROLE_ADMIN | ROLE_OPERATOR | ROLE_RA_OFFICER | ROLE_AUDITOR   | |
+  |  | Template-level permissions | Requester scope validation       | |
+  |  +---------------------------------------------------------------+ |
+  |                                                                     |
+  |  DATA PROTECTION                                                   |
+  |  +---------------------------------------------------------------+ |
+  |  | Internal error codes never exposed to API                     | |
+  |  | Correlation IDs for cross-referencing (no stack traces)       | |
+  |  | PII/secrets never in logs (LDAP passwords, private keys)      | |
+  |  | HSM optional for CA key protection (PKCS#11 pluggable)        | |
+  |  +---------------------------------------------------------------+ |
+  |                                                                     |
+  |  AUDIT LAYER                                                       |
+  |  +---------------------------------------------------------------+ |
+  |  | Every action logged immutably (REQUIRES_NEW transaction)       | |
+  |  | Who, What, When, Where (IP), Outcome (Success/Failure)        | |
+  |  | SIEM forwarding for SOC monitoring                             | |
+  |  +---------------------------------------------------------------+ |
+  |                                                                     |
+  +---------------------------------------------------------------------+
+
+
+================================================================================
+  9. KEY NUMBERS
+================================================================================
+
+  +----------------------------------+--------------------------------------+
+  | Metric                           | Value                                |
+  +----------------------------------+--------------------------------------+
+  | Total database tables            | 39 (6 existing + 33 new)             |
+  | REST API endpoints               | 7 (Phase 1) growing to ~40 (all)    |
+  | Validation checks per CSR        | 50+ individual checks across 7 layers|
+  | Error codes                      | 30+ (security-separated int/ext)    |
+  | Supported protocols              | 4 (REST, EST, SCEP, CMP)            |
+  | Certificate templates            | 5 standard (extensible)             |
+  | Implementation phases            | 12 (prioritized by business value)  |
+  | Roles                            | 6 (ADMIN, OPERATOR, RA_OFFICER,     |
+  |                                  |    KEY_RECOVERY_AGENT, AUDITOR,      |
+  |                                  |    VIEWER)                           |
+  +----------------------------------+--------------------------------------+
+
+
+================================================================================
+  10. IMPLEMENTATION ROADMAP
+================================================================================
+
+      Phase 1         Phase 2-3       Phase 4-6        Phase 7-12
+      FOUNDATION      SECURITY        OPERATIONS       ENTERPRISE
+      Q3 2026         Q4 2026         Q1 2027          Q2-Q4 2027
+         |               |                |                |
+         v               v                v                v
+  +-----------+   +-----------+   +-------------+   +-----------+
+  | CSR Submit|   | Templates |   | Notify      |   | EST/SCEP  |
+  | Approve   |   | Revocation|   | Dashboard   |   | Multi-CA  |
+  | Issue     |   | CRL/OCSP  |   | Reports     |   | HSM       |
+  | Download  |   | Policies  |   | Workflows   |   | LDAP      |
+  | Audit     |   |           |   |             |   | ACME/CMP  |
+  +-----------+   +-----------+   +-------------+   +-----------+
+       |               |                |                |
+       v               v                v                v
+   MVP Release    Security        Operational       Full Enterprise
+   (functional)   Hardened        Maturity           Feature Parity
+
+
+================================================================================
+  11. WHAT RA GUARANTEES TO THE CA
+================================================================================
+
+  When the RA sends a CSR to the CA, the CA can trust that:
+
+  +---------------------------------------------------------------------+
+  |                                                                     |
+  |  1. IDENTITY VERIFIED                                              |
+  |     The requester is who they claim to be (authenticated)          |
+  |                                                                     |
+  |  2. AUTHORIZED                                                     |
+  |     The requester is allowed to request this type of certificate   |
+  |                                                                     |
+  |  3. CSR IS WELL-FORMED                                             |
+  |     PKCS#10 structure is valid, no malformed data                  |
+  |                                                                     |
+  |  4. CRYPTOGRAPHICALLY SOUND                                        |
+  |     Signature is valid (proof of possession), key is strong        |
+  |                                                                     |
+  |  5. POLICY COMPLIANT                                               |
+  |     Key size, algorithm, validity, DN, SANs — all within policy    |
+  |                                                                     |
+  |  6. NOT A DUPLICATE                                                |
+  |     No active cert with same subject/key/SAN exists                |
+  |                                                                     |
+  |  7. APPROVED BY AUTHORIZED PERSON                                  |
+  |     An operator or policy has explicitly approved this request     |
+  |                                                                     |
+  |  8. FULLY AUDITED                                                  |
+  |     Every step is logged with who, what, when, and outcome         |
+  |                                                                     |
+  +---------------------------------------------------------------------+
+
+  The CA's only job is to SIGN. The RA does all the thinking.
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================

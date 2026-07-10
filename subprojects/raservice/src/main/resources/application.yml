@@ -50,6 +50,15 @@ management:
         include: health,info,metrics,prometheus
 
 # -----------------------------------------------------------------------------
+# RA — Certificate Authority backend
+# -----------------------------------------------------------------------------
+ra:
+  ca:
+    base-url: ${CA_BASE_URL:http://localhost:8082}
+  callback:
+    base-url: ${RA_CALLBACK_BASE_URL:http://localhost:8083/ra-api}
+
+# -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
 logging:

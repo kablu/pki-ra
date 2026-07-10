@@ -1,0 +1,273 @@
+
+================================================================================
+  FLOW-06: POST-ISSUANCE (Steps 32-42)
+  Master Flow Reference: MASTER_FLOW_CSR_To_Certificate.txt
+  Previous: FLOW-05 (CA Submission)
+  Next: Certificate is ACTIVE — lifecycle management begins
+================================================================================
+
+  CA has signed the certificate. Now RA must store it, update all
+  records, notify everyone, and set up lifecycle tracking.
+
+
+  STEP 1 (Master Step 32): STORE CERTIFICATE IN DB
+  ===================================================================
+  What:   Save the issued certificate with all metadata
+
+  Actions:
+    INSERT INTO certificates (
+      serial_number       = "4F2A1B3C..." (from CA response),
+      subject_dn          = "CN=api.example.com,O=Acme,C=IN",
+      issuer_dn           = "CN=PKI Intermediate CA,O=Acme,C=IN",
+      not_before          = 2026-06-20T00:00:00Z,
+      not_after           = 2027-06-20T00:00:00Z,
+      certificate_pem     = "-----BEGIN CERTIFICATE-----\n...",
+      certificate_chain   = [end-entity + intermediate + root PEM],
+      key_algorithm       = "RSA",
+      key_size            = 4096,
+      signature_algorithm = "SHA256withRSA",
+      status              = "ACTIVE",
+      fingerprint_sha256  = [computed in Step 3],
+      request_id          = 101
+    )
+
+
+  STEP 2 (Master Step 33): UPDATE REQUEST STATUS
+  ===================================================================
+  What:   Link the certificate back to the original request
+
+  Actions:
+    UPDATE certificate_requests
+    SET status         = 'ISSUED',
+        certificate_id = [new certificate ID],
+        updated_at     = NOW(),
+        updated_by     = [system or approver username]
+    WHERE id = 101
+
+
+  STEP 3 (Master Step 34): COMPUTE FINGERPRINT
+  ===================================================================
+  What:   SHA-256 hash of the DER-encoded certificate
+  Why:    Fast lookup and identity verification without parsing PEM
+
+  Actions:
+    a. Strip PEM headers from certificate_pem
+    b. Base64 decode → raw DER bytes
+    c. SHA-256 hash of DER bytes
+    d. Hex encode → e.g. "A1B2C3D4E5F6..."
+    e. Store in certificates.fingerprint_sha256
+
+  Used by:
+    - Certificate lookup by fingerprint
+    - Duplicate detection (Layer 7 in future requests)
+    - OCSP responder (find cert by hash)
+
+
+  STEP 4 (Master Step 35): STORE SANs (Denormalized)
+  ===================================================================
+  What:   Explode SANs into individual rows for fast lookup
+  Why:    Layer 7 SAN overlap detection needs to query "does any
+          active cert have this SAN?" — impossible without this table
+
+  Actions:
+    Parse certificate's SAN extension → for each SAN:
+      INSERT INTO certificate_sans (
+        certificate_id = [new cert ID],
+        san_type       = "DNS",      -- or EMAIL, IP, URI
+        san_value      = "api.example.com"
+      )
+
+  Example (cert with 3 SANs):
+    | certificate_id | san_type | san_value            |
+    |----------------|----------|----------------------|
+    | 501            | DNS      | api.example.com      |
+    | 501            | DNS      | api2.example.com     |
+    | 501            | IP       | 10.0.5.43            |
+
+
+  STEP 5 (Master Step 36): STORE PUBLIC KEY HASH
+  ===================================================================
+  What:   SHA-256 of SubjectPublicKeyInfo (DER-encoded)
+  Why:    Key reuse detection (Layer 5 Step 5.6 and Layer 7 Step 7.4)
+
+  Actions:
+    a. Extract SubjectPublicKeyInfo from certificate
+    b. DER encode the SPKI structure
+    c. SHA-256 hash → hex string
+    d. INSERT INTO certificate_public_key_hashes (
+         certificate_id  = [new cert ID],
+         public_key_hash = "E7F8A9B0..."
+       )
+
+  Future queries:
+    SELECT * FROM certificate_public_key_hashes
+    WHERE public_key_hash = [new CSR's key hash]
+    → "Is this public key already in use by another cert?"
+
+
+  STEP 6 (Master Step 37): AUDIT LOG
+  ===================================================================
+  What:   Record the issuance event in immutable audit trail
+
+  Actions:
+    AuditLogService.logSuccess(
+      username    = [approver or "system" for auto-approve],
+      action      = "CERT_ISSUE",
+      resourceId  = "4F2A1B3C..." (serial number),
+      description = "Certificate issued: CN=api.example.com, " +
+                    "serial=4F2A1B3C, valid until 2027-06-20",
+      ipAddress   = [approver's IP or null for system]
+    )
+
+
+  STEP 7 (Master Step 38): NOTIFY REQUESTER
+  ===================================================================
+  What:   Tell the requester their certificate is ready
+
+  Notification content:
+    Subject: "Certificate Issued: CN=api.example.com"
+    Body:
+      "Your certificate request #101 has been approved and issued.
+
+       Serial Number: 4F2A1B3C...
+       Subject: CN=api.example.com, O=Acme Corp, C=IN
+       Valid From: 2026-06-20
+       Valid Until: 2027-06-20
+       Fingerprint: A1B2C3D4...
+
+       Download your certificate:
+       GET /api/ra/certificates/4F2A1B3C.../download?format=pem
+
+       NOTE: Certificate will expire in 365 days.
+       Auto-renewal is recommended."
+
+  Channels:
+    - Email (always)
+    - In-App notification (always)
+    - Webhook POST (if configured for CERT_ISSUED event)
+
+  For EST/SCEP/CMP clients:
+    - No separate notification needed
+    - Certificate is returned directly in the protocol response
+    - EST: HTTP 200 + PKCS#7
+    - SCEP: CertRep message
+    - CMP: CertRepMessage
+
+
+  STEP 8 (Master Step 39): PUBLISH TO LDAP/AD (Phase 10)
+  ===================================================================
+  What:   Write the certificate to the user's AD userCertificate attribute
+  When:   If ldap_publish_targets has active targets with auto_publish=true
+  Skip:   If no LDAP targets configured or auto_publish=false
+
+  Actions:
+    a. Load active ldap_publish_targets
+    b. For each target:
+         - Find user in LDAP: search by email or username
+         - Write certificate (DER bytes) to userCertificate attribute
+         - Log result to ldap_publish_log
+    c. If publish fails:
+         - Log error but DON'T fail the issuance
+         - Certificate is still ACTIVE
+         - Admin can retry publish manually
+
+
+  STEP 9 (Master Step 40): SUBMIT TO CT LOG (Phase 12)
+  ===================================================================
+  What:   Submit certificate to Certificate Transparency logs
+  When:   If CT submission is configured for this template
+  Skip:   Internal-only certificates may skip CT
+
+  Actions:
+    a. Submit certificate to configured CT log endpoints
+    b. Receive SCT (Signed Certificate Timestamp)
+    c. Store in ct_submissions table
+    d. If pre-cert CT: embed SCT in certificate (requires re-signing)
+       If post-cert CT: store SCT for TLS stapling
+
+
+  STEP 10 (Master Step 41): START EXPIRY TRACKING
+  ===================================================================
+  What:   Register the certificate for expiry notifications
+  When:   Always (every ACTIVE certificate is tracked)
+
+  Actions:
+    a. Certificate's not_after is already in DB
+    b. CertificateExpiryNotificationJob (Quartz) scans daily:
+         SELECT * FROM certificates
+         WHERE status = 'ACTIVE'
+         AND not_after BETWEEN NOW() AND NOW() + INTERVAL N DAY
+    c. Notification thresholds from notification_rules:
+         90 days, 60 days, 30 days, 14 days, 7 days, 1 day
+    d. When threshold hit → create notification entry
+    e. Requester receives: "Your cert expires in N days — renew now"
+
+
+  STEP 11 (Master Step 42): RETURN RESPONSE TO CLIENT
+  ===================================================================
+  What:   Send the final HTTP response back to the client
+  When:   After all post-issuance steps complete
+
+  Response depends on protocol:
+
+  REST API:
+    HTTP 200 OK (for approval+issue in one call)
+    {
+      "id": 101,
+      "status": "ISSUED",
+      "certificateSerial": "4F2A1B3C...",
+      "subjectDn": "CN=api.example.com,O=Acme,C=IN",
+      "certificateId": 501,
+      "approvals": [
+        {"approver": "priya.patel", "decision": "APPROVED", ...}
+      ]
+    }
+
+    Certificate download:
+    GET /api/ra/certificates/4F2A1B3C.../download?format=pem
+    → 200 OK, Content-Disposition: attachment, body = PEM
+
+  EST:
+    HTTP 200 OK
+    Content-Type: application/pkcs7-mime; smime-type=certs-only
+    Body: Base64-encoded PKCS#7 (cert + chain)
+
+  SCEP:
+    HTTP 200 OK
+    Content-Type: application/x-pki-message
+    Body: PKCS#7 CertRep (SUCCESS, with cert inside)
+
+  CMP:
+    HTTP 200 OK
+    Content-Type: application/pkixcmp
+    Body: DER-encoded PKIMessage with CertRepMessage
+
+
+  CERTIFICATE IS NOW ACTIVE ✅
+  ===================================================================
+
+  At this point:
+    ✅ Certificate stored in DB with all metadata
+    ✅ Request linked to certificate (status = ISSUED)
+    ✅ Fingerprint and key hash indexed for future lookups
+    ✅ SANs denormalized for overlap detection
+    ✅ Audit trail complete (CSR_SUBMIT → CSR_APPROVE → CERT_ISSUE)
+    ✅ Requester notified
+    ✅ LDAP published (if configured)
+    ✅ CT log submitted (if configured)
+    ✅ Expiry tracking active
+    ✅ Client received certificate
+
+  Certificate lifecycle now managed by:
+    - Revocation (Phase 3): POST /certificates/{serial}/revoke
+    - Suspension (Phase 3): POST /certificates/{serial}/suspend
+    - Renewal (EST simplereenroll, or new CSR submission)
+    - Expiry notifications (Phase 4): automatic alerts
+    - Compliance checks (Phase 12): periodic policy scans
+
+
+================================================================================
+  END OF FLOW-06
+  Certificate is ACTIVE. Lifecycle management begins.
+  Error scenarios: FLOW-07 (Error Recovery)
+================================================================================

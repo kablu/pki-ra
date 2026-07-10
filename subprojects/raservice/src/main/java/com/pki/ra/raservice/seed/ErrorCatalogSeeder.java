@@ -2,10 +2,6 @@ package com.pki.ra.raservice.seed;
 
 import com.pki.ra.common.error.ErrorCatalogRepository;
 import com.pki.ra.common.model.ErrorCatalog;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -13,15 +9,20 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * Seeds sample error catalog rows for local H2 development.
- * Runs before ApplicationReadyEvent so ErrorCatalogBean cache is populated on startup.
+ * Seeds sample {@code error_catalog} rows for local H2 development.
+ *
+ * <p>Runs before {@code ApplicationReadyEvent} so the
+ * {@link com.pki.ra.common.error.ErrorCatalogBean} cache is populated on startup.
+ *
+ * <p>Idempotent: skipped automatically if the table already contains data
+ * (handled by {@link AbstractH2Seeder#run(org.springframework.boot.ApplicationArguments)}).
+ *
+ * @see AbstractH2Seeder
  */
 @Component
 @Profile("h2")
 @Order(2)
-public class ErrorCatalogSeeder implements ApplicationRunner {
-
-    private static final Logger log = LoggerFactory.getLogger(ErrorCatalogSeeder.class);
+public class ErrorCatalogSeeder extends AbstractH2Seeder {
 
     private final ErrorCatalogRepository repository;
 
@@ -30,14 +31,12 @@ public class ErrorCatalogSeeder implements ApplicationRunner {
     }
 
     @Override
-    public void run(ApplicationArguments args) {
-        if (repository.count() > 0) {
-            log.info("ErrorCatalogSeeder: already has data — skipping.");
-            return;
-        }
+    protected long count() {
+        return repository.count();
+    }
 
-        log.info("ErrorCatalogSeeder: seeding error catalog...");
-
+    @Override
+    protected void seed() {
         repository.saveAll(List.of(
 
             // CERTIFICATE
@@ -79,8 +78,6 @@ public class ErrorCatalogSeeder implements ApplicationRunner {
                 "The service is under maintenance or overloaded.", "SYSTEM", "ERROR", 503, true)
 
         ));
-
-        log.info("ErrorCatalogSeeder: {} rows inserted.", repository.count());
     }
 
     private ErrorCatalog row(String internalCode, String externalCode, String message,

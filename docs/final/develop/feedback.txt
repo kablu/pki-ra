@@ -1,0 +1,311 @@
+To      : Sebastian Reick
+Subject : Re: Architecture Review -- RA Approval Workflow -- Response to Feedback (V1 Changes)
+
+Hi Sebastian,
+
+Thank you for taking the time to review the RA Approval Workflow Architecture
+document and for the detailed, structured feedback. Each point was genuinely
+valuable -- it helped surface design gaps I had not fully considered,
+particularly around the configuration model and schema separation. I have gone
+through every point carefully, done the analysis, and incorporated the changes
+into Version 1.0 of the document.
+
+Below is a full point-wise summary of everything addressed, organized by the
+sections you reviewed.
+
+
+================================================================================
+ DATABASE -- CHANGES ADDRESSED IN V1
+================================================================================
+
+  Point 1 -- request_id: Year-based sequence softlock at 999,999
+  ---------------------------------------------------------------
+  Feedback  : The year-based sequence softlocks at 999,999 per year.
+  Change    : Sequence widened from 6 digits to 8 digits.
+              Previous : RA-REQ-2026-000042   (max 999,999 / year)
+              Updated  : RA-REQ-2026-00000042  (max 99,999,999 / year)
+
+
+  Point 2 -- csr_profile: Why not a separate table linked by ID?
+  --------------------------------------------------------------
+  Feedback  : csr_profile stored as a plain VARCHAR column is not normalized.
+  Change    : csr_profile VARCHAR(50) removed from csr_requests.
+              A dedicated csr_profiles table introduced.
+              csr_requests now holds profile_id FK -> csr_profiles.id.
+
+              Table: csr_profiles
+                id           BIGINT PK
+                name         VARCHAR(50) UNIQUE
+                description  VARCHAR(500)
+                is_active    BOOLEAN
+
+
+  Point 3 -- requestor data: Isn't this all found via requestor_user_id?
+  -----------------------------------------------------------------------
+  Feedback  : Storing requestor details inline is redundant if the user
+              already exists in the users table.
+  Change    : Requestor columns moved to a dedicated csr_requestor_info table.
+
+              Authenticated user:
+                Only requestor_user_id FK stored on the record.
+                Name, email, department fetched via JOIN with users table.
+                No duplication.
+
+              Anonymous submission:
+                requestor_user_id = NULL
+                Free-form fields retained as nullable columns in
+                csr_requestor_info.
+
+
+  Point 4 -- requested_validity_days: Use explicit notBefore / notAfter
+  ----------------------------------------------------------------------
+  Feedback  : PKCS#10 does not define notBefore/notAfter.
+              Better to use explicit requestedNotBefore and requestedNotAfter.
+  Change    : requested_validity_days INT removed.
+              Replaced with two nullable datetime fields in csr_requestor_info:
+                requested_not_before   DATETIME NULL
+                requested_not_after    DATETIME NULL
+
+              Resolution rules:
+                Neither provided     -> notBefore = now, notAfter = now + profile default
+                Only notBefore       -> notAfter = notBefore + profile default
+                Only notAfter        -> notBefore = now, validate notAfter > now
+                Both provided        -> used as-is, validated against profile limits
+
+
+  Point 5 -- assigned_to_id: Rename to maker_id for symmetry with checker_id
+  ---------------------------------------------------------------------------
+  Feedback  : assigned_to_id is a confusing name given the Maker-Checker model.
+  Change    : assigned_to_id renamed to maker_id throughout the schema.
+              The table now consistently uses maker_id + checker_id as a pair,
+              directly reflecting the Maker-Checker model.
+
+              Previous : assigned_to_id   BIGINT FK
+              Updated  : maker_id         BIGINT FK
+
+
+  Point 6 -- Table structure: Separate the approval workflow from the request
+  ---------------------------------------------------------------------------
+  Feedback  : The single wide table mixes request data with approval tracking.
+  Change    : Split into three focused tables:
+
+              csr_requests
+                Core request data: CSR PEM, subject DN, key info,
+                status, profile FK.
+
+              csr_requestor_info
+                Who requested: user FK or anonymous fields, purpose,
+                priority, validity range.
+
+              csr_approval_workflow
+                Approval tracking: maker_id, checker_id, remarks,
+                decisions, timestamps, closure info.
+
+              certificate_request_transitions  (unchanged)
+                Full immutable status history trail per request.
+
+
+================================================================================
+ ENDPOINTS -- CHANGES ADDRESSED IN V1
+================================================================================
+
+  Point 1 -- Combine /by-request-id and /by-txn-id into query-param style
+  -------------------------------------------------------------------------
+  Feedback  : Two separate lookup endpoints is redundant.
+  Change    : Both removed. Replaced with a single unified endpoint:
+                GET /api/ra/requests?requestId=...
+                GET /api/ra/requests?clientTxnId=...
+
+
+  Point 2 -- /{id}/history: DB id is unknown to client; auth should not be Any
+  ------------------------------------------------------------------------------
+  Feedback  : Clients do not know the internal DB auto-increment id.
+              History should not be accessible to everyone.
+  Change    : Path param changed from internal DB id to human-readable requestId.
+              Auth restricted to ROLE_ADMIN and ROLE_AUDITOR only.
+              Updated path: GET /api/ra/requests/{requestId}/history
+
+
+  Point 3 -- /certificates/{serial}: Serial alone is not unique across CAs
+  -------------------------------------------------------------------------
+  Feedback  : Serial number is only unique within a single CA.
+              Use issuerDn + serialNr (per RFC 5280) or requestId.
+  Change    : Endpoint redesigned to support two globally unique lookup options:
+                GET /api/ra/certificates?issuerDn=...&serialNr=...
+                GET /api/ra/certificates?requestId=RA-REQ-2026-00000042
+
+
+  Point 4 -- Merge /approve + /accept and /pickup + /pickup-check
+  ----------------------------------------------------------------
+  Feedback  : Duplicate endpoints for the same action. Client should not need
+              to know the workflow mode to call the right endpoint.
+              Merging also eliminates error code PKI_APR_012.
+  Change    : Merged into single unified endpoints with server-side routing.
+
+              /pickup  -> Maker if request is in SUBMITTED status
+                          Checker if request is in REVIEWED status
+
+              /approve -> Direct operator approval if SINGLE mode
+                          Checker final decision if DUAL mode
+
+              PKI_APR_012 removed. Client no longer needs to know the
+              workflow mode before calling an endpoint.
+
+
+================================================================================
+ CONFIGURATION -- CHANGES ADDRESSED IN V1
+================================================================================
+
+  Point 1 -- Single system-wide config is too restrictive
+  -------------------------------------------------------
+  Feedback  : Different certificate profiles carry different risk levels
+              and should follow different approval workflows.
+  Change    : Replaced with a per-profile workflow configuration model.
+              Admin defines multiple named workflow configurations and maps
+              each certificate profile to one config.
+
+              Example mappings:
+                TLS_SERVER   -> DUAL Self-Pickup   (high assurance)
+                CODE_SIGNING -> DUAL Self-Pickup   (high assurance)
+                TLS_CLIENT   -> SINGLE Self-Pickup (standard)
+                SMIME        -> SINGLE Self-Pickup (standard)
+
+
+  Point 2 -- New tables to support per-profile config model
+  ----------------------------------------------------------
+  Feedback  : Architecture needed normalized tables for this model.
+  Change    : Three new tables added:
+
+              workflow_configurations
+                Named reusable workflow configs.
+                Stores: approval_mode, assignment_mode,
+                require_remarks, max_pending_per_operator.
+
+              csr_profiles
+                Certificate profiles as first-class entities.
+                Replaces the plain VARCHAR column.
+
+              profile_workflow_mapping
+                Binds each profile to a workflow config.
+                Includes effective_from and effective_until for
+                full mapping history and future-dated changes.
+                Only one active mapping per profile at any time
+                (effective_until IS NULL = currently active).
+
+
+  Point 3 -- Config change should not affect in-flight requests
+  -------------------------------------------------------------
+  Feedback  : Changing a config should not retroactively affect
+              requests already being processed.
+  Change    : At pickup time, the active workflow config is resolved
+              and locked on the request record:
+                workflow_config_id       FK to workflow_configurations
+                approval_mode_at_pickup  SINGLE or DUAL (locked)
+
+              Any future mapping change applies only to new pickups.
+              In-flight requests always complete under the config
+              that was active at their pickup time.
+
+
+  Point 4 -- Admin APIs to manage configurations and profile mappings
+  -------------------------------------------------------------------
+  Feedback  : There should be dedicated admin endpoints to manage
+              these configurations.
+  Change    : Dedicated admin endpoints added:
+                POST /api/ra/admin/workflow-configs
+                GET  /api/ra/admin/workflow-configs
+                PUT  /api/ra/admin/workflow-configs/{id}
+                POST /api/ra/admin/profile-mappings
+                GET  /api/ra/admin/profile-mappings
+
+              All endpoints restricted to ROLE_ADMIN only.
+
+
+================================================================================
+ REQUEST PAYLOAD -- RESPONSE AND PLANNED ACTIONS
+================================================================================
+
+  Point 1 -- pkcs10Csr: Why limit to PKCS#10? WLCA also supports CRMF.
+  ----------------------------------------------------------------------
+  Response  : Noted. The CSR request payload and validation document has not
+              yet been prepared. The current document covers the approval
+              workflow only.
+
+              A dedicated document -- RA_CSR_Request_Payload_and_Validation.md
+              -- will be shared separately. It will cover:
+
+                - Supported request formats: PKCS#10 and CRMF both will be
+                  addressed, including WLCA compatibility.
+
+                - Complete request payload definition with all field
+                  descriptions and validations.
+
+                - Initial validation layers that run before the request
+                  enters the approval workflow.
+
+
+  Point 2 -- clientTxnId: Why is this mandatory?
+  -----------------------------------------------
+  Response  : Agreed. clientTxnId will be made optional.
+
+              The intent behind this field was to give clients a way to
+              correlate their internal transactions with the RA system.
+              The server already generates a unique requestId for every
+              request. When a client provides their own clientTxnId, a
+              one-to-one mapping is established between the two, giving
+              a unique combination to identify any request from either side.
+
+              This also allows the client to track their request status and
+              download the certificate using their own clientTxnId after
+              submission, without needing to store the server-generated
+              requestId.
+
+              Updated behaviour:
+                clientTxnId provided     -> stored as-is, mapped 1:1 with
+                                            requestId.
+                clientTxnId not provided -> field left empty. Client must
+                                            use server-generated requestId
+                                            for all future tracking.
+
+
+  Point 3 -- subjectAltNames: Why extra on top of pkcs10Csr?
+  -----------------------------------------------------------
+  Response  : Agreed. The subjectAltNames field will be removed from the
+              request payload entirely.
+
+              Since subjectAltName is a standard extension within the PKCS#10
+              CSR itself, clients are expected to include SANs directly inside
+              the CSR. The RA will parse and validate SANs from the CSR during
+              the validation phase if required.
+
+              This will be documented in detail in the upcoming
+              RA_CSR_Request_Payload_and_Validation.md document.
+
+
+  Point 4 & 5 -- requestorData and additionalAttributes
+  ------------------------------------------------------
+  Response  : Both will be fully addressed in the upcoming
+              RA_CSR_Request_Payload_and_Validation.md document.
+
+              For initial authentication, only the email ID will be required.
+              Authentication will be handled via Active Directory (AD) --
+              the end user must exist in AD as a prerequisite before
+              submitting a CSR request.
+
+              The upcoming document will cover:
+                - Initial CSR request payload with all field definitions.
+                - AD-based authentication flow and requestor identity
+                  resolution.
+                - Transition statuses and their validation rules.
+                - additionalAttributes schema and allowed key definitions
+                  with validation constraints.
+
+
+================================================================================
+
+Please do let me know if any of the above points require further discussion or
+adjustment before we proceed to implementation. I will share the
+RA_CSR_Request_Payload_and_Validation.md document as soon as it is ready.
+
+With kind regards,
+Kablu Mandal
